@@ -38,7 +38,7 @@ In the view unit:
 
 Not, because the bytes depend on it:
 - the declared type of an existing local, parameter or extern. Signedness turns `jl`/`jge` into `jb`/`jae`, and width changes the loads (`movsx`, `movzx`, `mov`). `s32` stays `s32` even when the value is never negative;
-- the order of declarations (it decides the stack slots), statements or operands, or any "simpler" shape;
+- the order of declarations, statements or operands, or any "simpler" shape. Declaration order moves stack slots only in some frames, the measured ones in `docs/matching.md`, and the C does not show which frame this is;
 - the names of functions and `D_` globals: they change through `proposals.jsonl` only.
 
 ## Header comments

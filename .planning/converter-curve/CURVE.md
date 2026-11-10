@@ -36,6 +36,7 @@ quick id.
 | 13 | 261107-qkd | 47b09fa04c762960b32bfa0f9edab8805d7d1f69 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 14 | 261109-gzt | 8ce53b74490b30912d67b91ddc2def91de66a02c | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 15 | 261109-gzt | 83a884b6048dc1d57ac271f02c18c6a1f56d99b6 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
+| 16 | 07.2-14 | 3d0a8bf1ebaf1eca61df3a3b17b6a72848dd52fd | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 
 ## Point 8
 
@@ -611,6 +612,85 @@ Refusal reasons over the not-matched Tier 1 rows:
 ## Point 15
 
 Re-measure of point 14 after the fix 8204bae1. Tier 1 is identical to point 13 (530 compiled, 221 hole drafts, 26 refused), so the header-prototype change costs Tier 1 nothing. The three target rows outside Tier 1 (tacp 0x0008C110, ufo2p 0x00014A30, ufo2p 0x00073EE0) now compile in both cells, where point 13 failed them with E1151 and E1071.
+
+Tier 1, 943 members, converter only:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 15 | 3 | 0 | 0 | 18 |
+| near | 4 | 8 | 0 | 0 | 12 |
+| compiled | 37 | 240 | 209 | 44 | 530 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 15 | 36 | 104 | 66 | 221 |
+| refused | 0 | 4 | 12 | 10 | 26 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 71 | 291 | 325 | 120 | 807 |
+
+Matched rows (136): 73 exact, 59 compiled, 0 refused, 4 hole-draft.
+
+Sample, 120 rows, tools: converter, search, slots, classify:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 0 | 1 | 0 | 0 | 1 |
+| near | 0 | 0 | 0 | 0 | 0 |
+| compiled | 0 | 36 | 28 | 17 | 81 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 0 | 3 | 11 | 19 | 33 |
+| refused | 0 | 0 | 1 | 4 | 5 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 0 | 40 | 40 | 40 | 120 |
+
+`hole-draft` rows are refused rows that lifted with holes. They can never be exact and are never searched, so `refused` falls by them with no real gain. The reasons below count each such row's strict lift, so the retry lowers no first-refusal count.
+
+Not-matched Tier 1 rows by class and route:
+
+| class | converter | search | agent | all |
+| --- | --- | --- | --- | --- |
+| tail | 0 | 0 | 3 | 3 |
+| slot | 0 | 0 | 0 | 0 |
+| size | 2 | 0 | 732 | 734 |
+| register | 2 | 0 | 1 | 3 |
+| branch | 1 | 0 | 0 | 1 |
+| mixed | 7 | 0 | 14 | 21 |
+| none | 44 | 0 | 1 | 45 |
+| rows | 56 | 0 | 751 | 807 |
+
+Refusal reasons over the not-matched Tier 1 rows:
+
+| reason | rows |
+| --- | --- |
+| call: stack-convention or odd callee name | 43 |
+| op: cdq | 31 |
+| pop: value not pushed in the block | 23 |
+| reg: esp read before any write | 21 |
+| call: stack arguments not pushed in the block | 18 |
+| call: result of a void callee is used | 15 |
+| jcc: no flag source | 15 |
+| jump: indirect (switch table) | 13 |
+| call: indirect | 11 |
+| call: target is not a row start | 9 |
+| idiv: dividend is not a cdq of eax | 8 |
+| stack: slot read at two widths | 8 |
+| decode: row does not decode to its end | 7 |
+| x87: stack live across a block end | 5 |
+| frame: ebp frame | 4 |
+| op: repne scasb | 3 |
+| reg: esi read before any write | 3 |
+| stack: saved register slot | 3 |
+| stack: address outside the frame | 2 |
+| stack: slot above the frame that is no parameter | 2 |
+| op: cwd | 1 |
+| op: enter | 1 |
+| op: in | 1 |
+| op: iretd | 1 |
+| op: one-operand imul | 1 |
+
+## Point 16
+
+Plan 07.2-14: the lifter declares a 4-byte address-taken slot `int s_X[1]` instead of `char s_X[4]` (`f2239f28`), because three `char[4]` leave M2 on wcc386 10.6 and three `int[1]` keep it (07.1-REVIEW CR-01, probe `pr_arr_int1_x3`). Compared with point 15, the latest valid point (14 is superseded by it), no number moved: every table below is identical. 44 drafts changed text, every one of them a `char s_X[4]` that is now `int s_X[1]`, 15 of them with three or more such slots, and the compile, exact and score of each of the 1834 records stayed the same. So the change costs nothing and wins nothing here: those 44 rows differ from the original for reasons other than these slots (43 are `size` rows for the agent, one a `register` row for the converter, none exact).
+
+Matched-row control (D-20): the matched line is 136 rows, 73 exact, as at point 15, and row by row the 175 exact records of point 15 are the 175 of point 16, so no exact row is lost.
 
 Tier 1, 943 members, converter only:
 
