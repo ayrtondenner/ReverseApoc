@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -325,57 +326,78 @@ def test_agyjson_denials_read_the_permission_error():
     """Spike 012: a soft-denied step ends ERROR with tool_info.error.message `permission check
     failed for <action> "<target>": user denied permission for ...` (agy's own format, the
     result's denied_actions name no target), so `denials` reads the action and the target from
-    that message. A step that itself ends DENIED is a denial by its tool and its path or
-    command. An ERROR with any other message ran and failed, and a DONE step ran: neither is a
-    denial, and `undenied_steps` names both."""
+    that message, and the step's own request (its path or command as the model asked for it)
+    from its parameters: round 3 showed the message's target canonicalized. A step that itself
+    ends DENIED is a denial by its tool and its path or command. An ERROR with any other
+    message ran and failed, and a DONE step ran: neither is a denial, and `undenied_steps`
+    names both, an ERROR with its message."""
     events = _events("canary_agy_soft_denied")
     outside = "C:/made-up/func_000A3980/agy-canary-outside.txt"
-    assert agyjson.denials(events) == [agyjson.Denial(2, "write_file", "write_file", outside)]
+    assert agyjson.denials(events) == [agyjson.Denial(2, "write_file", "write_file", outside,
+                                                      outside.replace("/", "\\"))]
     assert agyjson.undenied_steps(events) == []
-    message = 'permission check failed for command "echo \\"a\\" > C:\\\\x": user denied ...'
-    mixed = [_step(1, "run_command", state="ERROR", error={"type": "TOOL_ERROR",
-                                                           "message": message}),
+    echo = 'echo "a" > C:\\x'  # Go-quoted in the message: its quotes and backslash escaped
+    mixed = [_soft_denied(1, "run_command", "command", echo, command=echo),
              _step(2, "read_file", state="DENIED", path="../orig/x.txt"),
              _step(3, "read_file", state="ERROR", path="a.txt",
                    error={"type": "TOOL_ERROR", "message": "file not found"}),
              _step(4, "write_file", path="notes.md")]  # fmt: skip
-    assert agyjson.denials(mixed) == [agyjson.Denial(1, "run_command", "command",
-                                                     'echo "a" > C:\\x'),
+    assert agyjson.denials(mixed) == [agyjson.Denial(1, "run_command", "command", echo, echo),
                                       agyjson.Denial(2, "read_file", "read_file",
-                                                     "../orig/x.txt")]  # fmt: skip
-    assert agyjson.undenied_steps(mixed) == ["step 3: read_file (ERROR)",
+                                                     "../orig/x.txt", "../orig/x.txt")]  # fmt: skip
+    assert agyjson.undenied_steps(mixed) == ["step 3: read_file (ERROR: file not found)",
                                              "step 4: write_file (DONE)"]  # fmt: skip
+    canonical = _soft_denied(5, "read_file", "read_file", "C:/x/orig/x.txt",
+                             parameters={"Path": "C:/x/a/../orig/x.txt"})
+    assert agyjson.denials([canonical]) == [agyjson.Denial(5, "read_file", "read_file",
+                                                           "C:/x/orig/x.txt",
+                                                           "C:/x/a/../orig/x.txt")]
     assert agyjson.response(_events("canary_agy_refused")) == "I'm sorry, but I can't help."
 
 
-def _soft_denied(index: int, tool: str, action: str, target: str, **info) -> dict:
-    """A step agy 1.5.5's permission check refused, as round 3's probes show it: ERROR, with
-    the check's message naming the action and the (canonical) target."""
-    message = (f"permission check failed for {action} {json.dumps(target)}: user denied "
-               f"permission for {action}({target})\nDo not attempt to circumvent this denial.")
-    error = {"type": "TOOL_ERROR", "message": message}
+# round 3: the last line of every real permission denial's message, byte for byte
+DENY_TAIL = ("\nDo not attempt to circumvent this denial by rephrasing the command, using "
+             "alternative tools/scripts (e.g. python, sh, curl), or accessing the same target "
+             "resource. Proceed without performing this action.")
+
+
+def _deny_message(action: str, target: str) -> str:
+    """agy 1.5.5's whole message for a denial, as round 3's transcripts show it: a path
+    action's `user denied permission for <action>(<target>)`, a command's `user denied
+    permission to run command:` and the command on its own line, then DENY_TAIL."""
+    why = ("to run command:\n" + target if action in ("unsandboxed", "command")
+           else f"for {action}({target})")  # fmt: skip
+    return (f"permission check failed for {action} {json.dumps(target)}: user denied "
+            f"permission {why}{DENY_TAIL}")
+
+
+def _soft_denied(index: int, tool: str, action: str, target: str, *,
+                 message: str | None = None, **info) -> dict:  # fmt: skip
+    """A step agy 1.5.5's permission check refused, as round 3's probes show it: ERROR,
+    TOOL_ERROR, with the check's whole message (`message`, else _deny_message) naming the
+    action and the (canonical) target."""
+    error = {"type": "TOOL_ERROR", "message": message or _deny_message(action, target)}
     if tool == "run_command":
-        return _run(index, info.pop("command"), state="ERROR", error=error)
+        return _run(index, info.pop("command"), state="ERROR", error=error, **info)
     return _step(index, tool, state="ERROR", name=tool, error=error, **info)
 
 
 def test_agyjson_a_soft_denied_step_never_ran():
     """Spike 012: a step agy's permission check refused ends ERROR with that check's message
     and never ran, as a step ending DENIED: it is in no list the audit judges as run (commands,
-    writes, reads, unknown steps), whatever its tool, and only in `denials`. An ERROR with any
-    other message (round 3: gemini's relative read, `declaring permissions: failed to parse
-    path: ... must be an absolute path`) may have run: it stays a read the audit judges (fail
-    closed)."""
+    writes, reads, unknown steps) and only in `denials`. agy names the target canonicalized
+    (round 3: absolute, forward slashes, `..` folded), so a path step's target is its request
+    in that form. An ERROR with any other message (round 3: gemini's relative read, `declaring
+    permissions: failed to parse path: ... must be an absolute path`) may have run: it stays a
+    read the audit judges (fail closed)."""
     relative = "../../../orig/x.txt"
     events = [_soft_denied(1, "run_command", "unsandboxed", "curl.exe -sS https://x.invalid/",
                            command="curl.exe -sS https://x.invalid/"),
               _soft_denied(2, "write_file", "write_file", "C:/x/tools/x.py",
                            parameters={"Path": "C:\\x\\tools\\x.py"}),
               _soft_denied(3, "read_file", "read_file", "C:/x/orig/x.txt",
-                           parameters={"Path": f"C:/x/a/{relative}"}),
-              _soft_denied(4, "web_fetch", "read_url", "https://x.invalid/",
-                           parameters={"Url": "https://x.invalid/"}),
-              _step(5, "read_file", state="ERROR", name="read_file",
+                           parameters={"Path": "C:/x/a/../orig/x.txt"}),
+              _step(4, "read_file", state="ERROR", name="read_file",
                     parameters={"Path": relative},
                     error={"type": "TOOL_ERROR", "message": "declaring permissions: failed to "
                            f"parse path: {relative} must be an absolute path: path is not "
@@ -383,7 +405,47 @@ def test_agyjson_a_soft_denied_step_never_ran():
     assert agyjson.commands(events) == [] and agyjson.write_targets(events) == []
     assert agyjson.read_targets(events) == [relative]
     assert agyjson.unknown_steps(events) == []
-    assert [d.step for d in agyjson.denials(events)] == [1, 2, 3, 4]
+    assert [d.step for d in agyjson.denials(events)] == [1, 2, 3]
+
+
+def test_agyjson_a_denial_must_be_exact():
+    """Security review: a step counted as denied leaves the audit, so only agy's exact denial
+    is one: a known tool in its known shape (tool_info but its error), no subagent, state
+    ERROR, error type TOOL_ERROR, the whole message in round 3's format (fullmatch, its last
+    line included), the message's action one that fits the step's tool (read_file, write_file;
+    unsandboxed or command for run_command), its quoted and bare targets the same, and that
+    target the step's own request (a command as written; a path with its slashes turned
+    forward and `..` folded, agy's canonical form). Anything else counts as run (fail closed):
+    a message embedding the permission text after other text, a denial naming another target,
+    an action that does not fit the tool, another error type, a missing tail; and a subagent's
+    or an unknown tool's step with an exact message stays an unknown step."""
+    command = "uv run --frozen reverseapoc attempt check"
+    path = {"Path": "C:\\x\\notes.md"}
+    ran = [_soft_denied(1, "run_command", "unsandboxed", command, command=command,
+                        message="made-up output: " + _deny_message("unsandboxed", command)),
+           _soft_denied(2, "write_file", "write_file", "C:/x/other.md", parameters=path),
+           _soft_denied(3, "write_file", "read_file", "C:/x/notes.md", parameters=path),
+           _soft_denied(4, "run_command", "write_file", command, command=command),
+           _soft_denied(5, "write_file", "write_file", "C:/x/notes.md", parameters=path,
+                        message=_deny_message("write_file", "C:/x/notes.md").removesuffix(
+                            DENY_TAIL)),
+           _soft_denied(6, "run_command", "unsandboxed", "type notes.md", command=command)]
+    other_type = _soft_denied(7, "write_file", "write_file", "C:/x/notes.md", parameters=path)
+    other_type["step_update"]["tool_info"]["error"]["type"] = "MADE_UP_ERROR"
+    ran.append(other_type)
+    assert agyjson.denials(ran) == []
+    assert [text.split(":")[0] for text in agyjson.undenied_steps(ran)] == [
+        f"step {n}" for n in range(1, 8)]
+    assert agyjson.write_targets(ran) == ["C:\\x\\notes.md"] * 4
+    unknown = [_soft_denied(8, "write_file", "write_file", "C:/x/notes.md", parameters=path,
+                            subagent={"name": "made-up"}),
+               _soft_denied(9, "web_fetch", "read_url", "https://x.invalid/",
+                            parameters={"Url": "https://x.invalid/"}),
+               _soft_denied(10, "run_command", "unsandboxed", command, command=command,
+                            Cwd="C:\\x")]  # fmt: skip
+    assert agyjson.denials(unknown) == []
+    assert [text.split(":")[0] for text in agyjson.unknown_steps(unknown)] == [
+        "step 8", "step 9", "step 10"]
 
 
 def test_agyjson_ignores_a_line_outside_the_envelope():
@@ -413,8 +475,9 @@ def test_agyjson_unknown_steps():
     write_file with a path. A missing or non-string tool name, an unknown tool (a fetch, a
     listing, a search, the real manage_task a model polls a background command with), a known
     tool without its field or in the documented but never seen `tool_info.command` shape, and
-    a subagent step are each named; a denied step and a step that is no tool step (model text)
-    are not."""
+    a subagent step are each named, an unknown tool's even when it ends DENIED (only a known
+    step can be a denial); a known tool's denied step and a step that is no tool step (model
+    text) are not."""
     real = {"name": "run_command", "parameters": {"CommandLine": CHECK}}
     stray = [_step(1, "web_fetch", url="https://made-up.invalid/"),
              _step(2, "list_dir", path="."),
@@ -428,11 +491,12 @@ def test_agyjson_unknown_steps():
              _step(8, "run_command", command=CHECK),
              _step(9, "manage_task", name="manage_task",
                    parameters={"Action": "status", "TaskId": "made-up/task-10"},
-                   output="Status: RUNNING")]  # fmt: skip
-    fine = [_step(10, "run_command", **real, output="Command exited with code 0."),
-            _step(11, "read_file", path="context.md"), _step(12, "write_file", path="notes.md"),
-            _step(13, "web_fetch", state="DENIED", url="https://made-up.invalid/"),
-            _wrapped("step_update", step_index=14, state="DONE", step_type="PLANNER_RESPONSE",
+                   output="Status: RUNNING"),
+             _step(10, "web_fetch", state="DENIED", url="https://made-up.invalid/")]  # fmt: skip
+    fine = [_step(20, "run_command", **real, output="Command exited with code 0."),
+            _step(21, "read_file", path="context.md"), _step(22, "write_file", path="notes.md"),
+            _step(23, "write_file", state="DENIED", path="tools/x.py"),
+            _wrapped("step_update", step_index=24, state="DONE", step_type="PLANNER_RESPONSE",
                      text_delta="made-up text")]  # fmt: skip
     found = agyjson.unknown_steps([*stray, *fine])
     assert len(found) == len(stray), found
@@ -747,14 +811,18 @@ def _filled(value: object, slots: dict[str, tuple[str, str]]) -> object:
 
 
 def _probe_slots(name: str, attempt_dir: Path, repo: Path) -> dict[str, tuple[str, str]]:
-    """A probe session's fixture slots: @asked, the spelling its prompt asks for (in agy's
-    message with every slash turned to a backslash, so the match must undo both the quoting and
-    the slash direction), and @plain, the plain spelling of the same file."""
+    """A probe session's fixture slots: @asked, the spelling its prompt asks for, as the step's
+    request with every slash turned to a backslash (the match must undo the slash direction
+    only); @canonical, the same request as agy's permission message names it (round 3:
+    forward slashes, `..` folded, case as asked); and @plain, the plain spelling of the same
+    file."""
     asked, plain = _read_spellings(attempt_dir, repo).get(
         name, (None, str(repo / "orig" / driver.AGY_CANARY_PROBE)))
     slots = {"@plain": (plain, plain)}
     if asked is not None:
-        slots["@asked"] = (asked.replace("/", "\\"), asked)
+        backslashed = asked.replace("/", "\\")
+        canonical = posixpath.normpath(asked.replace("\\", "/"))
+        slots |= {"@asked": (backslashed, backslashed), "@canonical": (canonical, canonical)}
     return slots
 
 
@@ -951,12 +1019,14 @@ def test_agy_canary_probe_verdicts(tmp_path, capsys):
 
 def test_agy_canary_read_probe_wants_its_own_spelling(tmp_path, capsys):
     """Security review: each orig/ read probe exists to prove the deny rules for one spelling
-    (`../`-relative, another case, `..` segments, the 8.3 short name). A model that reads the
-    plain path of the same file instead, and has that denied, never tried the spelling: the
-    probe FAILs saying it read a different spelling than asked, quoting both, and the other
-    read probes still pass. Only the slash direction and agy's Go quoting are undone (the
-    default fixture turns every slash of the asked spelling into a backslash and Go-quotes it,
-    and test_agy_canary_pass still passes), never case or `..`."""
+    (`../`-relative, another case, `..` segments, the 8.3 short name). agy's permission
+    message names the target canonicalized (round 3: `..` resolved, absolute), so the spelling
+    tried is the step's own request (parameters.Path). A model that requests the plain path of
+    the same file instead, and has that denied, never tried the spelling: the probe FAILs
+    saying it read a different spelling than asked, quoting both, and the other read probes
+    still pass. Only the request's slash direction is undone (the default fixture turns every
+    slash of the asked spelling into a backslash and its message names the canonical path, and
+    test_agy_canary_pass still passes), never case or `..`."""
     for name in (probe for probe in PROBES if probe.endswith("-read")):
         rig = _agy_canary_rig(tmp_path / name, scenarios={name: "canary_agy_deny_read_plain"})
         code, doc = _agy_canary(rig, capsys)
@@ -971,6 +1041,27 @@ def test_agy_canary_read_probe_wants_its_own_spelling(tmp_path, capsys):
         for other in (probe for probe in PROBES if probe != name):
             assert f"the {other.replace('-', ' ')} probe was denied" in texts, (name, other)
         assert _no_pass(rig), name
+
+
+def test_agy_canary_read_probe_proof_is_its_request_and_its_denial(tmp_path, capsys):
+    """A read probe passes on two facts of one step: its request is the asked spelling, and
+    agy's permission check denied it naming the probe file (in agy's canonical spelling,
+    test_agy_canary_pass). The asked spelling "denied" naming some other file is no denial of
+    that step (agyjson: the target must be the step's own request), so it counts as run.
+    Gemini's round-3 relative read (agy refused the relative path before its permission check,
+    `must be an absolute path`, then the model requested the plain path and that was denied)
+    FAILs naming the refused step and agy's error: never a PASS."""
+    cases = (("canary_agy_deny_read_elsewhere", ("not denied by agy's permission check",)),
+             ("canary_agy_read_not_absolute", ("not denied by agy's permission check",
+                                               "must be an absolute path")))  # fmt: skip
+    for scenario, verdicts in cases:
+        rig = _agy_canary_rig(tmp_path / scenario, scenarios={"relative-read": scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), scenario
+        failed = _failed(doc)
+        for verdict in verdicts:
+            assert "the relative read probe: " in failed and verdict in failed, (scenario, failed)
+        assert _no_pass(rig), scenario
 
 
 def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):
