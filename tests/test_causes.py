@@ -71,7 +71,8 @@ def test_two_runs_and_total(tmp_path):
     assert [r["run"] for r in doc["runs"]] == ["run-a", "run-b"]
     assert [r["checks"] for r in doc["runs"]] == [5, 6]
     total = doc["rates"]
-    assert (total["checks"], total["match"], total["mismatch"], total["build_failure"]) == (11, 3, 6, 2)
+    counts = (total["checks"], total["match"], total["mismatch"], total["build_failure"])
+    assert counts == (11, 3, 6, 2)
     assert total["match_percent"] == "27.3" and doc["sweeps"] == 4
     text = report.format()
     assert "run-a" in text and "run-b" in text and "total" in text and "27.3%" in text
