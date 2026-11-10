@@ -1308,3 +1308,96 @@ def test_cli_drive_passes_workers_and_target_zero(monkeypatch):
     monkeypatch.setattr(driver, "default_seams", lambda repo: "seams")
     assert main(["drive", "--workers", "2", "--target-matched", "0", "--run", "r1"]) == 0
     assert (seen["o"].workers, seen["o"].target_matched) == (2, 0)
+
+
+# ---- drive: the spike 012 harness flags (07.2-06; D-17) ----
+
+
+def _recorded_drive(monkeypatch) -> list:
+    """run_drive records its options and runs nothing; the seams are inert."""
+    from reverseapoc import driver
+
+    seen: list = []
+
+    def run_drive(options, seams):
+        seen.append(options)
+        return 0
+
+    monkeypatch.setattr(driver, "run_drive", run_drive)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: None)
+    return seen
+
+
+HAIKU = "claude-haiku-5-5"
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--night-model", HAIKU, "--fable-trial"], "--fable-trial"),
+    (["--night-model", HAIKU, "--session", "readability"], "--session readability"),
+    (["--hold", "--session", "readability"], "--session readability"),
+    (["--hold", "--canary"], "--canary"),
+    (["--hold", "--dry-run"], "--dry-run"),
+    (["--canary", "--model", HAIKU, "--night-model", HAIKU], "--model"),
+    (["--write-picks", "p.txt"], "--stratify"),
+    (["--stratify", "7,7,6"], "--write-picks"),
+    (["--stratify", "7,7,6", "--write-picks", "p.txt"], "--dry-run"),
+    (["--dry-run", "--stratify", "7,7,6", "--write-picks", "p.txt", "--picks", "q.txt"],
+     "--picks"),
+    (["--land-held", "spike012-*", "--picks", "q.txt"], "--picks"),
+    (["--land-held", "spike012-*", "--hold"], "--hold"),
+    (["--land-held", "spike012-*", "--night-model", HAIKU], "--night-model"),
+    (["--land-held", "spike012-*", "--stratify", "1,1,1"], "--stratify"),
+    (["--land-held", "spike012-*", "--dry-run"], "--dry-run"),
+    (["--land-held", "spike012-*", "--canary"], "--canary"),
+    (["--land-held", "spike012-*", "--fable-trial"], "--fable-trial"),
+])  # fmt: skip
+def test_harness_flag_refusals(argv, conflict, capsys, monkeypatch):
+    """D-17: one refusal point (`_harness_conflict`): each incompatible pair exits 2 naming the
+    conflict, before any preflight."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+def test_night_model_names_the_known_ids(capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--night-model", "gpt-x"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "gpt-x" in err and HAIKU in err and "claude-opus-5-5" in err
+
+
+@pytest.mark.parametrize("value", ["7,7", "7,7,6,1", "a,b,c", "-1,2,3"])
+def test_stratify_takes_three_non_negative_counts(value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--stratify", value])
+    assert exc.value.code == 2
+
+
+def test_harness_flags_reach_the_options(tmp_path, monkeypatch):
+    """Every harness flag is threaded into DriveOptions; `--canary --night-model X` makes the
+    canary ask for X."""
+    seen = _recorded_drive(monkeypatch)
+    picks = tmp_path / "picks.txt"
+    assert main(["drive", "--night-model", HAIKU, "--picks", str(picks), "--hold",
+                 "--run", "spike012-haiku"]) == 0  # fmt: skip
+    night = seen[-1]
+    assert (night.night_model, night.picks, night.hold) == (HAIKU, picks, True)
+    assert (night.stratify, night.write_picks, night.land_held) == (None, None, ())
+    assert main(["drive", "--dry-run", "--stratify", "7,7,6", "--write-picks", str(picks)]) == 0
+    assert (seen[-1].stratify, seen[-1].write_picks) == ((7, 7, 6), picks)
+    assert main(["drive", "--land-held", "spike012-*", "other", "--run", "land1"]) == 0
+    assert seen[-1].land_held == ("spike012-*", "other")
+    assert main(["drive", "--canary", "--night-model", HAIKU]) == 0
+    assert seen[-1].canary_model == HAIKU
+    assert main(["drive"]) == 0
+    assert (seen[-1].night_model, seen[-1].hold, seen[-1].picks) == (None, False, None)
+
+
+def test_harness_flags_in_help(capsys):
+    text = _drive_help(capsys)
+    for flag in ("--night-model", "--picks", "--stratify", "--write-picks", "--hold",
+                 "--land-held"):  # fmt: skip
+        assert flag in text, flag

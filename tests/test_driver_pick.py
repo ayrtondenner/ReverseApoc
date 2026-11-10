@@ -1244,3 +1244,108 @@ def test_what_does_not_park(tmp_path, case):
     assert not [line for line in lines if "parked for the night" in line]
     if case == "limit launch":
         assert len(night.launched) == 3
+
+
+# ---- 07.2-06 (D-17): the picks file, a restricted night, the hold run's one pass ----
+
+PICKS_TEXT = "# spike 012 (made up)\nufo2p 0x0008A0E0\n\n  # an indented comment\ntacp 0x00055080\n"
+
+
+def test_read_picks(tmp_path):
+    """RULINGS: one `<exe> 0x<8 hex digits>` per line, `#` comments and blank lines ignored."""
+    path = tmp_path / "picks.txt"
+    path.write_text(PICKS_TEXT, encoding="utf-8")
+    assert driver.read_picks(path) == frozenset({(UFO2P, 0x0008A0E0), (TACP, 0x00055080)})
+
+
+@pytest.mark.parametrize(("text", "line"), [
+    ("ufo2p 0x0008A0E0\nufo2p 8A0E0\n", 2),
+    ("ufo3 0x00000000\n", 1),
+    ("ufo2p 0x0008A0E0\n# again\nufo2p 0x0008A0E0\n", 3),
+    ("ufo2p 0x0008A0E\n", 1),
+    ("ufo2p 0x0008A0E0 extra\n", 1),
+])  # fmt: skip
+def test_read_picks_refuses_a_bad_line(tmp_path, text, line):
+    path = tmp_path / "picks.txt"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(driver.DriverError, match=f"line {line}"):
+        driver.read_picks(path)
+
+
+def _picks_file(tmp_path: Path, keys) -> Path:
+    path = tmp_path / "picks.txt"
+    path.write_text("".join(f"{exe} 0x{start:08X}\n" for exe, start in keys), encoding="utf-8")
+    return path
+
+
+def test_picks_refuse_non_members_and_matched(tmp_path, capsys):
+    """A pick outside the built queue and a pick already matched are refused before any session
+    (exit 2), both named."""
+    from test_drive import BASE, Rig, _git
+
+    rig = Rig(tmp_path / "rig")
+    matched, free = BASE[UFO2P], BASE[UFO2P] + 0x10000
+    files = _empty_status(matched)
+    for rel, text in files.items():
+        (rig.repo / rel).write_text(text, encoding="utf-8", newline="\n")
+    _git(rig.repo, rig.env, "add", "--", *files)
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "a matched row (made up)")
+    outside = 0x00999000
+    picks = _picks_file(tmp_path, [(UFO2P, matched), (UFO2P, free), (TACP, outside)])
+    code, out, _ = rig.drive(capsys, json=True, picks=picks)
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "picks")
+    assert f"tacp 0x{outside:08X}" in doc["detail"] and f"ufo2p 0x{matched:08X}" in doc["detail"]
+    assert f"0x{free:08X}" not in doc["detail"]
+
+
+def test_picks_restrict_the_pools_queue(tmp_path):
+    """Without a signed tier, `--picks` keeps only the listed pool candidates."""
+    from test_drive import BASE, Rig
+    from test_drive import _world as _pools_world
+
+    rig = Rig(tmp_path / "rig")
+    keys = [(UFO2P, BASE[UFO2P] + 0x20000), (TACP, BASE[TACP])]
+    options = rig.options(picks=_picks_file(tmp_path, keys))
+    deps = driver.real_deps(options, rig.seams(), _pools_world(rig.packs))
+    assert sorted((p.exe, p.start) for p in deps.queue(frozenset())) == sorted(keys)
+
+
+def test_picks_restrict_the_tier_queue_through_only(tmp_path):
+    """With a signed tier the picks become `only=` (TierQueue.only): the queue holds the picks
+    alone, in the queue's own order, with no wait on a key outside them."""
+    from test_driver import Night
+    from test_driver_records import _commit
+
+    rows = [_member(a) for a in (TA, TB, TC)]
+    night = Night(tmp_path / "night")
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((TA, TB, TC), [(TA, TB), (TB, TC)])
+    options = driver.DriveOptions(repo=night.repo, run_id="r1",
+                                  picks=_picks_file(tmp_path, [(UFO2P, TA), (UFO2P, TB)]))
+    deps = driver.real_deps(options, _seams(night, worlds), worlds)
+    queue = deps.queue(frozenset())
+    assert isinstance(queue, picker.TierQueue)
+    assert [item.pick.start for item in queue.preview(10)] == [TB, TA]
+
+
+def test_hold_tier_queue_offers_each_pick_once(tmp_path):
+    """D-17, D-22: under --hold a tier night attempts each pick once, although a pass without a
+    match would come back for its next pass; a caller still follows its callee."""
+    from test_driver import START, UNIT, Night, Sess
+    from test_driver_records import _commit
+
+    leaf, mid, top = START, START + 0x10, START + 0x20
+    rows = [_member(a) for a in (leaf, mid, top)]
+    night = Night(tmp_path / "night", sessions=[Sess() for _ in range(9)])
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((leaf, mid, top), [(top, mid), (mid, leaf)], unit=UNIT)
+    picks = _picks_file(tmp_path, [(UFO2P, s) for s in (leaf, mid, top)])
+    options = driver.DriveOptions(repo=night.repo, run_id="night1", picks=picks, hold=True)
+    deps = driver.real_deps(options, _seams(night, worlds), worlds)
+    report = night.run(config={"max_sessions": 9, "hold": True}, queue=deps.queue,
+                       requeue=deps.requeue)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert [p.start for p, _, _ in night.packed] == [leaf, mid, top]
+    assert [r["hold_run"] for r in night.kinds("attempt")] == [True, True, True]

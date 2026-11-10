@@ -1341,3 +1341,105 @@ def test_console_canary_session_start_line_prints_before_the_session(tmp_path, c
                                         "started (timeout 1200 s)")  # fmt: skip
     assert (held[0] + err).count("session: started") == 1
     assert out.splitlines()[-1] == "CANARY PASS"
+
+
+# ---- 07.2-06 (D-17, D-26): the night model and the hold run ----
+
+HAIKU = "claude-haiku-5-5"
+
+
+def _held_picks(count: int = 3) -> tuple[Pick, ...]:
+    from test_driver import START, UNIT
+
+    return tuple(Pick("ufo2p", START + 0x10 * i, f"func_{START + 0x10 * i:08X}", UNIT, 20, 100 + i)
+                 for i in range(count))  # fmt: skip
+
+
+def _tracked(night: Night) -> dict[str, str]:
+    """src/, include/ and config/ as git sees them now: path -> blob of the working tree."""
+    out = night.git("ls-files", "-s", "--", "src", "include", "config")
+    paths = [line.split("\t", 1)[1] for line in out.splitlines()]
+    return {p: (night.repo / p).read_text(encoding="utf-8") for p in paths}
+
+
+def test_night_model_hold_run(tmp_path):
+    """D-17: three picks on Haiku under --hold: one session each although the passes allow
+    three, every record a hold run on Haiku, HOLD_EXACT for the plain exit-0 check, PARTIAL or
+    GAVE_UP by best percent for the others; the HELD marker; no lint, gate or gate --partial,
+    src/ and status.csv unchanged, and the records still committed."""
+    from test_driver import Sess, check_line
+
+    sessions = [Sess(checks=(check_line(1, 80.0), check_line(2, 100.0, exit_code=0))),
+                Sess(checks=(check_line(1, 55.0),)), Sess(checks=(check_line(1, None),))]
+    night = Night(tmp_path, sessions=sessions, picks=_held_picks(), gate_exits=[0, 0, 0])
+    before = _tracked(night)
+    report = night.run(config={"night_model": HAIKU, "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert len(night.launched) == 3
+    records = night.kinds("attempt")
+    assert [r["outcome"] for r in records] == ["HOLD_EXACT", "PARTIAL", "GAVE_UP"]
+    assert {(r["model_requested"], r["hold_run"]) for r in records} == {(HAIKU, True)}
+    assert [r["attempt"] for r in records] == [1, 1, 1]
+    assert (night.repo / "build" / "driver" / NIGHT_RUN / driver.HOLD_RUN_MARKER).is_file()
+    assert driver.HOLD_RUN_MARKER == "HELD"
+    assert night.gate_calls == [] and night.partial_calls == [] and night.lint_calls == []
+    assert _tracked(night) == before
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+    assert night.commits() == [driver.LOG_SUBJECT]
+    assert report.matched == 0
+
+
+def test_night_model_without_hold_asks_for_that_model(tmp_path):
+    """--night-model alone: every session of the matching night asks for the model, with the
+    per-session budget a non-Fable model takes."""
+    from test_driver import Sess
+
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    night.run(config={"night_model": HAIKU, "attempts_per_function": 1})
+    record = night.kinds("attempt")[0]
+    assert (record["model_requested"], record["budget_usd"], record["hold_run"]) == (
+        HAIKU, 5, False)  # fmt: skip
+    assert night.launched[0].argv[night.launched[0].argv.index("--model") + 1] == HAIKU
+
+
+def test_hold_never_matched(tmp_path):
+    """D-26: a hold-run check that exited 0 is HOLD_EXACT, never MATCHED, and no match commit
+    is made, although the gate would have passed."""
+    from test_driver import Sess, check_line
+
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 100.0, exit_code=0),))],
+                  gate_exits=[0])  # fmt: skip
+    report = night.run(config={"hold": True})
+    record = night.kinds("attempt")[0]
+    assert (record["outcome"], record["hold_run"], record["gate"]) == ("HOLD_EXACT", True, None)
+    assert report.matched == 0 and night.gate_calls == []
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+
+
+def test_hold_limit_salvage_lands_nothing(tmp_path):
+    """A LIMIT session under --hold that changed its unit is reset unjudged (no lint, no gate);
+    the relaunch is the attempt, recorded once."""
+    from test_driver import Sess, check_line
+
+    sessions = [Sess("rate_limit"), Sess(checks=(check_line(1, 100.0, exit_code=0),))]
+    night = Night(tmp_path, sessions=sessions, gate_exits=[0, 0])
+    report = night.run(config={"hold": True})
+    assert report.event == "ENDED", report.detail
+    assert len(night.launched) == 2 and night.sleeps == [60]
+    assert night.gate_calls == [] and night.lint_calls == []
+    assert [r["outcome"] for r in night.kinds("attempt")] == ["HOLD_EXACT"]
+    assert len(night.kinds("limit")) == 1
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+
+
+def test_run_drive_hands_the_night_model_and_hold_to_the_night(tmp_path, capsys, monkeypatch):
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, _, _ = Rig(tmp_path).drive(capsys, json=True, night_model=HAIKU, hold=True)
+    assert code == 0
+    assert (seen[0].night_model, seen[0].hold) == (HAIKU, True)
