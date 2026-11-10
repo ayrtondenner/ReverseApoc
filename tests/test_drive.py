@@ -1573,6 +1573,27 @@ def test_land_held_cheapest_arm(tmp_path):
     assert after["per_match"]["matched_functions"] == 1
 
 
+def test_land_held_across_arms(tmp_path):
+    """07.2-16 (D-22): the hold runs of three arms of one multi-arm night (`<run>-<arm>`) land
+    each function once, from the cheapest arm, with `--land-held <run>-*`."""
+    from test_driver import MATCH_SUBJECT, UNIT_REL
+
+    night = _table_night(tmp_path, gate_exits=[0])
+    arms = ((HAIKU, 0.90, _held_c(1)), (SONNET, 0.10, _held_c(2)),
+            ("claude-opus-5-5", 0.50, _held_c(3)))  # fmt: skip
+    _commit_log(night, [_hold_attempt(night, f"spike012-{model}", 1, cost=cost, model=model,
+                                      text=text) for model, cost, text in arms])  # fmt: skip
+    before = len(night.records())
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    assert [s for s in night.commits() if s.startswith("feat(")] == [MATCH_SUBJECT]
+    assert night.file_at("feat(", UNIT_REL) == _held_c(2)
+    assert "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" in night.message("feat(")
+    (landing,) = _new(night, before, "landing")
+    assert (landing["from_run"], landing["model"]) == (f"spike012-{SONNET}", SONNET)
+    assert len(night.gate_calls) == 1
+
+
 @pytest.mark.parametrize(("runs", "winner"), [
     ((("spike012-b", 1, 0.5), ("spike012-a", 1, 0.5)), ("spike012-a", 1)),
     ((("spike012-a", 2, 0.5), ("spike012-a", 1, 0.5)), ("spike012-a", 1)),
