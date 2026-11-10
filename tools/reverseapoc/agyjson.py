@@ -6,12 +6,16 @@ Each stdout line is one JSON event, read by streamjson's own `parse_line`/`parse
 line is counted, never fatal): `init {cwd, tools, permission_mode, model}` (the model only when
 `--model` was passed, which the driver always does), `step_update {step_index, state, tool_name,
 tool_info, usage, ...}` (one or more per step) and `result {status, error, duration_seconds,
-num_turns, usage, denied_actions}`. Field names come from the CLI's docs (RESEARCH), not from a
-captured stream: the owner's canary proves them.
+num_turns, usage, denied_actions}`. agy 1.5.5 wraps each one as `{"event": kind, kind: {...}}`
+(spike 012's round-2 canaries) and this module reads the payload; a line of any other shape is
+no event. The envelope, the init and result fields and a write step's
+`tool_info.parameters.Path` come from those captured streams; the other field names come from
+the CLI's docs (RESEARCH) and the owner's canary proves them.
 
 - `init_event`/`init_problems`: the driver's init check (a STOP condition like check_init): the
   init must exist, its cwd be the attempt dir, its model the requested slug, and its permission
   mode no bypass.
+- `has_result`: whether a result event ended the session (the driver's `measured`).
 - `usage`/`turns`: the last result's `usage`: `input_tokens` as input, `output_tokens` plus
   `thinking_tokens` as output, `cache_read_tokens` as cache read, no cache creation, no cost (an
   AI Plus subscription is measured in quota); `num_turns`; `duration_seconds` in ms.
@@ -19,8 +23,9 @@ captured stream: the owner's canary proves them.
   update left it, in the order it first appeared): its `tool_info.command`, or its path
   (`path`, `file_path`, `target_file` or `absolute_path`), a read only for a known read-only
   tool (`read_file`) and a write for every other tool (07.2 review WR-02: fail closed). A step
-  whose own last state is DENIED was soft-denied (headless agy continues, RESEARCH
-  "Permissions"): it never ran, so it is in none of the three lists. A result's
+  whose own last state is DENIED was soft-denied (RESEARCH "Permissions"): it never ran, so it
+  is in none of the three lists. Spike 012 saw otherwise: agy 1.5.5 ends a soft-denied step
+  ERROR, so it stays in the lists (fail closed), and then ends the turn. A result's
   `denied_actions` never stand for a step; they are hook blocks. The driver's audit reads them
   (D-26).
 - `unknown_steps`: each tool step that ran and is not a known tool (`run_command` with a
@@ -50,11 +55,15 @@ from .streamjson import Disposition, Usage
 parse = streamjson.parse  # one reader for every CLI's JSONL, never a copy
 parse_line = streamjson.parse_line
 
+_KIND = "event"  # agy 1.5.5 (spike 012 canaries): {"event": kind, kind: {payload}}
 _INIT = "init"
 _STEP = "step_update"
 _RESULT = "result"
 _SUCCESS = "SUCCESS"
-_PATH_KEYS = ("path", "file_path", "target_file", "absolute_path")
+# agy 1.5.5 names a write step's path as tool_info.parameters.Path (spike 012); the rest are
+# RESEARCH's documented spellings, unconfirmed
+_PATH_KEYS = ("Path", "path", "file_path", "target_file", "absolute_path")
+_PARAMETERS = "parameters"
 _BYPASS = re.compile(r"bypass|skip|danger|yolo|auto", re.I)  # a mode that approves by itself
 _AUTH_TEXT = re.compile(r"authentication required|not (signed|logged) in", re.I)
 _LIMIT_TEXT = re.compile(r"quota|rate.?limit|resource.?exhausted|limit (was )?(hit|reached)",
@@ -70,9 +79,21 @@ def _count(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+def _flat(event: Mapping) -> dict:
+    """One agy 1.5.5 line, {"event": kind, kind: {...}}, as {"type": kind, **payload}; a line
+    of any other shape is no event ({})."""
+    kind = event.get(_KIND)
+    payload = event.get(kind) if isinstance(kind, str) else None
+    return {**payload, "type": kind} if isinstance(payload, Mapping) else {}
+
+
+def _events(events: Sequence[dict]) -> list[dict]:
+    return [_flat(event) for event in events]
+
+
 def init_event(events: Sequence[dict]) -> dict | None:
-    """The session's first `init` event, or None."""
-    return next((e for e in events if e.get("type") == _INIT), None)
+    """The session's first `init` event's payload, or None."""
+    return next((e for e in _events(events) if e.get("type") == _INIT), None)
 
 
 def _norm(path: str) -> str:
@@ -99,8 +120,13 @@ def init_problems(init: Mapping | None, *, cwd: Path, model: str) -> list[str]:
 
 
 def _result(events: Sequence[dict]) -> Mapping | None:
-    results = [e for e in events if e.get("type") == _RESULT]
+    results = [e for e in _events(events) if e.get("type") == _RESULT]
     return results[-1] if results else None
+
+
+def has_result(events: Sequence[dict]) -> bool:
+    """The session ended with a result event (the driver's `measured`)."""
+    return _result(events) is not None
 
 
 def turns(events: Sequence[dict]) -> int:
@@ -168,7 +194,7 @@ def _steps(events: Sequence[dict]) -> list[Mapping]:
     without an integer index counts every time)."""
     found: list[Mapping] = []
     place: dict[int, int] = {}
-    for event in events:
+    for event in _events(events):
         if not _tool_step(event):
             continue
         index = event.get("step_index")
@@ -192,10 +218,12 @@ def _command_text(command: object) -> str:
 
 
 def _path(info: Mapping) -> str | None:
-    key = next((k for k in _PATH_KEYS if k in info), None)
-    if key is None:
+    """A path step's path: in tool_info itself or in its `parameters` (agy 1.5.5)."""
+    where = (info, _mapping(info.get(_PARAMETERS)))
+    found = next(((place, k) for place in where for k in _PATH_KEYS if k in place), None)
+    if found is None:
         return None
-    value = info[key]
+    value = found[0][found[1]]
     return value if isinstance(value, str) else repr(value)
 
 

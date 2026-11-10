@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from reverseapoc import agyjson, backends, driver, session
-from reverseapoc.streamjson import Usage
+from reverseapoc.streamjson import Disposition, Usage
 from reverseapoc.targets import REPO_ROOT
 from test_drive import Rig, _keyed
 from test_driver import EXE, FUNC, LOG, RUN, UNIT, Night, Sess
@@ -201,6 +201,27 @@ def test_agyjson_init_problems(tmp_path):
     assert agyjson.init_event(_events("gemini_success"))["permission_mode"] == "default"
 
 
+def test_agyjson_reads_the_agy_1_5_5_envelope():
+    """Spike 012 round-2 canaries: agy 1.5.5 streams each event as {"event": kind, kind:
+    {...}}, and a write step names its path as tool_info.parameters.Path. The fixture copies
+    that real stream's shape (made-up paths and numbers): its init, its one turn, its usage, its
+    soft-denied write (the step itself ends ERROR, so it counts as a write the audit judges) and
+    its result are all read; no step is unknown."""
+    events = _events("canary_agy_soft_denied")
+    init = agyjson.init_event(events)
+    assert init is not None and init["permission_mode"] == "request-review", init
+    assert (init["cwd"], init["model"]) == ("@cwd", "@model")
+    assert agyjson.turns(events) == 1
+    assert agyjson.usage(events) == Usage(
+        input_tokens=9000, output_tokens=2100, cache_read_tokens=0, cache_creation_tokens=0,
+        turns=1, cost_usd=0.0, duration_ms=10500)  # fmt: skip
+    assert agyjson.write_targets(events) == ["C:\\made-up\\func_000A3980\\agy-canary-outside.txt"]
+    assert agyjson.read_targets(events) == [] and agyjson.commands(events) == []
+    assert agyjson.unknown_steps(events) == []
+    assert agyjson.failure(events) is None
+    assert agyjson.classify(events, 0, False) == Disposition.ATTEMPT_DONE
+
+
 def test_agyjson_usage_and_turns():
     """The result's usage: input, output plus thinking, cache_read, no cache creation, no
     cost; `num_turns` gives the turns and `duration_seconds` the duration in ms; the malformed
@@ -231,9 +252,16 @@ def test_agyjson_commands_writes_denied():
     assert agyjson.denied_actions(_events("gemini_success")) == ["command(type notes.md)"]
 
 
-def _step(index: int, tool: str, *, state: str = "DONE", **info) -> dict:
-    return {"type": "step_update", "step_index": index, "state": state, "step_type": "TOOL",
-            "tool_name": tool, "tool_info": info}  # fmt: skip
+def _wrapped(kind: str, **payload) -> dict:
+    """One event in agy 1.5.5's envelope."""
+    return {"event": kind, kind: payload}
+
+
+def _step(index: int, tool: str, *, state: str = "DONE", subagent: dict | None = None,
+          **info) -> dict:  # fmt: skip
+    step = {"step_index": index, "state": state, "step_type": "TOOL", "tool_name": tool,
+            "tool_info": info}  # fmt: skip
+    return _wrapped("step_update", **step, **({"subagent_info": subagent} if subagent else {}))
 
 
 def test_agyjson_only_a_steps_own_denied_state_hides_it():
@@ -245,16 +273,27 @@ def test_agyjson_only_a_steps_own_denied_state_hides_it():
               _step(2, "read_file", path=target),
               _step(3, "read_file", path=target, state="DENIED"),
               _step(4, "write_file", path=target),
-              {"type": "result", "status": "SUCCESS",
-               "denied_actions": [f"command({target})", f"read_file({target})",
-                                  f"write_file({target})"]}]  # fmt: skip
+              _wrapped("result", status="SUCCESS",
+                       denied_actions=[f"command({target})", f"read_file({target})",
+                                       f"write_file({target})"])]  # fmt: skip
     assert agyjson.commands(events) == [target]
     assert agyjson.read_targets(events) == [target]
     assert agyjson.write_targets(events) == [target]
     unsandboxed = [_step(1, "run_command", command="type notes.md"),
-                   {"type": "result", "status": "SUCCESS",
-                    "denied_actions": ["unsandboxed(type notes.md)"]}]
+                   _wrapped("result", status="SUCCESS",
+                            denied_actions=["unsandboxed(type notes.md)"])]  # fmt: skip
     assert agyjson.commands(unsandboxed) == ["type notes.md"]
+
+
+def test_agyjson_ignores_a_line_outside_the_envelope():
+    """A line that is not agy 1.5.5's envelope (the flat shape RESEARCH assumed) is no event:
+    no init, no result, no step."""
+    flat = [{"type": "init", "cwd": ".", "model": GEMINI_MODEL, "permission_mode": "default"},
+            {"type": "step_update", "step_index": 1, "state": "DONE", "step_type": "TOOL",
+             "tool_name": "write_file", "tool_info": {"path": "notes.md"}},
+            {"type": "result", "status": "SUCCESS", "num_turns": 1}]  # fmt: skip
+    assert agyjson.init_event(flat) is None and agyjson.turns(flat) == 0
+    assert agyjson.write_targets(flat) == [] and agyjson.unknown_steps(flat) == []
 
 
 def test_agyjson_reads_are_an_allowlist():
@@ -275,19 +314,19 @@ def test_agyjson_unknown_steps():
     step (model text) are not."""
     stray = [_step(1, "web_fetch", url="https://made-up.invalid/"),
              _step(2, "list_dir", path="."),
-             {"type": "step_update", "step_index": 3, "state": "DONE", "step_type": "TOOL",
-              "tool_info": {"command": "type notes.md"}},
-             {"type": "step_update", "step_index": 4, "state": "DONE", "step_type": "TOOL",
-              "tool_name": ["run_command"], "tool_info": {"command": "type notes.md"}},
+             _wrapped("step_update", step_index=3, state="DONE", step_type="TOOL",
+                      tool_info={"command": "type notes.md"}),
+             _wrapped("step_update", step_index=4, state="DONE", step_type="TOOL",
+                      tool_name=["run_command"], tool_info={"command": "type notes.md"}),
              _step(5, "read_file", query="orig"),
              _step(6, "run_command", path="notes.md"),
-             {**_step(7, "run_command", command="uv run --frozen reverseapoc attempt check"),
-              "subagent_info": {"name": "made-up"}}]  # fmt: skip
+             _step(7, "run_command", command="uv run --frozen reverseapoc attempt check",
+                   subagent={"name": "made-up"})]  # fmt: skip
     fine = [_step(10, "run_command", command="uv run --frozen reverseapoc attempt check"),
             _step(11, "read_file", path="context.md"), _step(12, "write_file", path="notes.md"),
             _step(13, "web_fetch", state="DENIED", url="https://made-up.invalid/"),
-            {"type": "step_update", "step_index": 14, "state": "DONE",
-             "step_type": "PLANNER_RESPONSE", "text_delta": "made-up text"}]  # fmt: skip
+            _wrapped("step_update", step_index=14, state="DONE", step_type="PLANNER_RESPONSE",
+                     text_delta="made-up text")]  # fmt: skip
     found = agyjson.unknown_steps([*stray, *fine])
     assert len(found) == len(stray), found
     for index, text in zip(range(1, 8), found, strict=True):
@@ -565,9 +604,10 @@ def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: di
     rig.runner.replies.append((lambda argv: argv == USAGE_ARGV, (0, text, "")))
     line = PASSING_CHECK if check is None else check
 
-    def run(argv, *, cwd, env, transcript, timeout_s):
+    def run(argv, *, cwd, env, transcript, timeout_s, popen):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
-        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
+                             popen=popen)  # fmt: skip
         attempt_dir = Path(env[driver.attempt.DIR_ENV])
         wrote = {"checks.jsonl": json.dumps(line) + "\n",
                  "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
@@ -626,6 +666,38 @@ def test_agy_canary_pass(tmp_path, capsys):
     assert saved["tokens"] == {"input": 9000, "output": 1000, "cache_read": 3000,
                                "cache_creation": 0}  # fmt: skip
     assert saved["quota"]["measured"] is True and saved["quota"]["remaining"] == 1500000
+
+
+def test_agy_canary_notes_the_headless_auto_deny(tmp_path, capsys):
+    """Spike 012 round 2: headless agy names the permission it auto-denied on its stderr and
+    nowhere else, then ends the turn. The canary keeps that line as a NOTE on FAIL (diagnostics
+    only, never a check) and still echoes all of agy's stderr; its init (agy 1.5.5's envelope)
+    reads clean."""
+    marker = "headless mode cannot prompt"
+    rig = _agy_canary_rig(tmp_path / "json")
+    code, doc = _agy_canary(rig, capsys, "canary_agy_soft_denied")
+    assert (code, doc["canary"]) == (1, "FAIL")
+    assert any(c["ok"] and c["check"].startswith("init: cwd the attempt dir")
+               for c in doc["checks"]), doc["checks"]  # fmt: skip
+    noted = doc["agy_auto_denied"]
+    assert len(noted) == 1 and marker in noted[0] and '"write_file"' in noted[0], noted
+    assert not any(marker in c["check"] for c in doc["checks"])
+    text = _agy_canary_rig(tmp_path / "text")
+    env = _keyed(text.env, FAKEAGY_SCENARIO="canary_agy_soft_denied")
+    code, out, err = text.drive(capsys, canary=True, night_model=GEMINI, canary_model=GEMINI,
+                                allow_egress=(GEMINI,),
+                                seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip
+    lines = out.splitlines()
+    assert (code, lines[-1]) == (1, "CANARY FAIL")
+    notes = [line for line in lines if line.startswith("NOTE: ")]
+    assert len(notes) == 1 and marker in notes[0], notes
+    assert "an unrelated made-up warning" in err and marker in err
+
+
+def test_agy_canary_pass_adds_no_note(tmp_path, capsys):
+    """A PASS carries no auto-deny diagnostics."""
+    code, doc = _agy_canary(_agy_canary_rig(tmp_path), capsys)
+    assert (code, "agy_auto_denied" in doc) == (0, False)
 
 
 def test_agy_canary_prompt_asks_for_every_probe(tmp_path):
