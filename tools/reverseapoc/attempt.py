@@ -85,7 +85,7 @@ from .hooks import (
     forms_for,
 )
 from .proposals import Rename, read_proposals, rename_problem
-from .readlint import ReadlintResult, Violation, run_readlint
+from .readlint import ReadlintResult, Violation, run_readlint, unmarked_declarations
 from .status import read_status, status_path
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from .unitdefs import DATA_KIND, FUNC_KIND
@@ -109,6 +109,7 @@ VIEW_BUILD = "build"
 VIEW_CFLAGS = Path(VIEW_CONFIG) / "cflags.txt"
 VIEW_LOG = Path(VIEW_BUILD) / "logs" / "cc.log"
 PROPOSALS_FILE = "proposals.jsonl"  # REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl
+UNIT_BASE = "unit-base.c"  # 07.2-07: <attempt dir>/unit-base.c, the view unit at launch (driver's)
 # 261109-gzw: <attempt dir>/view/build/attempt-cache/ keeps attempt asm/context output. It sits in
 # the view's build/ (VIEW_BUILD), which the driver's audit invariant (b) skips.
 CACHE_DIR = "attempt-cache"
@@ -854,11 +855,18 @@ def lint_view(claim: Claim) -> Lint:
     """readlint on the claim's view unit, with the view's src/ and config/ as its roots (the
     tree the container check compiled). A unit readlint does not check (not matched in the
     view's status.csv) is a tool error: a readability verdict never passes unlinted. RL01 hits
-    the session's own valid rename proposals cover are pending, not failing (ruling F18)."""
+    the session's own valid rename proposals cover are pending, not failing (ruling F18).
+
+    07.2-07 (D-15): RL07 judges the renames on the readability diff against <attempt
+    dir>/unit-base.c (the view unit at launch, written by the driver) when it exists; a pending
+    rename is applied only after the session, so its old name's declaration line in the view
+    needs the provenance marker (an RL07 violation otherwise)."""
     view = claim.view_root
+    unit = unit_path(claim, ROOTS)
+    roots = dict(src_root=view / VIEW_SRC, config_root=view / VIEW_CONFIG)
     try:
-        result = run_readlint([unit_path(claim, ROOTS)], src_root=view / VIEW_SRC,
-                              config_root=view / VIEW_CONFIG, units=[claim.target])  # fmt: skip
+        result = run_readlint([unit], units=[claim.target], base_text=_unit_base(claim, unit),
+                              **roots)  # fmt: skip
     except (ValueError, OSError) as exc:  # ReadlintError is a ValueError
         return Lint(None, _one_line(exc))
     if not result.files_checked:
@@ -868,8 +876,20 @@ def lint_view(claim: Claim) -> Lint:
     pending = tuple(Pending(v, names[key]) for v in result.violations
                     if (key := _renamable(v)) is not None and key in names)  # fmt: skip
     covered = {p.violation for p in pending}
-    failing = tuple(v for v in result.violations if v not in covered)
+    try:
+        unmarked = unmarked_declarations(unit, {_placeholder(p.violation) for p in pending},
+                                         **roots) if pending else ()  # fmt: skip
+    except (ValueError, OSError) as exc:
+        return Lint(None, _one_line(exc))
+    failing = tuple(sorted({v for v in result.violations if v not in covered} | set(unmarked)))
     return Lint(result, failing=failing, pending=pending, notes=tuple(notes))
+
+
+def _unit_base(claim: Claim, unit: Path) -> dict[str, str] | None:
+    """RL07's base text of the view unit: <attempt dir>/unit-base.c, None when the driver wrote
+    none (a matching session, or a check run outside a readability night)."""
+    path = claim.attempt_dir / UNIT_BASE
+    return {str(unit): check.read_source(path)} if path.is_file() else None
 
 
 def _placeholder(violation: Violation) -> str:

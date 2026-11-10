@@ -35,6 +35,18 @@ Rules:
   `[ ]`. A tagged waiver `/* lit: <reason> */` on the same line accepts it and is counted.
   Character literals are not integers. Floating literals are no violation; `--report` lists
   them (research R5, owner-confirmed).
+- RL07: the name provenance marker (D-14, D-15), the C89 comment
+  `/* src: TAG 0xADDR (confidence: high|medium|low) */` beside a declaration: TAG one of
+  OPENAPOC, GHIDRA, UFOPAEDIA or GUESS, 0xADDR the original function or data address the
+  evidence refers to in eight upper-case hex digits (RL03's 0x%08X), the confidence how sure
+  the evidence is. A comment opening `src:` in another form is always a violation, in units
+  and headers. Judged on the readability diff (`base_text`: the unit before the pass): an
+  identifier the unit declares (a file-scope name, a parameter of a definition or a local, by
+  the declaration reader RL01 uses) that the base does not, in a scope (the file, or one
+  definition) where the base declared a placeholder (`func_`, `D_` by proposals.PLACEHOLDER,
+  `param_` or `local_`) the unit no longer declares, is a rename and needs the marker on one
+  of its declaration lines. With no base only the form is checked, so a matched unit is not
+  flagged until its next readability pass.
 
 Headers. The bare project headers a matched unit includes (`"name.h"` from the unit's directory
 or include/ beside the src root, `<name.h>` from include/; never common.h or watcom_compat.h),
@@ -153,6 +165,16 @@ _SHIFTS = ("<<", ">>", "<<=", ">>=")
 _SHIFT_OPERATORS = ("<<", ">>")
 _ARITHMETIC = ("*", "/", "+", "-")
 _ARITHMETIC_ASSIGN = ("*=", "/=", "+=", "-=")
+# RL07: the name provenance marker (D-14, D-15)
+MARKER_TAGS = ("OPENAPOC", "GHIDRA", "UFOPAEDIA", "GUESS")
+MARKER_CONFIDENCES = ("high", "medium", "low")
+MARKER = re.compile(rf"/\*\s*src:\s*({'|'.join(MARKER_TAGS)})\s+0x[0-9A-F]{{8}}\s+"
+                    rf"\(confidence:\s*({'|'.join(MARKER_CONFIDENCES)})\)\s*\*/")  # fmt: skip
+MARKER_PREFIX = re.compile(r"/\*\s*src:")  # a comment meant as a marker
+MARKER_FORM = (f"/* src: <{'|'.join(MARKER_TAGS)}> 0x<8 upper-case hex digits> "
+               f"(confidence: {'|'.join(MARKER_CONFIDENCES)}) */")  # fmt: skip
+_LOCAL_PLACEHOLDER = re.compile(r"(?:param|local)_[0-9A-Za-z_]+")  # Ghidra's parameter and local
+_FILE_SCOPE = -1  # RL07's scope of a file-scope declaration (else its definition's index)
 
 
 _NONE_TEXT = ""
@@ -461,6 +483,11 @@ def _read(path: Path, shown: str, exe: str, cfg: ModuleType, *, unit: bool = Tru
         text = read_source(path)
     except CheckError as exc:
         raise ReadlintError(str(exc)) from None
+    return _parse(text, shown, exe, cfg, unit=unit)
+
+
+def _parse(text: str, shown: str, exe: str, cfg: ModuleType, *, unit: bool = True) -> _Source:
+    """`text` read as _read reads a file's text (RL07's base text comes this way)."""
     try:
         normalized = cfg.normalize_source(text)
         code = cfg.code_text(text) if unit else ""
@@ -891,6 +918,84 @@ def _rl06(src: _Source) -> _Literals:
     return found
 
 
+def _is_placeholder(name: str) -> bool:
+    """RL07's placeholders: func_ and D_ (and the other proposals.PLACEHOLDER shapes), param_
+    and local_."""
+    return bool(PLACEHOLDER.fullmatch(name) or _LOCAL_PLACEHOLDER.fullmatch(name))
+
+
+def _marker_lines(src: _Source) -> set[int]:
+    """The lines holding a well-formed marker."""
+    return {t.line for t in src.tokens if t.kind == COMMENT and MARKER.fullmatch(t.text)}
+
+
+def _rl07_form(src: _Source) -> Iterator[Violation]:
+    """A comment opening `src:` that is not a well-formed marker (D-15: always an error)."""
+    for token in src.tokens:
+        if token.kind != COMMENT or not MARKER_PREFIX.match(token.text):
+            continue
+        if not MARKER.fullmatch(token.text):
+            why = f"a malformed provenance marker: the form is {MARKER_FORM} (D-14)"
+            yield Violation(src.path, token.line, "RL07", why)
+
+
+def _spans(src: _Source) -> list[tuple[int, int]]:
+    """(first, last) code positions of each definition's parameter list and body, in order."""
+    spans = []
+    for p in src.definition_positions():
+        body = src.match[p + 1] + 1
+        spans.append((p + 1, src.match.get(body, len(src.code) - 1)))
+    return spans
+
+
+def _scope(spans: Sequence[tuple[int, int]], p: int) -> int:
+    """The index of the definition whose parameters or body hold `p`, else _FILE_SCOPE."""
+    return next((k for k, (first, last) in enumerate(spans) if first <= p <= last), _FILE_SCOPE)
+
+
+def _declarators(src: _Source, types: Collection[str]) -> Iterator[int]:
+    """Code positions of the identifiers `src` declares (OWN or OUTSIDE): no keyword, typedef
+    name, tag, or struct, union or enum member."""
+    kinds = _Declarations(src, types)
+    members = {p for keyword in _TAG_KEYWORDS for opened, closed in src.body(keyword)
+               for p in range(opened, closed + 1)}  # fmt: skip
+    for p in src.checked():
+        token = src.tok(p)
+        if token.kind != IDENT or token.text in unitdefs.C_KEYWORDS or token.text in types:
+            continue
+        if p in members or src.tok(p - 1).text in _TAG_KEYWORDS:
+            continue
+        if kinds.kind(p) is not None:
+            yield p
+
+
+def _declared(src: _Source, types: Collection[str]) -> dict[tuple[int, str], list[int]]:
+    """(scope, name) -> the lines declaring it: file-scope names, and the parameters and locals
+    of each definition (a prototype's parameters are not counted)."""
+    spans = _spans(src) if src.definitions else []
+    found: dict[tuple[int, str], list[int]] = {}
+    for p in _declarators(src, types):
+        scope = _scope(spans, p)
+        if scope == _FILE_SCOPE and src.inner[p] == "(" and not _is_group(src, src.parent[p]):
+            continue  # a prototype's parameter
+        found.setdefault((scope, src.tok(p).text), []).append(src.tok(p).line)
+    return found
+
+
+def _rl07_renames(src: _Source, base: _Source, types: Collection[str]) -> Iterator[Violation]:
+    """D-15 on the readability diff: a name `src` declares and `base` does not, in a scope where
+    a placeholder `base` declared is gone, needs a marker on one of its declaration lines."""
+    new, old = _declared(src, types), _declared(base, types)
+    vanished = {scope for scope, name in old if _is_placeholder(name) and (scope, name) not in new}
+    marked = _marker_lines(src)
+    for (scope, name), lines in new.items():
+        if scope not in vanished or (scope, name) in old or _is_placeholder(name):
+            continue
+        if not marked.intersection(lines):
+            why = f"{name} renames a placeholder: put {MARKER_FORM} on its declaration line"
+            yield Violation(src.path, lines[0], "RL07", why)
+
+
 # ---- selection and the run ----
 
 
@@ -993,12 +1098,16 @@ class _Run:
     def allowed(self, exes: Collection[str]) -> set[str]:
         return {name for exe, name in self.allow if exe in exes}
 
-    def lint(self, path: Path, shown: str, exe: str) -> None:
+    def lint(self, path: Path, shown: str, exe: str, base: str | None = None) -> None:
         src = _read(path, shown, exe, self.cfg)
         closure = self.closure(src, path.parent)
         for header in closure:
             self.header_exes.setdefault(header, set()).add(exe)
-        types = typedef_names(src).union(*(typedef_names(self.headers[h]) for h in closure))
+        types = self.types(src, closure)
+        self.violations += _rl07_form(src)
+        if base is not None:
+            self.violations += _rl07_renames(src, _parse(base, f"{shown} (base)", exe, self.cfg),
+                                             types)  # fmt: skip
         found, accepted = _rl01(src, self.allowed((exe,)), types)
         self.violations += found
         self.count(src.path, accepted)
@@ -1012,6 +1121,10 @@ class _Run:
             self.waivers[src.path] = len(literals.waivers)
         if self.report:
             self.floats += literals.floats
+
+    def types(self, src: _Source, closure: Sequence[Path]) -> set[str]:
+        """The typedef names of `src` and of the headers of its `closure`."""
+        return typedef_names(src).union(*(typedef_names(self.headers[h]) for h in closure))
 
     def count(self, path: str, accepted: int) -> None:
         if accepted:
@@ -1047,11 +1160,13 @@ class _Run:
             self.violations += found
             self.count(header.path, accepted)
             self.violations += _rl04(header)
+            self.violations += _rl07_form(header)
         return tuple(linted)
 
 
 def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, tier,
-         report: bool) -> ReadlintResult:  # fmt: skip
+         report: bool, base_text: Mapping[str, str] | None) -> ReadlintResult:  # fmt: skip
+    bases = {Path(name).resolve(): text for name, text in (base_text or {}).items()}
     wanted = _selected(config_root, units, tier)
     files = [(path, _shown(path, src_root), _unit_of(path, src_root))
              for path in collect_sources(paths or [src_root])]  # fmt: skip
@@ -1072,7 +1187,7 @@ def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, 
             skipped.append(Skipped(shown, "no matched row in status.csv"))
         else:
             checked.append(shown)
-            run.lint(path, shown, found[0])
+            run.lint(path, shown, found[0], bases.get(Path(path).resolve()))
     if tier is not None and not checked:
         raise ReadlintError(f"--tier {tier}: no matched unit to check under PATHS; for a gate, "
                             "nothing to check is not a pass")  # fmt: skip
@@ -1080,6 +1195,10 @@ def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, 
     violations, floats = tuple(sorted(run.violations)), tuple(sorted(run.floats))
     return ReadlintResult(tuple(checked), headers, tuple(skipped), violations, run.waivers,
                           run.allowlisted, floats, report)  # fmt: skip
+
+
+_READ_ERRORS = (CheckError, FunctionsError, LintError, MechanicsError, StatusError,
+                unitdefs.UnitDefsError, OSError)  # fmt: skip
 
 
 def run_readlint(
@@ -1090,11 +1209,38 @@ def run_readlint(
     units: Sequence[str] | None = None,
     tier: int | None = None,
     report: bool = False,
+    base_text: Mapping[str, str] | None = None,
 ) -> ReadlintResult:
     """Lint the matched units under `paths` (default: `src_root`), reading status.csv and the
-    other tables under `config_root`. ReadlintError (exit 2) for anything unreadable."""
+    other tables under `config_root`. `base_text` maps a unit's path (as `paths` names it) to
+    its text before the readability pass: RL07 judges that unit's renames on the diff (D-15).
+    ReadlintError (exit 2) for anything unreadable."""
     try:
-        return _run(paths, Path(src_root), Path(config_root), units, tier, report)
-    except (CheckError, FunctionsError, LintError, MechanicsError, StatusError,
-            unitdefs.UnitDefsError, OSError) as exc:  # fmt: skip
+        return _run(paths, Path(src_root), Path(config_root), units, tier, report, base_text)
+    except _READ_ERRORS as exc:
         raise ReadlintError(str(exc)) from exc
+
+
+def unmarked_declarations(
+    path: Path | str, names: Collection[str], *, src_root: Path, config_root: Path
+) -> tuple[Violation, ...]:
+    """RL07 for the renames a readability session proposes (attempt.lint_view, D-15): the
+    driver applies them after the session, so each of `names` the unit at `path` declares, at
+    any scope, needs a marker on one of its declaration lines in the view. A name the unit only
+    uses, or does not hold, needs none. ReadlintError for anything unreadable."""
+    path, src_root = Path(path), Path(src_root)
+    try:
+        run = _Run(src_root, Path(config_root), False, _configure(), {})
+        found = _unit_of(path, src_root)
+        src = _read(path, _shown(path, src_root), found[0] if found else "", run.cfg)
+        declared = _declared(src, run.types(src, run.closure(src, path.parent)))
+    except _READ_ERRORS as exc:
+        raise ReadlintError(str(exc)) from exc
+    lines: dict[str, list[int]] = {}
+    for (_scope_index, name), at in declared.items():
+        lines.setdefault(name, []).extend(at)
+    marked = _marker_lines(src)
+    why = f"your proposal renames it: put {MARKER_FORM} on its declaration line (D-15)"
+    return tuple(sorted(Violation(src.path, min(lines[name]), "RL07", f"{name} {why}")
+                        for name in set(names)
+                        if name in lines and not marked.intersection(lines[name])))  # fmt: skip
