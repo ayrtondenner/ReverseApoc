@@ -11,6 +11,13 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-09: our per-try rates beside FNV's (Phase 7.2, 07.2-10, D-19 9d)
+
+- **Our tries end in a mismatch, not a failed build.** `uv run reverseapoc causes 20261107-030004 20261107-170844` on the main checkout, as build failure / mismatch / match over plain checks (sweeps apart): run 20261107-030004, 388 checks, 0.3% / 96.6% / 3.1% (75 sweeps); run 20261107-170844, 665 checks, 0.2% / 98.2% / 1.7% (369 sweeps); both, 1053 checks, 0.2% / 97.6% / 2.2%. FNV reports 42/55/3 per 100 tries over 96,537 tries ([FNV research](research/2026-11-09-fnv-decomp.md#measured-lessons-fnvdecomphowhtml)).
+- **What a try is differs, so the shares are not like for like.** Ours is an agent-chosen `attempt check` run, capped at 25 per session; FNV's is a submitted attempt. A Watcom compile error lands as exit 2 and counts as a build failure here, while a lint failure never reaches `check` at all, so the skill's compile-before-check habit hides most of what FNV counts as a failed build.
+- **What the verb named.** The two build failures are E1009 (`Expecting ',' or ';'`) and E1011 (`Symbol 'rec' has not been declared`); the Watcom codes it counted are W101 (3), E1009, E1011 and E1045 (1 each). The leading mismatch classes are relocation-check refusals: a length difference of more than alignment filler (328), a first differing byte outside the relocated fields (289), a row that does not end on an alignment boundary (174) and ours longer than the row (60). Plain `bytes` holds 2 and `not compiled` 1.
+- **The shared-header ranking has almost no data here.** With 2 build failures in 1053 checks (the verb's note: under 1% of plain checks), it ranks two names blocking one function each (`rec`, and "Subscript on non-array"). FNV's lesson that header gaps drive build failures cannot be tested on these runs; the mismatch classes carry the signal, and length differences lead them. Evidence: `build/gate/07.2/10-causes.txt` (gitignored).
+
 ## 2026-11-06: where Phase 7.1 spent its plans (Phase 7.1, owner rulings at the close)
 
 - **Measure where the bottleneck is before ordering plans.** Search and slots ran first and moved 0 rows: at point 1, 77 of 120 sample rows were refused before a search could run, and class `slot` holds none of the 841 not-matched rows. Only the converter moved the curve. Next time, read point 0 for what stops rows, and order the tools by that.
