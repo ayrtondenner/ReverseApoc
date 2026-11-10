@@ -575,6 +575,64 @@ def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
     assert (outside / "attempt-cache" / "x.json").is_file()
 
 
+# ---- 07.2 review WR-05: the rules file is the driver's bytes at every launch and after ----
+
+
+def test_codex_rules_problem(tmp_path):
+    """WR-05: the rules file is judged against the driver's own bytes (never against what the
+    launch inventory happened to see): written by the driver it is fine; changed, extended,
+    removed or reached through a linked .codex/ it is not."""
+    root = tmp_path / "attempt-1"
+    root.mkdir()
+    driver.write_codex_rules(root)
+    assert driver.codex_rules_problem(root) is None
+    rules = root / driver.CODEX_RULES
+    rules.write_text(RULES_TEXT + 'prefix_rule(pattern=["cmd"], decision="allow")\n',
+                     encoding="utf-8")  # fmt: skip
+    assert "attempt.rules" in driver.codex_rules_problem(root)
+    rules.unlink()
+    assert "attempt.rules" in driver.codex_rules_problem(root)
+    from test_driver import _plant_dir_link
+
+    elsewhere = tmp_path / "elsewhere"
+    driver.write_codex_rules(elsewhere)
+    linked = tmp_path / "attempt-2"
+    linked.mkdir()
+    _plant_dir_link(linked / ".codex", elsewhere / ".codex")
+    assert driver.codex_rules_problem(linked) is not None
+
+
+def test_no_session_launches_on_a_rules_file_that_is_not_the_drivers(tmp_path, capsys,
+                                                                       monkeypatch):  # fmt: skip
+    """WR-05: right after writing the rules file, before the session, the driver checks it
+    holds its own bytes; when it does not, no Codex session launches and the night stops."""
+
+    def tampered(attempt_dir: Path) -> None:
+        path = attempt_dir / driver.CODEX_RULES
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(RULES_TEXT + 'prefix_rule(pattern=["cmd"], decision="allow")\n',
+                        encoding="utf-8")  # fmt: skip
+
+    monkeypatch.setattr(driver, "write_codex_rules", tampered)
+    rig, night, env = codex_night(tmp_path, monkeypatch)
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    assert night.launched == []
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert "attempt.rules" in stopped["detail"], stopped
+
+
+def test_a_session_edit_of_the_rules_file_stops_the_night(tmp_path, capsys, monkeypatch):
+    """WR-05: any session write to the rules file (an added allow rule) is a stray: the night
+    stops at the guardrail and the detail names the file."""
+    edit = (f"{ATTEMPT}/{driver.CODEX_RULES}", 'prefix_rule(pattern=["cmd"], decision="allow")\n')
+    rig, night, env = codex_night(tmp_path, monkeypatch, spec=Sess(write=None, append=(edit,)))
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "attempt.rules" in stopped["detail"], stopped
+
+
 # ---- 07.2 review WR-04: a session file or the transcript passes only as a regular file ----
 
 
