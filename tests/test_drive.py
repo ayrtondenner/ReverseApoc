@@ -1443,3 +1443,267 @@ def test_run_drive_hands_the_night_model_and_hold_to_the_night(tmp_path, capsys,
     code, _, _ = Rig(tmp_path).drive(capsys, json=True, night_model=HAIKU, hold=True)
     assert code == 0
     assert (seen[0].night_model, seen[0].hold) == (HAIKU, True)
+
+
+# ---- 07.2-06 Task 3 (D-17, D-26): --land-held ----
+
+SONNET = "claude-sonnet-5-5"
+LAND_RUN = "land1"
+HAIKU_COAUTHOR = "Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
+CALLEE = 0x00020010  # a function of another unit the held C calls (made up)
+CALLEE_NAME = f"func_{CALLEE:08X}"
+
+
+def _held_c(value: int) -> str:
+    from test_driver import FUNC
+
+    return f'#include "common.h"\n\nint {FUNC}(void)\n{{\n    return {value};\n}}\n'
+
+
+def _table_night(tmp_path: Path, **over) -> Night:
+    """A Night whose status tables are real (empty) ones, so the landing can read what is
+    matched; no pick of its own."""
+    from reverseapoc import status
+    from test_driver_records import _commit
+
+    night = Night(tmp_path, picks=(), **over)
+    _commit(night, {f"config/{exe}/status.csv": status.format_status([]) for exe in EXES})
+    return night
+
+
+def _table_gate(night: Night):
+    """The container gate in miniature on real status tables: on exit 0 the claimed row is
+    written matched (sorted, as gate writes it) and the feed changes."""
+    from reverseapoc import status
+    from test_driver import SHA_TACP, SHA_UFO2P
+
+    def gate(pick: Pick, attempts: int) -> driver.GateRun:
+        night.gate_calls.append((pick, attempts))
+        code = night.gate_exits.pop(0) if night.gate_exits else 1
+        written = []
+        if code == 0:
+            path = night.repo / f"config/{pick.exe}/status.csv"
+            row = status.StatusRow(pick.start, pick.name, pick.unit, status.MATCHED, 100.0,
+                                   attempts, "0" * 64, "2026-11-09")  # fmt: skip
+            rows = sorted([*status.read_status(path), row], key=lambda r: r.start)
+            path.write_text(status.format_status(rows), encoding="utf-8", newline="\n")
+            _write(night.repo / "decomphub.progress.json", '{"matched": 1}\n')
+            written.append({"path": path.relative_to(night.repo).as_posix(),
+                            "start": f"0x{pick.start:08X}", "name": pick.name,
+                            "unit": pick.unit, "status": "matched"})  # fmt: skip
+        doc = {"ok": code == 0, "written": written,
+               "checks": [{"splice": [{"exe": "UFO2P.EXE", "sha1": SHA_UFO2P},
+                                      {"exe": "TACP.EXE", "sha1": SHA_TACP}]}]}  # fmt: skip
+        return driver.GateRun(code, doc)
+
+    return gate
+
+
+def _hold_attempt(night: Night, run: str, n: int, *, cost: float, model: str = HAIKU,
+                  text: str | None = None, outcome: str = "HOLD_EXACT") -> dict:  # fmt: skip
+    """One hold-run attempt of FUNC: its committed record (to commit) and its attempt
+    directory, with a 60% check, then a plain check that exited 0 on `text`, and the view head
+    (HEAD now)."""
+    from test_attempts_schema import _attempt_v3
+    from test_driver import FUNC, START, UNIT, check_line
+
+    directory = night.repo / "build" / "driver" / run / "ufo2p" / FUNC / f"attempt-{n}"
+    lines = (check_line(1, 60.0), check_line(2, 100.0, exit_code=0))
+    for line, body in zip(lines, ("/* made-up 60% */\n", text or _held_c(1)), strict=True):
+        _write(directory / line["source"], body)
+    _write(directory / "checks.jsonl", "".join(json.dumps(line) + "\n" for line in lines))
+    _write(directory / driver.VIEW_HEAD, night.git("rev-parse", "HEAD").strip() + "\n")
+    _write(night.repo / "build" / "driver" / run / driver.HOLD_RUN_MARKER, "hold run\n")
+    record = _attempt_v3()
+    record.update(run=run, exe="ufo2p", start=f"0x{START:08X}", function=FUNC, unit=UNIT,
+                  attempt=n, outcome=outcome, hold_run=True, cost_usd=cost,
+                  model_requested=model, model=model, gate=None, **{"pass": 1})  # fmt: skip
+    return record
+
+
+def _commit_log(night: Night, records: list[dict]) -> None:
+    from test_driver import LOG
+    from test_driver_records import _commit, _lines
+
+    _commit(night, {LOG: _lines(records)}, "made-up hold-run records")
+
+
+def _land(night: Night, *runs: str, run_id: str = LAND_RUN) -> driver.DriveReport:
+    return night.run(config={"run_id": run_id, "land_held": runs}, gate=_table_gate(night))
+
+
+def _new(night: Night, before: int, kind: str) -> list[dict]:
+    return [r for r in night.records()[before:] if r["kind"] == kind]
+
+
+def test_land_held_cheapest_arm(tmp_path):
+    """Two hold runs matched FUNC exactly; the cheaper one (Haiku, 0.10 against 0.90) lands its
+    exit-0 checks/NNNN.c through the land, lint and gate: one match commit credited to Haiku,
+    one MATCHED landing record naming the attempt and the commit, no attempt record, and the
+    cost is counted once (in the held records)."""
+    from reverseapoc import stats
+    from test_driver import LOG, MATCH_SUBJECT, UNIT_REL
+
+    night = _table_night(tmp_path, gate_exits=[0])
+    _commit_log(night, [_hold_attempt(night, "spike012-haiku", 1, cost=0.10),
+                        _hold_attempt(night, "spike012-sonnet", 1, cost=0.90, model=SONNET,
+                                      text=_held_c(2))])  # fmt: skip
+    before = len(night.records())
+    cost = stats.collect(night.repo, night.repo / LOG, night.repo / "config",
+                         runs=["spike012-*"]).data["totals"]["cost_usd"]  # fmt: skip
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched, report.sessions) == ("ENDED", 1, 0), report.detail
+    assert [s for s in night.commits() if s.startswith("feat(")] == [MATCH_SUBJECT]
+    assert night.file_at("feat(", UNIT_REL) == _held_c(1)
+    body = night.message("feat(")
+    assert body.rstrip("\n").splitlines()[-2:] == [HAIKU_COAUTHOR, driver.MATCHED_BY]
+    assert len(night.gate_calls) == 1 and len(night.lint_calls) == 1
+    (landing,) = _new(night, before, "landing")
+    assert (landing["outcome"], landing["from_run"], landing["from_attempt"]) == (
+        "MATCHED", "spike012-haiku", 1)  # fmt: skip
+    assert (landing["model"], landing["run"], landing["reason"]) == (HAIKU, LAND_RUN, None)
+    assert landing["commit"] == night.sha("feat(")
+    driver.validate_record(landing)
+    assert _new(night, before, "attempt") == []
+    after = stats.collect(night.repo, night.repo / LOG, night.repo / "config",
+                          runs=["spike012-*"]).data  # fmt: skip
+    assert (cost, after["totals"]["cost_usd"]) == ("1.00", "1.00")
+    assert after["per_match"]["matched_functions"] == 1
+
+
+@pytest.mark.parametrize(("runs", "winner"), [
+    ((("spike012-b", 1, 0.5), ("spike012-a", 1, 0.5)), ("spike012-a", 1)),
+    ((("spike012-a", 2, 0.5), ("spike012-a", 1, 0.5)), ("spike012-a", 1)),
+])  # fmt: skip
+def test_land_held_ties(tmp_path, runs, winner):
+    """Equal costs: the earlier run id, then the lower attempt number."""
+    night = _table_night(tmp_path, gate_exits=[0])
+    _commit_log(night, [_hold_attempt(night, run, n, cost=cost) for run, n, cost in runs])
+    before = len(night.records())
+    _land(night, "spike012-*")
+    (landing,) = _new(night, before, "landing")
+    assert (landing["from_run"], landing["from_attempt"]) == winner
+
+
+@pytest.mark.parametrize("rel", ["src/ufo2p/u_00010000.c", "include/common.h"])
+def test_land_held_refuses_a_changed_unit(tmp_path, rel):
+    """Pitfall 8: the unit or include/ changed since the held attempt's view head: a REFUSED
+    landing record and no gate call."""
+    from test_driver import SCAFFOLD, UNIT_REL
+    from test_driver_records import _commit
+
+    night = _table_night(tmp_path, gate_exits=[0])
+    held = _hold_attempt(night, "spike012-haiku", 1, cost=0.10)
+    _commit(night, {rel: (night.repo / rel).read_text(encoding="utf-8") + "/* changed */\n"})
+    _commit_log(night, [held])
+    before = len(night.records())
+    report = _land(night, "spike012-haiku")
+    assert report.event == "ENDED" and report.matched == 0
+    (landing,) = _new(night, before, "landing")
+    assert (landing["outcome"], landing["commit"], landing["gate"]) == ("REFUSED", None, None)
+    assert landing["reason"] == "unit changed since the hold run; re-run"
+    assert night.gate_calls == [] and night.lint_calls == []
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+    if rel == UNIT_REL:
+        assert SCAFFOLD in (night.repo / UNIT_REL).read_text(encoding="utf-8")
+
+
+def test_land_held_gate_refusal(tmp_path):
+    """The gate refuses: a REFUSED landing record with the gate's verdict, the unit back as
+    HEAD has it, nothing committed but the records."""
+    from test_driver import SCAFFOLD, UNIT_REL
+
+    night = _table_night(tmp_path, gate_exits=[1])
+    _commit_log(night, [_hold_attempt(night, "spike012-haiku", 1, cost=0.10)])
+    before = len(night.records())
+    report = _land(night, "spike012-haiku")
+    assert report.event == "ENDED" and report.matched == 0
+    (landing,) = _new(night, before, "landing")
+    assert (landing["outcome"], landing["commit"]) == ("REFUSED", None)
+    assert landing["gate"]["exit"] == 1 and "gate" in landing["reason"]
+    assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == SCAFFOLD
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+    assert night.git("status", "--porcelain=v1", "--untracked-files=no") == ""
+
+
+def test_land_held_each_function_once(tmp_path):
+    """HOLD_EXACT in three runs lands once; a second --land-held over the same runs skips the
+    function as matched (no gate, no landing record)."""
+    night = _table_night(tmp_path, gate_exits=[0, 0])
+    _commit_log(night, [_hold_attempt(night, f"spike012-{arm}", 1, cost=cost)
+                        for arm, cost in (("a", 0.3), ("b", 0.2), ("c", 0.4))])  # fmt: skip
+    before = len(night.records())
+    assert _land(night, "spike012-*").matched == 1
+    (landing,) = _new(night, before, "landing")
+    assert landing["from_run"] == "spike012-b"
+    assert len(night.gate_calls) == 1
+    again = len(night.records())
+    report = _land(night, "spike012-*", run_id="land2")
+    assert (report.event, report.matched) == ("ENDED", 0)
+    assert _new(night, again, "landing") == [] and len(night.gate_calls) == 1
+
+
+def test_land_held_skips_attempts_that_were_not_exact(tmp_path):
+    """Only HOLD_EXACT records land; a hold run's PARTIAL attempt is no candidate."""
+    night = _table_night(tmp_path, gate_exits=[0])
+    _commit_log(night, [_hold_attempt(night, "spike012-haiku", 1, cost=0.01, outcome="PARTIAL")])
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched) == ("ENDED", 0)
+    assert night.gate_calls == [] and night.kinds("landing") == []
+
+
+def test_land_held_unknown_run(tmp_path, capsys):
+    """No hold run matches the names: exit 2 naming them, before anything lands."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, land_held=("spike099-*", "other"))
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "land held")
+    assert "spike099-*" in doc["detail"] and "other" in doc["detail"]
+    assert not rig.commands("gate")
+
+
+def test_land_held_applies_renames_since(tmp_path):
+    """A rename committed since the view head is carried into the landed C, as a night's
+    landing does (_renames_since)."""
+    from reverseapoc.functions import SymbolRow, write_symbols_csv
+    from test_driver import UNIT_REL
+
+    calls = _held_c(1).replace("    return 1;", f"    return {CALLEE_NAME}();").replace(
+        '#include "common.h"\n', f'#include "common.h"\n\nextern int {CALLEE_NAME}(void);\n')
+    night = _table_night(tmp_path, gate_exits=[0])
+    held = _hold_attempt(night, "spike012-haiku", 1, cost=0.10, text=calls)
+    symbols = night.repo / "config/ufo2p/symbols.csv"
+    write_symbols_csv(symbols, [SymbolRow(CALLEE, "SoundMute_", "func")], "UFO2P.EXE")
+    night.git("add", "--", "config/ufo2p/symbols.csv")
+    night.git("commit", "-q", "-m", f"refactor(ufo2p): rename {CALLEE_NAME} to SoundMute")
+    _commit_log(night, [held])
+    report = _land(night, "spike012-haiku")
+    assert report.matched == 1, report.detail
+    landed = night.file_at("feat(", UNIT_REL)
+    assert "SoundMute()" in landed and CALLEE_NAME not in landed
+
+
+def test_run_drive_hands_land_held_to_the_night(tmp_path, capsys, monkeypatch):
+    """`drive --land-held` runs the landing through run_drive's preflight and lock, with no
+    Ghidra drafts and no claude version check."""
+    from test_attempts_schema import _attempt_v3
+    from test_driver_records import _lines
+
+    rig = Rig(tmp_path)
+    record = {**_attempt_v3(), "run": "spike012-haiku", "hold_run": True, "outcome": "PARTIAL"}
+    (rig.repo / "progress/attempts.jsonl").write_text(_lines([record]), encoding="ascii",
+                                                      newline="\n")  # fmt: skip
+    _git(rig.repo, rig.env, "commit", "-q", "-am", "a made-up hold-run record")
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, _, _ = rig.drive(capsys, json=True, land_held=("spike012-*",))
+    assert code == 0
+    assert seen[0].land_held == ("spike012-*",)
+    assert not rig.commands("ghidra-export")
+    assert not [c for c in rig.runner.calls if c[1:] == ["--version"]]
