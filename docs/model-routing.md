@@ -273,9 +273,15 @@ The model ids are assumptions to confirm at setup.
 - **Windows sandbox caveats** (RESEARCH Pitfall 11). Elevated and unelevated sandbox modes have
   open issues, `apply_patch` has been reported at 13 to 20 s per patch, and some setups run
   commands as the real user. The canary's identity, outside-write and network probes exist
-  for this; budget the 30-minute wall clock accordingly. A Codex command may also be reported
-  wrapped in its shell (`powershell.exe -Command ...`), which the audit treats as a non-wrapper
-  form: the canary shows it, and it fails closed.
+  for this; budget the 30-minute wall clock accordingly. The Windows CLI reports each command
+  wrapped in its shell (`"<...>\powershell.exe" -Command <cmd>`, seen in the spike 012
+  canaries' rejected-command lines). The audit takes exactly one such layer off
+  (powershell.exe or pwsh.exe, at most one `-NoProfile`, one argument after `-Command`) and
+  audits `<cmd>`; a shell left inside, a compound `<cmd>` or any other shape is a stray.
+  Offline, `codex execpolicy check` (0.167.0) matches tokens literally: the driver's prefix
+  rule allows `uv run --frozen reverseapoc attempt check` but matches neither its
+  `powershell.exe -Command '...'` nor its `bash -lc '...'` form, so it cannot show whether a
+  session unwraps the shell before the rule; the canary's wrapper check settles that.
 - **If the per-session rules do not load** (RESEARCH A5: the canary's wrapper check is then
   refused or prompts), the fallback is one owner-installed user rule,
   `~/.codex/rules/reverseapoc.rules`, holding the same single prefix rule, written by the owner
