@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"made-up-thread-0011"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"uv run --frozen reverseapoc attempt context","aggregated_output":"made-up wrapper output\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"made-up","tool":"fetch","arguments":{"url":"https://made-up.invalid/"},"status":"completed"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}

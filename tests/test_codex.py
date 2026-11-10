@@ -575,6 +575,41 @@ def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
     assert (outside / "attempt-cache" / "x.json").is_file()
 
 
+# ---- 07.2 review WR-03: the Codex audit fails closed on item types it does not know ----
+
+
+def _item(ident: str, kind: object, **fields) -> dict:
+    return {"type": "item.completed", "item": {"id": ident, "type": kind, **fields}}
+
+
+def test_codexjson_unknown_items():
+    """WR-03: every item outside the known harmless set (agent_message, reasoning, todo_list,
+    command_execution, file_change) is named once by its type: an MCP tool call, a web search,
+    an item with no type or a non-mapping item; the known ones are not."""
+    events = [_item("a", "agent_message", text="made-up"), _item("b", "reasoning", text="x"),
+              _item("c", "todo_list", items=[]),
+              _item("d", "command_execution", command="uv run --frozen reverseapoc attempt asm"),
+              _item("e", "file_change", changes=[{"path": "notes.md", "kind": "add"}]),
+              {"type": "item.started", "item": {"id": "f", "type": "mcp_tool_call"}},
+              _item("f", "mcp_tool_call", server="made-up", tool="fetch"),
+              _item("g", "web_search", query="made-up"), _item("h", None),
+              {"type": "item.completed", "item": "made-up"}]  # fmt: skip
+    found = codexjson.unknown_items(events)
+    assert len(found) == 4, found
+    for words in ("mcp_tool_call", "web_search", "None", "made-up"):
+        assert any(words in text for text in found), (words, found)
+
+
+def test_an_unknown_codex_item_stops_the_night(tmp_path, capsys, monkeypatch):
+    """WR-03 at night: an MCP tool call in a Codex session's stream stops the night at the
+    guardrail, named in the detail."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="mcp_tool_call")
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "mcp_tool_call" in stopped["detail"], stopped
+
+
 # ---- 07.2 review CR-01: uv never finds its project in the session's workspace ----
 
 PLANTED = (("pyproject.toml", '[project]\nname = "reverseapoc"\nversion = "9.9.9"\n'),
