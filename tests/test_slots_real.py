@@ -60,6 +60,9 @@ VOLATILE = (Marked("a", 4, 0x11), Marked("v", 4, 0x22), Marked("b", 4, 0x33))
 FLOAT_1_5, FLOAT_2_5, FLOAT_3_5 = 0x3FC00000, 0x40200000, 0x40600000
 FLOATS = (Marked("a", 4, FLOAT_1_5), Marked("b", 4, FLOAT_2_5), Marked("c", 4, FLOAT_3_5))
 TWO_TWO = (*_arrays(4, 0x3B, 0x3C), Marked("c", 4, 0x3D), Marked("d", 4, 0x3E))
+C4_S2 = (*_arrays(4, 0x6F), Marked("b", 4, 0x70, array=True))  # char a[4]; short b[2]
+C4_C2_INT = (*_arrays(4, 0x71), Marked("b", 2, 0x72, array=True), Marked("c", 4, 0x73))
+C4X2_S2 = _arrays(4, 0x74, 0x75, 0x76)  # char a[4]; char b[4]; short c[2]
 INT1_X3 = (Marked("a", 4, 0x6C), Marked("b", 4, 0x6D), Marked("c", 4, 0x6E))  # int x[1]
 ONE_THREE = (*_arrays(4, 0x3F), Marked("b", 4, 0x40), Marked("c", 4, 0x41), Marked("d", 4, 0x42))
 # Each function's locals in declaration order. A scope counts blocks in source order.
@@ -110,6 +113,8 @@ SHAPES = {
     "pr_arr_one_block": (*_arrays(4, 0x6A), Marked("b", 4, 0x6B, 1)),
     "pr_arr_int1_x3": INT1_X3,  # the lifter's 4-byte taken slot keeps M2 (07.2-14)
     "pr_arr_int1_x3_rev": INT1_X3[::-1],
+    "pr_arr_c4_s2": C4_S2,  # a char[4] beside a short[2]: two arrays of one size (07.2-14)
+    "pr_arr_c4_s2_rev": C4_S2[::-1],
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -149,6 +154,8 @@ TIES = {
     "pr_arr_int_three": (Marked("a", 4, 0x5D), Marked("b", 4, 0x5E, array=True),
                          Marked("c", 4, 0x5F, array=True),
                          Marked("d", 4, 0x60, array=True)),  # fmt: skip
+    "pr_arr_c4x2_s2": C4X2_S2,  # three arrays of 4 bytes, a short[2] among them (07.2-14)
+    "pr_arr_c4x2_s2_rev": C4X2_S2[::-1],
 }
 # Frames the model refuses though they keep declaration order: the compiler's line runs through
 # no count, so the refusal is wider than it, on the safe side.
@@ -159,6 +166,8 @@ REFUSED_HOLDING = {
     "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
     "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
+    "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
+    "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -173,6 +182,8 @@ ARRAY_TIES = {
     "pr_arr_short2_block": {"a": 8, "b": 4, "c": 0},
     "pr_arr_int_two_block": {"a": 0xC, "b": 8, "c": 4, "d": 0},
     "pr_arr_int_three": {"a": 4, "b": 0xC, "c": 8, "d": 0},
+    "pr_arr_c4x2_s2": {"a": 4, "b": 8, "c": 0},
+    "pr_arr_c4x2_s2_rev": {"c": 4, "b": 8, "a": 0},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {

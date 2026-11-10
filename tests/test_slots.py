@@ -207,3 +207,39 @@ def test_scalar_slots_name_a_slot_with_two_targets_once():
 def test_scalar_slots_leave_out_a_slot_outside_the_frame():
     """Negative or past the frame: slot_map's shifted reading, not a place in it."""
     assert slots.scalar_slots((), (-4, 4, 0x10), 0x10) == (4,)
+
+
+# The frames 07.2-14 measured past the 07.1 sweep (probe/cg_slots.c, both cells).
+
+
+def test_a_char4_beside_a_short2_keeps_the_rule():
+    """pr_arr_c4_s2 and its twin: two arrays of 4 bytes, the first declared highest."""
+    declared = (slots.Local("a", 4, array=True), slots.Local("b", 4, array=True))
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == {"a": 4, "b": 0}
+    assert slots.frame_layout(declared[::-1]) == {"b": 4, "a": 0}
+
+
+def test_three_int1_keep_the_rule():
+    """pr_arr_int1_x3: one element is no array, so three of them follow M2."""
+    declared = _locals(("a", 4), ("b", 4), ("c", 4))
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == {"a": 8, "b": 4, "c": 0}
+
+
+def test_two_char4_beside_a_short2_have_no_known_order():
+    """pr_arr_c4x2_s2 sits at 4, 8, 0, as three char[4] do."""
+    declared = tuple(slots.Local(name, 4, array=True) for name in "abc")
+    assert slots.order_is_known(declared) is False
+    with pytest.raises(ValueError, match="no known order"):
+        slots.frame_layout(declared)
+
+
+def test_a_char4_and_an_int_beside_a_char2_stay_refused():
+    """pr_arr_c4_c2_int holds in both cells, and the model still refuses a tie beside another
+    size: admitting it would be a table of one frame, not a measured line."""
+    declared = (slots.Local("a", 4, array=True), slots.Local("b", 2, array=True),
+                slots.Local("c", 4))  # fmt: skip
+    assert slots.order_is_known(declared) is False
+    with pytest.raises(ValueError, match="no known order"):
+        slots.frame_layout(declared)

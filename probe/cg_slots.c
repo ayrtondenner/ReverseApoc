@@ -1223,6 +1223,79 @@ void pr_arr_int1_x3_rev(void)
     pr_take(a, b, c);
 }
 
+/*
+ * A char[4] beside other multi-element shapes (07.2-14), frames the 07.1 sweep did not reach:
+ * beside a short[2], beside a char[2] and an int, and two of them beside a short[2]. Each with a
+ * _rev twin that shares its markers.
+ */
+void pr_arr_c4_s2(void)
+{
+    char a[4];
+    short b[2];
+
+    a[0] = 0x6f;
+    b[0] = 0x70;
+    pr_take(a, b);
+}
+
+void pr_arr_c4_s2_rev(void)
+{
+    short b[2];
+    char a[4];
+
+    a[0] = 0x6f;
+    b[0] = 0x70;
+    pr_take(a, b);
+}
+
+void pr_arr_c4_c2_int(void)
+{
+    char a[4];
+    char b[2];
+    int c;
+
+    a[0] = 0x71;
+    b[0] = 0x72;
+    c = 0x73;
+    pr_take(a, b, &c);
+}
+
+void pr_arr_c4_c2_int_rev(void)
+{
+    int c;
+    char b[2];
+    char a[4];
+
+    a[0] = 0x71;
+    b[0] = 0x72;
+    c = 0x73;
+    pr_take(a, b, &c);
+}
+
+void pr_arr_c4x2_s2(void)
+{
+    char a[4];
+    char b[4];
+    short c[2];
+
+    a[0] = 0x74;
+    b[0] = 0x75;
+    c[0] = 0x76;
+    pr_take(a, b, c);
+}
+
+void pr_arr_c4x2_s2_rev(void)
+{
+    short c[2];
+    char b[4];
+    char a[4];
+
+    a[0] = 0x74;
+    b[0] = 0x75;
+    c[0] = 0x76;
+    pr_take(a, b, c);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {
