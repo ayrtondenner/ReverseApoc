@@ -16,7 +16,8 @@ the requested model and a null `model`, and runs no init check.
   the session's wall clock; there is no cost (a Plus subscription is measured in tokens).
 - `commands`: each `command_execution` item's command, once per item id, in stream order (a
   started item the session never finished counts too), a list command joined as a POSIX shell
-  would receive it; `write_targets`: every path a `file_change` item names. The driver's Codex
+  would receive it, with one Windows shell layer (`powershell.exe -Command <cmd>`) taken off;
+  `write_targets`: every path a `file_change` item names. The driver's Codex
   audit reads both (D-26). `unknown_items`: every item of a type outside KNOWN_ITEMS (an MCP
   tool call, a web search, ...), each a stray (07.2 review WR-03: fail closed).
 - `failure`: the text of the first `turn.failed` or top-level `error`, else None.
@@ -27,6 +28,7 @@ the requested model and a null `model`, and runs no init check.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
@@ -46,6 +48,14 @@ _FILE_CHANGE = "file_change"
 # WR-03: the items the audit reads (the two above) or that do nothing (text, reasoning, a plan)
 KNOWN_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", _COMMAND, _FILE_CHANGE})
 _MS_PER_S = 1000
+# _unwrapped: the shell's program (double-quoted, single-quoted or bare), then its arguments
+_SHELL = re.compile(r"""\s*(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>[^\s"']+))\s""")
+_PATH_SEPARATORS = re.compile(r"[\\/]+")  # a run of either slash, POSIX-escaped `\\` too
+# Only the real shells by absolute path: a bare name, a relative path or another directory could
+# be a binary the session planted, run while the audit judged only its harmless argument
+_WINDOWS_SHELLS = frozenset({r"c:\windows\system32\windowspowershell\v1.0\powershell.exe",
+                             r"c:\program files\powershell\7\pwsh.exe"})  # fmt: skip
+_SHELL_FLAGS = (["-command"], ["-noprofile", "-command"])  # casefolded, before the one <cmd>
 
 
 def _mapping(value: object) -> Mapping:
@@ -125,12 +135,34 @@ def executions(events: Sequence[dict]) -> list[Execution]:
 
 def _command_text(command: object) -> str:
     """A command as one string: a list is joined the way a POSIX shell would receive it; any
-    other value is its repr, so the audit never passes it."""
+    other value is its repr, so the audit never passes it. One Windows shell layer comes off
+    (_unwrapped)."""
     if isinstance(command, str):
-        return command
+        return _unwrapped(command)
     if isinstance(command, list) and all(isinstance(part, str) for part in command):
-        return shlex.join(command)
+        return _unwrapped(shlex.join(command))
     return repr(command)
+
+
+def _unwrapped(text: str) -> str:
+    """The Windows CLI reports a command wrapped in the shell that ran it, `"<...>\\powershell
+    .exe" -Command <cmd>` (spike 012's rejected-command lines, a POSIX-quoted argv): that is
+    <cmd>. The shell is one of _WINDOWS_SHELLS at its absolute path (any case, either slash,
+    quoted or not), never a bare name or another path; at most one -NoProfile comes before
+    -Command and exactly one argument after it. One layer only: a shell left inside stays as
+    written, and any other shape is `text` unchanged, so the audit sees it."""
+    found = _SHELL.match(text)
+    if found is None:
+        return text
+    program = found.group("dq") or found.group("sq") or found.group("bare")
+    if _PATH_SEPARATORS.sub(r"\\", program).casefold() not in _WINDOWS_SHELLS:
+        return text
+    try:
+        args = shlex.split(text[found.end():])
+    except ValueError:  # an unbalanced quote: no argv to read, audited as written
+        return text
+    flags = [arg.casefold() for arg in args[:-1]]
+    return args[-1] if flags in _SHELL_FLAGS else text
 
 
 def commands(events: Sequence[dict]) -> list[str]:

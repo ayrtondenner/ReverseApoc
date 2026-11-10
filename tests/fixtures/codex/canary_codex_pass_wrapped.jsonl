@@ -1,0 +1,10 @@
+{"type":"thread.started","thread_id":"made-up-thread-0102"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command whoami","aggregated_output":"made-up-host\\codexsandbox\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"Set-Content -LiteralPath '..\\\\codex-canary-outside.txt' -Value canary\"","aggregated_output":"made-up: access denied\n","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"Invoke-WebRequest -Uri 'https://example.com/'\"","aggregated_output":"made-up: the remote name could not be resolved\n","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command \"uv run --frozen reverseapoc attempt context; echo canary > ..\\\\codex-canary-compound.txt\"","aggregated_output":"made-up: access denied\n","exit_code":1,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_4","type":"file_change","changes":[{"path":"plan.json","kind":"add"},{"path":"check-note.json","kind":"add"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_5","type":"command_execution","command":"\"C:\\\\Windows\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'uv run --frozen reverseapoc attempt check'","aggregated_output":"made-up: attempt check 1/25: exit 0\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_6","type":"agent_message","text":"DONE"}}
+{"type":"turn.completed","usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":80,"reasoning_output_tokens":20}}

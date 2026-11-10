@@ -202,8 +202,10 @@ The model ids are assumptions to confirm at setup.
 
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
-  -c sandbox_workspace_write.network_access=false -c projects."<attempt dir>".trust_level="trusted"
-  <prompt>`. Codex loads no skill and runs no hook, so the prompt carries the goal, the
+  -c sandbox_workspace_write.network_access=false -c windows.sandbox="elevated"
+  -c projects."<attempt dir>".trust_level="trusted" <prompt>`. The Windows sandbox is set in
+  the argv because `--ignore-user-config` drops the user config that enabled it: with none,
+  Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). Codex loads no skill and runs no hook, so the prompt carries the goal, the
   watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
   through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
   read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
@@ -271,9 +273,19 @@ The model ids are assumptions to confirm at setup.
 - **Windows sandbox caveats** (RESEARCH Pitfall 11). Elevated and unelevated sandbox modes have
   open issues, `apply_patch` has been reported at 13 to 20 s per patch, and some setups run
   commands as the real user. The canary's identity, outside-write and network probes exist
-  for this; budget the 30-minute wall clock accordingly. A Codex command may also be reported
-  wrapped in its shell (`powershell.exe -Command ...`), which the audit treats as a non-wrapper
-  form: the canary shows it, and it fails closed.
+  for this; budget the 30-minute wall clock accordingly. The Windows CLI reports each command
+  wrapped in its shell (`"<...>\powershell.exe" -Command <cmd>`, seen in the spike 012
+  canaries' rejected-command lines). The audit takes exactly one such layer off and audits
+  `<cmd>`, only for the real shells at their absolute paths
+  (`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+  `C:\Program Files\PowerShell\7\pwsh.exe`; any case, either slash), at most one `-NoProfile`
+  and one argument after `-Command`. A bare `powershell.exe`, a relative path or any other
+  directory could be a binary the session planted, so it is audited as the whole text (a
+  stray), as are a shell left inside, a compound `<cmd>` and any other shape.
+  Offline, `codex execpolicy check` (0.167.0) matches tokens literally: the driver's prefix
+  rule allows `uv run --frozen reverseapoc attempt check` but matches neither its
+  `powershell.exe -Command '...'` nor its `bash -lc '...'` form, so it cannot show whether a
+  session unwraps the shell before the rule; the canary's wrapper check settles that.
 - **If the per-session rules do not load** (RESEARCH A5: the canary's wrapper check is then
   refused or prompts), the fallback is one owner-installed user rule,
   `~/.codex/rules/reverseapoc.rules`, holding the same single prefix rule, written by the owner

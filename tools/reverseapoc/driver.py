@@ -7366,6 +7366,25 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
                else f"the attempt dir against the wrapper's ledger: {_listed(shown)}")  # fmt: skip
 
 
+CODEX_REJECTED = "rejected: blocked by policy"  # Codex's stderr text for a refused command
+
+
+def _codex_canary_session(seams: Seams, argv: Sequence[str],
+                          **values) -> tuple[SessionResult, list[str]]:  # fmt: skip
+    """The Codex canary's session with its stderr captured, then echoed to the console: Codex
+    names each command its policy rejected there and nowhere else (spike 012), so the FAIL
+    output can name them. Returns the result and those CODEX_REJECTED lines."""
+    with tempfile.TemporaryFile() as err:
+        try:
+            result = seams.session(argv, popen=functools.partial(subprocess.Popen, stderr=err),
+                                   **values)  # fmt: skip
+        finally:
+            err.seek(0)
+            text = err.read().decode("utf-8", "replace")
+            sys.stderr.write(text)
+    return result, [line.strip() for line in text.splitlines() if CODEX_REJECTED in line]
+
+
 def _codex_after(events: Sequence[dict], claim: _Claim, launch: Mapping[str, str],
                  checks: _Checks, owner: str | None) -> None:  # fmt: skip
     """The Codex canary's stream checks; an error in them is a FAIL line (as _after_session)."""
@@ -7882,13 +7901,17 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
                    else f"{exe} --version named no version")  # fmt: skip
     events: Sequence[dict] = ()
     extra: dict = {}
+    rejected: list[str] = []  # the Codex canary's CODEX_REJECTED stderr lines
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
         argv = _canary_argv(options, seams, claim, prompt)
-        result = seams.session(argv, cwd=attempt_dir if claim.agy else repo, env=env,
-                               transcript=attempt_dir / TRANSCRIPT,
-                               timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
+        values = {"cwd": attempt_dir if claim.agy else repo, "env": env,
+                  "transcript": attempt_dir / TRANSCRIPT, "timeout_s": CANARY_TIMEOUT_S}
+        if claim.codex:
+            result, rejected = _codex_canary_session(seams, argv, **values)
+        else:
+            result = seams.session(argv, **values)
     except Exception as exc:  # a crash is a FAIL with the tree still measured
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
@@ -7931,6 +7954,9 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
            "init_model": init_model if isinstance(init_model, str) else None,
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
+    if rejected and not checks.ok:  # diagnostics only: what Codex's policy refused to run
+        doc["codex_rejected"] = rejected
+        lines += [f"NOTE: {line}" for line in rejected]
     # No stamp on the check lines or the verdict: docs/workflow.md's owner steps match the
     # literal last line `CANARY PASS` (quick 261026-9ue).
     _emit(options, doc, [*lines, f"CANARY {verdict}"])

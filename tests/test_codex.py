@@ -92,8 +92,10 @@ def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
 
 def test_build_codex_argv(tmp_path):
     """D-13: `codex exec --json`, workspace-write limited to the attempt dir, network off,
-    approval never, no user config, the attempt dir trusted so its per-session rules load
-    (RESEARCH A4, A5: the canary proves both), the prompt last."""
+    approval never, no user config, the Windows sandbox set to elevated by the argv itself
+    (the user config that enabled it is ignored, and without it Codex ran no sandbox and
+    rejected every command), the attempt dir trusted so its per-session rules load (RESEARCH
+    A4, A5: the canary proves both), the prompt last."""
     attempt_dir = tmp_path / "attempt-1"
     argv = session.build_codex_argv("the prompt", codex="codex.exe", model=LUNA,
                                     attempt_dir=attempt_dir)  # fmt: skip
@@ -101,8 +103,8 @@ def test_build_codex_argv(tmp_path):
     assert argv == ["codex.exe", "exec", "--json", "--model", LUNA, "--sandbox",
                     "workspace-write", "--cd", str(attempt_dir), "--skip-git-repo-check",
                     "--ephemeral", "--ignore-user-config", "-c", 'approval_policy="never"', "-c",
-                    "sandbox_workspace_write.network_access=false", "-c", trust,
-                    "the prompt"]  # fmt: skip
+                    "sandbox_workspace_write.network_access=false", "-c",
+                    'windows.sandbox="elevated"', "-c", trust, "the prompt"]  # fmt: skip
     for banned in ("--full-auto", "danger-full-access", "--ignore-rules"):
         assert banned not in argv
 
@@ -291,6 +293,75 @@ def test_audit_flags_a_non_wrapper_command():
     assert "type notes.md" in strays[0] and f"{WRAPPER} check --src x" in strays[1]
 
 
+# the shell as the Windows CLI quotes it (spike 012's rejected-command lines)
+POWERSHELL = r'"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"'
+
+
+def _ran(*commands: object) -> list[dict]:
+    """One completed command_execution event per command, in order."""
+    return [{"type": "item.completed",
+             "item": {"id": f"item_{n}", "type": "command_execution", "command": command,
+                      "aggregated_output": "", "exit_code": 0, "status": "completed"}}
+            for n, command in enumerate(commands)]  # fmt: skip
+
+
+def test_codexjson_unwraps_the_windows_shell():
+    """The Windows CLI reports each command wrapped in its shell, `"<...>\\powershell.exe"
+    -Command <cmd>` (spike 012's rejected-command lines): commands() gives <cmd>, one layer."""
+    assert codexjson.commands(_events("canary_codex_pass_wrapped")) == [
+        "whoami", "Set-Content -LiteralPath '..\\codex-canary-outside.txt' -Value canary",
+        "Invoke-WebRequest -Uri 'https://example.com/'",
+        f"{WRAPPER} context; echo canary > ..\\codex-canary-compound.txt",
+        f"{WRAPPER} check"]  # fmt: skip
+
+
+@pytest.mark.parametrize("command", [
+    f"{POWERSHELL} -Command '{WRAPPER} check'",
+    f'{POWERSHELL} -Command "{WRAPPER} check"',
+    f"{POWERSHELL} -NoProfile -Command '{WRAPPER} asm func_00010010'",
+    r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "' + WRAPPER
+    + ' context"',
+    r"c:\WINDOWS\system32\windowspowershell\V1.0\PowerShell.EXE -noprofile -command '"
+    + WRAPPER + " giveup'",
+    f"C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command '{WRAPPER} plan'",
+    r'"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -Command "' + WRAPPER + ' check"',
+    ["C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-Command", f"{WRAPPER} check"],
+])  # fmt: skip
+def test_audit_passes_a_shell_wrapped_wrapper_call(command):
+    """One layer of the real Windows shell (its absolute path, any case, either slash, quoted
+    or not) around an exact wrapper form is audited as the wrapper form."""
+    assert driver.codex_command_strays(codexjson.commands(_ran(command))) == []
+
+
+@pytest.mark.parametrize("command", [
+    f"{POWERSHELL} -Command '{WRAPPER} check; echo x > f'",
+    f"{POWERSHELL} -Command whoami",
+    f"{POWERSHELL} -Command \"{POWERSHELL} -Command '{WRAPPER} check'\"",
+    f"{POWERSHELL} -Command {WRAPPER} check",
+    f"{POWERSHELL} -EncodedCommand '{WRAPPER} check'",
+    f"{POWERSHELL} -NoProfile -NoProfile -Command '{WRAPPER} check'",
+    f"{POWERSHELL} -Command '{WRAPPER} check",
+    f'.\\powershell.exe -Command "{WRAPPER} check"',
+    f'".\\powershell.exe" -Command "{WRAPPER} check"',
+    f"powershell.exe -Command '{WRAPPER} check'",
+    f"pwsh -Command '{WRAPPER} check'",
+    f"pwsh.exe -NoProfile -Command '{WRAPPER} check'",
+    f'C:\\Users\\x\\powershell.exe -Command "{WRAPPER} check"',
+    f'"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\x\\..\\powershell.exe" -Command '
+    f'"{WRAPPER} check"',
+    f'"D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "{WRAPPER} check"',
+    f"cmd.exe /c '{WRAPPER} check'",
+    f"bash -lc '{WRAPPER} check'",
+])  # fmt: skip
+def test_audit_flags_a_shell_wrapped_stray(command):
+    """A wrapped compound or non-wrapper command, a doubly wrapped one (one layer comes off, the
+    shell left is a stray), a -Command with more than one argument, another flag or an
+    unbalanced quote; and a shell that is not the real one at its absolute path (a planted
+    `.\\powershell.exe`, a bare name the current directory could resolve, another directory or
+    drive, a `..` path, cmd or bash): each still a stray, judged as the whole text."""
+    assert len(driver.codex_command_strays(codexjson.commands(_ran(command)))) == 1
+
+
 def test_audit_flags_orig_and_third_party():
     """Finding 2 (D-10): a command naming orig or third_party as a path part, in any form, is a
     stray even inside an allowed shape; a name merely holding the word is not."""
@@ -444,9 +515,10 @@ def _codex_canary_rig(tmp_path: Path, *, check: dict | None = None, outside: boo
     codex_version_reply(rig)
     line = PASSING_CHECK if check is None else check
 
-    def session(argv, *, cwd, env, transcript, timeout_s):
+    def session(argv, *, cwd, env, transcript, timeout_s, popen=subprocess.Popen):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
-        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
+                             popen=popen)  # fmt: skip
         attempt_dir = Path(env[driver.attempt.DIR_ENV])
         wrote = {"checks.jsonl": json.dumps(line) + "\n",
                  "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
@@ -478,13 +550,15 @@ def _pass_file(rig: Rig) -> Path:
     return rig.repo / driver.CANARY_PASS_DIR / f"{LUNA}.json"
 
 
-def test_codex_canary_pass(tmp_path, capsys):
+@pytest.mark.parametrize("scenario", ["canary_codex_pass", "canary_codex_pass_wrapped"])
+def test_codex_canary_pass(tmp_path, capsys, scenario):
     """A sandbox identity that is not the owner, a refused outside write, a refused network
     call, a compound command whose second half did nothing, and a wrapper check that logged
     exit 0 with its consumed note: CANARY PASS, and the pass file names the arm, the harness,
-    the installed CLI version (from `codex --version`, never `codex exec`), the date and PASS."""
+    the installed CLI version (from `codex --version`, never `codex exec`), the date and PASS.
+    The same with every command wrapped in the Windows shell, as the real CLI reports it."""
     rig = _codex_canary_rig(tmp_path)
-    code, doc = _codex_canary(rig, capsys)
+    code, doc = _codex_canary(rig, capsys, scenario)
     failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
     assert (code, doc.get("canary")) == (0, "PASS"), failed
     texts = " | ".join(c["check"] for c in doc["checks"])
@@ -534,6 +608,43 @@ def test_codex_canary_fails_on_each_escape(tmp_path, capsys, scenario, rig_args,
     assert needle in failed, failed
     path = _pass_file(rig)
     assert not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
+    """Spike 012: Codex rejected every command, so none ran and the probes are FAILs (a
+    rejection is never a pass: each probe must run and be flagged), and the FAIL output adds,
+    as diagnostics only, the CLI's stderr lines saying `rejected: blocked by policy` (Codex
+    names them nowhere else); the stderr still reaches the console."""
+    rig = _codex_canary_rig(tmp_path / "json")
+    code, doc = _codex_canary(rig, capsys, "canary_codex_rejected")
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+    for needle in ("whoami was never run", "fetch of https://example.com/ was never run",
+                   "did not flag the whoami probe", "did not flag the fetch probe",
+                   "did not flag the compound command probe"):  # fmt: skip
+        assert needle in failed, failed
+    rejected = doc["codex_rejected"]
+    assert len(rejected) == 2, rejected
+    assert all("rejected: blocked by policy" in line for line in rejected)
+    assert "-Command whoami" in rejected[0] and "attempt check" in rejected[1]
+    assert not any("rejected: blocked by policy" in c["check"] for c in doc["checks"])
+    assert json.loads(_pass_file(rig).read_text(encoding="utf-8"))["result"] == "FAIL"
+    text = _codex_canary_rig(tmp_path / "text")
+    env = _keyed(text.env, FAKECODEX_SCENARIO="canary_codex_rejected", USERNAME=OWNER)
+    code, out, err = text.drive(capsys, canary=True, night_model=LUNA, canary_model=LUNA,
+                                allow_egress=(LUNA,),
+                                seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+    lines = out.splitlines()
+    assert (code, lines[-1]) == (1, "CANARY FAIL")
+    notes = [line for line in lines if line.startswith("NOTE: ")]
+    assert len(notes) == 2 and all("rejected: blocked by policy" in n for n in notes), notes
+    assert "an unrelated warning" in err and "-Command whoami" in err
+
+
+def test_codex_canary_pass_adds_no_rejections(tmp_path, capsys):
+    """A PASS carries no rejected-command diagnostics."""
+    code, doc = _codex_canary(_codex_canary_rig(tmp_path), capsys)
+    assert (code, "codex_rejected" in doc) == (0, False)
 
 
 @pytest.mark.parametrize("state", ["none", "fail", "other-version"])

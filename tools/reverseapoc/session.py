@@ -148,7 +148,9 @@ def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) 
     """07.2-13 (D-13; RESEARCH Q8): the argv of one Codex session, `codex` being the CLI
     executable: `codex exec --json` in a workspace-write sandbox rooted at `attempt_dir`, no
     git-repo check, nothing persisted, no user config, approval `never` and the sandbox's
-    network off, and `attempt_dir` trusted so the per-session rules the driver generates under
+    network off, the Windows sandbox set to elevated (owner's choice: the ignored user config
+    was all that enabled it, and with none Codex ran no sandbox and rejected every command),
+    and `attempt_dir` trusted so the per-session rules the driver generates under
     it (<attempt dir>/.codex/rules/) load. The approval key (RESEARCH A4) and the trusted
     project layer under gitignored build/ (A5) are assumptions the Codex canary settles. Never
     an auto-approval flag, the unrestricted sandbox mode or the flag that skips the rules files
@@ -157,8 +159,8 @@ def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) 
     return [codex, "exec", "--json", "--model", model, "--sandbox", "workspace-write",
             "--cd", str(attempt_dir), "--skip-git-repo-check", "--ephemeral",
             "--ignore-user-config", "-c", 'approval_policy="never"',
-            "-c", "sandbox_workspace_write.network_access=false", "-c", trust,
-            prompt]  # fmt: skip
+            "-c", "sandbox_workspace_write.network_access=false",
+            "-c", 'windows.sandbox="elevated"', "-c", trust, prompt]  # fmt: skip
 
 
 def build_agy_argv(prompt: str, *, agy: str, model: str, attempt_dir: Path, settings: Path,
