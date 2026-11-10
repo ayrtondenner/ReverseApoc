@@ -63,7 +63,8 @@ def test_load_arms():
     arms = _arms()
     for name in CLAUDE_ARMS:
         arm = arms[name]
-        assert (arm.name, arm.model, arm.backend, arm.harness) == (name, name, "anthropic", "claude")
+        assert (arm.name, arm.model, arm.backend) == (name, name, "anthropic")
+        assert arm.harness == "claude"
         assert (arm.base_url, arm.key_env, arm.coauthor, arm.prices) == (None, None, None, None)
         assert arm.sends_disassembly is True and not arm.egress
     arm = arms[DEEPSEEK]
@@ -96,6 +97,15 @@ def test_a_bad_field_is_refused_naming_the_arm_and_field(tmp_path, old, new, fie
     with pytest.raises(ArmError) as exc:
         load_arms(_table(tmp_path, _DEEPSEEK_TOML.replace(old, new, 1)))
     assert DEEPSEEK in str(exc.value) and field in str(exc.value), str(exc.value)
+
+
+def test_a_key_pasted_into_key_env_is_not_repeated(tmp_path):
+    """D-12: a value under key_env that is not a variable name is refused without echoing it,
+    in case it is a real key pasted by mistake."""
+    text = _DEEPSEEK_TOML.replace('"DEEPSEEK_API_KEY"', '"made-up-pasted-value-0005"')
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, text))
+    assert "key_env" in str(exc.value) and "made-up-pasted-value-0005" not in str(exc.value)
 
 
 def test_an_anthropic_arm_has_no_endpoint_or_key(tmp_path):

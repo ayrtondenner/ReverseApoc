@@ -1,0 +1,64 @@
+# The drive arms (Phase 07.2 plan 12; D-10, D-11, D-12, D-18), read by tools/reverseapoc/backends.py.
+#
+# This file holds NAMES of environment variables only, never a key. A hosted arm's key lives in
+# the Windows user environment variable its `key_env` names (docs/toolchain.md, "Model API keys
+# and sign-ins"); the driver copies it into that session's ANTHROPIC_AUTH_TOKEN and writes it
+# nowhere.
+#
+# The endpoints, model ids and prices of the non-Anthropic arms were read on 2026-11-09
+# (07.2-RESEARCH Q7) and are re-checked by the owner at setup, before each arm's canary.
+#
+# Fields: harness (claude, codex, agy), backend (the provider: anthropic is the Claude Code
+# login), model (the --model id), base_url (absent on the Claude login), key_env (absent on the
+# Claude login), sends_disassembly (true: the context pack leaves the machine, so a
+# non-Anthropic arm needs --allow-egress, D-11), accepted_init (the init `model` strings
+# accepted), prices (USD per million tokens, for the cost estimate), coauthor (the commit
+# credit line, D-26), max_workers. The Claude arms are keyed by their model id and keep
+# streamjson's tables and driver.coauthor (RULINGS "Harness").
+
+[arms."claude-opus-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-opus-5-5"
+sends_disassembly = true
+max_workers = 3
+
+[arms."claude-fable-5-1"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-fable-5-1"
+sends_disassembly = true
+max_workers = 3
+
+[arms."claude-haiku-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-haiku-5-5"
+sends_disassembly = true
+max_workers = 3
+
+[arms."claude-sonnet-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-sonnet-5-5"
+sends_disassembly = true
+max_workers = 3
+
+# DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
+# yet, so both cache classes are priced as input: the estimate may overstate, never understate.
+[arms."deepseek-flash"]
+harness = "claude"
+backend = "deepseek"
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com/anthropic"
+key_env = "DEEPSEEK_API_KEY"
+sends_disassembly = true
+accepted_init = ["deepseek-flash"]
+coauthor = "DeepSeek V4.1-Flash <noreply@deepseek.com>"
+max_workers = 3
+
+[arms."deepseek-flash".prices]
+input = 0.30
+output = 1.20
+cache_read = 0.30
+cache_creation = 0.30
