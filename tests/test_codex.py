@@ -604,6 +604,13 @@ def test_signed_in_sessions_pin_uv_to_the_checkout(tmp_path, arm):
     assert env["UV_NO_CONFIG"] == "1"
 
 
+def test_the_audit_still_flags_a_planted_project():
+    """CR-01: the pin prevents; the after-the-fact audit still names each planted file."""
+    now = {name: "made-up-digest" for name, _ in PLANTED}
+    strays = dict(driver.codex_inventory_strays(now, launch={}, ledger={}))
+    assert sorted(strays) == sorted(name for name, _ in PLANTED)
+
+
 def test_a_claude_session_gets_no_uv_pin(tmp_path):
     """CR-01 scope: a Claude Code session runs in the checkout, its hooks allow only exact
     wrapper forms (no `cd`) and writes only to its own files, so uv already finds the
