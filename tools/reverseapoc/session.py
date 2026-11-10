@@ -196,11 +196,17 @@ def _skill_body(skill_text: str) -> str:
 # 07.2 review WR-10: the skill tells a Claude session to look around with Read, Grep and Glob;
 # a Codex or agy session has none of them, and a shell read is a stray. Each form named here is
 # one the driver's rules allow (tests/test_codex.py checks them against hooks.bash_allowed).
+# Canary round 3: Sol wrote its files with `Set-Content`, a command the audit flags, which stops
+# the whole night; a file-edit tool's writes (Codex's apply_patch, reported as file_change
+# items) are what the audit checks against the session's write allowlist.
 _HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so where the skill "
                  "says to look around with them, read through the wrapper instead: "
                  "`attempt context` prints the context pack, `attempt asm` and "
                  "`attempt asm <NAME>` print listings, and `attempt check` prints its summary "
-                 "and the paths of its evidence.")  # fmt: skip
+                 "and the paths of its evidence. Create and edit files only with your file-edit "
+                 "tool, never with a shell command or redirection: the audit checks that "
+                 "tool's edits, and a command that writes a file is a command other than the "
+                 "wrapper.")  # fmt: skip
 # agy's settings (driver.agy_settings) also allow read_file inside the attempt dir, nowhere else
 _AGY_READS = (" Your read_file tool may also read files inside this attempt's directory (your "
               "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
@@ -222,7 +228,8 @@ def codex_prompt(goal: str, skill_text: str) -> str:
     """07.2-13 (D-13): the prompt of a Codex session, which has no skill loader, no /goal and
     no hooks: the matching goal (goal_prompt's, without its /goal command), the watcom-decomp
     skill's body (`skill_text`, front matter stripped), the harness note (07.2 review WR-10:
-    no Read, Grep or Glob; files are read through the wrapper's printing forms) and a closing
+    no Read, Grep or Glob; files are read through the wrapper's printing forms; canary round 3:
+    files are written only with the file-edit tool, never by a shell command) and a closing
     block naming the session files beside notes.md and that only the attempt wrapper may be run
     (the driver audits every command and file afterwards)."""
     return _signed_in_prompt(goal, skill_text, _HARNESS_NOTE)
