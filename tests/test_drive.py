@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import cli, driver
+from reverseapoc import cli, driver, hooks
 from reverseapoc.driver import DriveOptions, ExeWorld, PackInfo, Seams
 from reverseapoc.functions import FunctionRow, write_functions_csv
 from reverseapoc.picker import Pick
@@ -903,6 +903,68 @@ def test_canary_wrapper_denied(tmp_path, capsys):
     failed = " | ".join(_failed(doc))
     assert "uv run --frozen reverseapoc attempt context" in failed
     assert "context.md" in failed
+
+
+def _check_refused_stream(reason: str, *, retry_denied: bool = False) -> list[dict]:
+    """canary_pass's synthetic stream with one more `attempt check` before its own: a call
+    with no Bash timeout, denied with `reason` (a permission_denials entry and an is_error
+    tool_result, as the real CLI reports a hook denial). `retry_denied`: the later call, the
+    one with the timeout, is denied with the same reason too."""
+    lines = (FAKE.parent / "fixtures" / "stream" / "canary_pass.jsonl").read_text(encoding="utf-8")
+    events = [json.loads(line) for line in lines.splitlines()]
+    call = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": "toolu_canary_09", "name": "Bash",
+         "input": {"command": driver.CANARY_CHECK}}]}}  # fmt: skip
+    events[-3:-3] = [call, _hook_denied("toolu_canary_09", reason)]
+    denied = ["toolu_canary_09", "toolu_canary_05"] if retry_denied else ["toolu_canary_09"]
+    if retry_denied:
+        events[-2] = _hook_denied("toolu_canary_05", reason)
+    events[-1]["permission_denials"] += [{"tool_name": "Bash", "tool_use_id": use,
+                                          "tool_input": {"command": driver.CANARY_CHECK}}
+                                         for use in denied]  # fmt: skip
+    return events
+
+
+def _hook_denied(use: str, reason: str) -> dict:
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": use, "content": reason, "is_error": True}]}}
+
+
+def _check_lines(tmp_path, events: list[dict]) -> list[tuple[bool, str]]:
+    """The canary's PASS/FAIL lines about the `attempt check` wrapper for `events`."""
+    checks = driver._Checks()
+    options = DriveOptions(repo=tmp_path, run_id=RUN, canary=True)
+    driver._canary_checks(options, events, tmp_path / "attempt-1", checks,
+                          model="claude-opus-5-5")  # fmt: skip
+    shown = f"the attempt wrapper `{driver.CANARY_CHECK}`"
+    return [(ok, text) for ok, text in checks.lines if text.startswith(shown)]
+
+
+def test_canary_check_refused_for_its_timeout_then_allowed_passes(tmp_path):
+    """Canary 2026-11-10 (muse-spark-open): `attempt check` without the Bash timeout, refused
+    by the hook's timeout rule, then rerun with it and allowed, is the hook working: an
+    informational PASS line, never `was denied`."""
+    events = _check_refused_stream(hooks.CHECK_TIMEOUT_DENIAL.reason)
+    lines = _check_lines(tmp_path, events)
+    assert all(ok for ok, text in lines if "allowed" in text or "denied" in text), lines
+    assert any(ok and "first refused for its missing timeout, then allowed" in text
+               for ok, text in lines), lines  # fmt: skip
+    assert not any("was denied" in text for _, text in lines), lines
+
+
+def test_canary_check_denied_for_another_reason_fails(tmp_path):
+    """Any denial of the wrapper but the hook's timeout rule still FAILs, even when a later
+    call of it was allowed."""
+    events = _check_refused_stream("reverseapoc hooks: a made-up rule")
+    lines = _check_lines(tmp_path, events)
+    assert any(not ok and "was denied" in text for ok, text in lines), lines
+
+
+def test_canary_check_only_ever_refused_for_its_timeout_fails(tmp_path):
+    """A wrapper that was only ever denied FAILs, even when every denial is the timeout rule."""
+    events = _check_refused_stream(hooks.CHECK_TIMEOUT_DENIAL.reason, retry_denied=True)
+    lines = _check_lines(tmp_path, events)
+    assert any(not ok and "was denied" in text for ok, text in lines), lines
 
 
 def test_canary_fails_on_an_init_problem(tmp_path, capsys, monkeypatch):
