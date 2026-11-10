@@ -12,12 +12,12 @@ You make one claimed function byte-identical to the original, proven by `attempt
 | Question | Answer |
 |---|---|
 | Your file | the private view unit at `$REVERSEAPOC_UNIT_FILE`. The /goal names its path, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`. It is the only C you edit. |
-| What you may write | that view unit and this attempt's notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr). No header anywhere. The hooks also allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`), but a matching session writes none: nothing applies a matching session's proposals (the driver's rename step runs after readability sessions only). A name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl. Nothing else. |
+| What you may write | that view unit, and in this attempt's directory notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr) and, beside it, `plan.json`, `check-note.json` and `giveup.json` (under "The attempt wrapper" and "When to give up"). No header anywhere. The hooks also allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`), but a matching session writes none: nothing applies a matching session's proposals (the driver's rename step runs after readability sessions only). A name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl. Nothing else. |
 | Types you need | declared in the view unit, at file scope (see "Replacing INCLUDE_ASM"). |
 | Names | placeholders stay: `func_XXXXXXXX`, `D_XXXXXXXX` and your own function's name. A name idea goes in notes.md. |
-| The only Bash | the five wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Look around with Read, Grep and Glob. |
+| The only Bash | the seven wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Look around with Read, Grep and Glob. |
 | Check exit codes | under "The attempt wrapper" below. |
-| Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing. |
+| Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. |
 | Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/25, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
 | Full evidence | `<attempt dir>/checks/NNNN.json` (check's JSON) and `checks/NNNN.c` (the exact C that run checked), one pair per run, plus a line in `checks.jsonl`. Each check prints both full paths. |
 | Flags of your check | the unit's rule in the view's `config/cflags.txt` (HEAD's copy): its own line if it has one, else the `*` default `wcc386@10.6 -4r -s -fpi`. |
@@ -124,6 +124,23 @@ struct unk_002C {
 | `uv run --frozen reverseapoc attempt asm` | prints the claimed function's original listing, with the converter's notes (no check run) |
 | `uv run --frozen reverseapoc attempt asm <NAME>` | the listing of another function of the same EXE, e.g. a callee, with its notes |
 | `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes); it is printed, so no Read of context.md is needed |
+| `uv run --frozen reverseapoc attempt plan` | checks your `plan.json` against the function's size and prints its regions (no check used) |
+| `uv run --frozen reverseapoc attempt giveup` | checks your `giveup.json` (no check used); see "When to give up" |
+
+The pack's "Earlier give-ups" and "Earlier best C" sections say where earlier attempts on this function stopped and hold the best earlier definition: read them before you plan.
+
+**The plan and the note.** A check needs two files beside notes.md. Without them `attempt check`, plain or `--sweep`, is refused with exit `2` and uses none of the 25 checks. The refusal names what is missing or wrong, e.g. `write plan.json beside notes.md first`: write that file, then run the check again.
+
+1. Before the first check, write `plan.json` from the listing and run `attempt plan` until it accepts it. One JSON object with exactly:
+   - `frame`: the prologue and the frame size, in words;
+   - `slots`: one text per stack slot (an empty list when there is none);
+   - `calls`: one text per call, with its convention (or an empty list);
+   - `regions`: objects with `start`, `end` and `intent`, byte offsets from the function's start, `end` one past the region's last byte. They are sorted and contiguous from 0 to the function's size. One region is enough under 64 B; from 64 B write two or more. At 256 B and up every inner boundary is a multiple of 0x100, the region board's grid (a function of exactly 0x100 bytes takes one region).
+   Every check reads the plan again: when a check proves it wrong, write the corrected plan.
+2. Before every check, write `check-note.json`: one JSON object with exactly `change` (what this run changes), `why` (the evidence for it) and `expect` (what it should show), each at most 400 characters.
+3. The check moves the note to `checks/NNNN.note.json` and adds `observed`: the exit, objdiff, bytes differing, the first difference, the window's first row and the regions. Never add `observed` yourself: a note that holds it is refused. Each check needs a new note.
+
+At 256 B and up each check's summary shows the region board after the claimed function's window, one line per 0x100 bytes from the function's start: `exact in NNNN` names the plain check of this attempt whose bytes match there, `closest NNNN (k differ)` the nearest one. A region exact in an earlier check is solved: carry that check's C (`checks/NNNN.c`) for it, and work on the regions that still differ.
 
 - Run every `attempt check`, plain or `--sweep`, with the Bash tool's `timeout` set to 600000. The wrapper stops a run at 580 s and logs it as exit `2`.
 - "another check is running in this attempt" means a check is still running, or one was killed. Do not retry. Work from the last result, then stop.
@@ -141,7 +158,7 @@ struct unk_002C {
 `attempt check` exits:
 - `0`: the claimed function matches (objdiff 100, reloc and bytes ok) and check passes its whole unit. Only this is a match.
 - `1`: a mismatch, or the claimed function was not compiled (the summary says "was not compiled (still INCLUDE_ASM?)").
-- `2`: refused or tool error, a compile error included. Exit 2 never measures anything.
+- `2`: refused or tool error, a compile error included. Exit 2 never measures anything. A refusal before the run, such as a missing plan or note, uses no check.
 
 `attempt check --sweep` exits `0` when it ran and `2` when it did not, never `1`: a sweep is a diagnostic, never a match.
 
@@ -192,10 +209,18 @@ Stop only when one of these holds:
 When the /goal blocks a stop: if a rule above holds, name it in one message with the printed line that shows it; if none holds, the attempt is not done, so make the next C shape.
 
 On stopping:
-1. Write notes.md first, before any optional last step.
+1. Write notes.md first, then `giveup.json` (below) unless `attempt check` exited `0`, before any optional last step.
 2. If the remaining difference is register allocation or instruction choice and time remains, you may run one `attempt check --sweep`, then add its result to notes.md.
 3. Leave the view unit as it is. Do not restore `INCLUDE_ASM` and do not re-check to confirm. The driver keeps every `checks/NNNN.c`, scores the best run, and abandons the view; the repo-root unit is never yours to reset.
 4. End with one last message that names the rule that holds, in its words above, and its evidence (check numbers or the printed line): the /goal's judge reads only the conversation.
+
+`giveup.json`, beside notes.md, is how a stop without a match is recorded. Write it, then run `attempt giveup`: it checks the file and prints what the driver will record (no check used); on exit `2` fix what it names and run it again. The driver records it with your best check's C, and later attempts read it in their pack. One JSON object with exactly:
+- `category`: one of `flags`, `block_layout`, `stack_layout`, `register_allocation`, `instruction_idiom`, `types_or_struct`, `call_convention`, `compile_error`, `other`;
+- `tried`: the C shapes tried, in one line;
+- `still_differs`: what still differs, such as the first differing address and its instruction;
+- `suspected_cause`: why it differs, as far as the evidence goes.
+
+A sweep hit or "needs flags (no -s)" is category flags. The three texts are plain prose, each at most 200 characters, with no C in them: no braces or semicolons, and no hex run of 65 characters or more. The C stays in `checks/NNNN.c`.
 
 notes.md holds, in this order:
 1. The outcome: matched, or the best objdiff with its check number (`checks/NNNN.c` is that C).
