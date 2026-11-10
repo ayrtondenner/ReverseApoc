@@ -1178,6 +1178,26 @@ def test_comparison_only_with_run(tmp_path, capsys):
     assert "comparison per arm: none" in capsys.readouterr().out.splitlines()
 
 
+def test_comparison_prices_a_subscription_arm_at_list_price(tmp_path, capsys):
+    """Task 2: a Codex session records cost 0 on ChatGPT Plus, but the comparison prices its
+    tokens at the arm's list price; real paid stays 0."""
+    from reverseapoc import backends
+
+    tokens = _tok(3_000_000, 400_000, 2_000_000, 0)
+    luna = _on_v3(0x10000, run="spike012-gpt-6-luna", backend="openai", harness="codex",
+                  model_requested="gpt-6-luna", model=None, cost_usd=0.0,
+                  cost_source="estimate", hold_run=True, outcome="HOLD_EXACT", tokens=tokens)
+    repo, log, config = _spike(tmp_path, luna)
+    key = _arm("gpt-6-luna", "openai", "codex")
+    row = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]["arms"][key]
+    expected = _usd(_api(tokens, backends.load_arms()["gpt-6-luna"].prices))
+    assert row["cells"][TOTAL]["api_usd"] == expected and Decimal(expected) > 0
+    assert row["cells"][TOTAL]["paid_usd"] == "0.00"
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    assert f"  {key} (gpt-6-luna, subscription): {SUBSCRIPTION_WORDS}" in _block(
+        capsys.readouterr().out)  # fmt: skip
+
+
 def test_comparison_arm_table_error(tmp_path, capsys, monkeypatch):
     """A broken backends.toml stops `stats --run` with exit 2 and the table's message."""
     from reverseapoc import backends, stats
