@@ -216,6 +216,14 @@ def _arm(name: str, table: object) -> Arm:
         raise ArmError(f"sends_disassembly: {table['sends_disassembly']!r} is not true or false")
     workers = _count(table, "max_workers")
     url = table.get("base_url")
+    # 07.2 review WR-01 (D-11): false is believed only where the pack stays on the machine
+    # (the Claude Code harness on its login or a loopback endpoint), never on a signed-in CLI
+    # (it sends the prompt to its vendor) or a non-loopback endpoint
+    local = harness == CLAUDE and (url is None or _loopback(_base_url(url)))
+    if not table["sends_disassembly"] and not local:
+        raise ArmError("sends_disassembly: false is allowed only on the claude harness with "
+                       "no base_url or a loopback one; this arm sends the context pack off "
+                       "the machine, so it must say true and run with --allow-egress (D-11)")
     if url is not None and "key_env" not in table and not _loopback(_base_url(url)):
         raise ArmError("key_env: missing; only a loopback base_url runs without a key variable "
                        "(it gets LOOPBACK_TOKEN, D-26)")  # fmt: skip
