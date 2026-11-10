@@ -400,3 +400,14 @@ def test_readlint_reports_the_example_unit_as_the_output_example_shows(tmp_path)
     assert sum(result.waivers.values()) == expected.waiver_count == 1
     proposed = {p.violation.message.split(" ", 1)[0] for p in expected.pending}
     assert readlint.unmarked_declarations(path, proposed, src_root=src, config_root=config) == ()
+
+
+def test_declaration_order_is_stated_as_measured():
+    """docs/matching.md: declaration order decides far fewer stack slots than it looks (scalars
+    ignore it, sizes sort first, and three or more arrays of one size leave it). So the skill keeps
+    declarations as they are without saying their order decides the slots (07.2-14)."""
+    rules = _section(_text(), "What you may change")
+    (line,) = [one for one in rules.splitlines() if "order of declarations" in one]
+    assert "decides the stack slots" not in line
+    assert "`docs/matching.md`" in line
+    assert rules.index("Not, because") < rules.index(line)  # still a change the skill refuses
