@@ -1,0 +1,5 @@
+{"event": "init", "conversation_id": "made-up-c6", "init": {"model": "@model", "cwd": "@cwd", "tools": ["run_command", "view_file", "write_to_file"], "permission_mode": "request-review"}}
+{"event": "step_update", "step_update": {"conversation_id": "made-up-c6", "step_index": 0, "state": "DONE", "step_type": "user_input"}}
+{"event": "step_update", "step_update": {"conversation_id": "made-up-c6", "step_index": 1, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "I'm sorry, but"}}
+{"event": "step_update", "step_update": {"conversation_id": "made-up-c6", "step_index": 1, "state": "DONE", "step_type": "agent_response", "text_delta": " I can't help.\n", "duration_seconds": 2.0, "usage": {"input_tokens": 4500, "output_tokens": 100, "thinking_tokens": 0, "cache_read_tokens": 2900, "total_tokens": 4600}}}
+{"event": "result", "result": {"conversation_id": "made-up-c6", "status": "SUCCESS", "response": "I'm sorry, but I can't help.\n", "duration_seconds": 2.1, "num_turns": 1, "usage": {"input_tokens": 4500, "output_tokens": 100, "thinking_tokens": 0, "cache_read_tokens": 2900, "total_tokens": 4600}}}

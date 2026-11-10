@@ -285,6 +285,33 @@ def test_agyjson_only_a_steps_own_denied_state_hides_it():
     assert agyjson.commands(unsandboxed) == ["type notes.md"]
 
 
+def test_agyjson_denials_read_the_permission_error():
+    """Spike 012: a soft-denied step ends ERROR with tool_info.error.message `permission check
+    failed for <action> "<target>": user denied permission for ...` (agy's own format, the
+    result's denied_actions name no target), so `denials` reads the action and the target from
+    that message. A step that itself ends DENIED is a denial by its tool and its path or
+    command. An ERROR with any other message ran and failed, and a DONE step ran: neither is a
+    denial, and `undenied_steps` names both."""
+    events = _events("canary_agy_soft_denied")
+    outside = "C:/made-up/func_000A3980/agy-canary-outside.txt"
+    assert agyjson.denials(events) == [agyjson.Denial(2, "write_file", "write_file", outside)]
+    assert agyjson.undenied_steps(events) == []
+    message = 'permission check failed for command "echo \\"a\\" > C:\\\\x": user denied ...'
+    mixed = [_step(1, "run_command", state="ERROR", error={"type": "TOOL_ERROR",
+                                                           "message": message}),
+             _step(2, "read_file", state="DENIED", path="../orig/x.txt"),
+             _step(3, "read_file", state="ERROR", path="a.txt",
+                   error={"type": "TOOL_ERROR", "message": "file not found"}),
+             _step(4, "write_file", path="notes.md")]  # fmt: skip
+    assert agyjson.denials(mixed) == [agyjson.Denial(1, "run_command", "command",
+                                                     'echo "a" > C:\\x'),
+                                      agyjson.Denial(2, "read_file", "read_file",
+                                                     "../orig/x.txt")]  # fmt: skip
+    assert agyjson.undenied_steps(mixed) == ["step 3: read_file (ERROR)",
+                                             "step 4: write_file (DONE)"]  # fmt: skip
+    assert agyjson.response(_events("canary_agy_refused")) == "I'm sorry, but I can't help."
+
+
 def test_agyjson_ignores_a_line_outside_the_envelope():
     """A line that is not agy 1.5.5's envelope (the flat shape RESEARCH assumed) is no event:
     no init, no result, no step."""
@@ -434,8 +461,11 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
     """D-24: the driver writes the session's settings under build/driver/<run>/agy/, outside
     the workspace and never in the repo or the user's settings: allow holds one command regex
     matching exactly the matching wrapper forms and write_file rules for exactly the session's
-    files; deny holds a command regex naming orig/ and third_party/, their reads and writes,
-    and unsandboxed commands. The session is told its wrapper ledger, which starts empty."""
+    files; deny holds a command regex naming orig/ and third_party/ and their reads and
+    writes. No `unsandboxed(...)` rule: agy 1.5.5 ignores it and grants nothing ("unsandboxed
+    is no longer a valid rule, use command() instead"), and an unallowed command soft-denies
+    anyway, so the canary's unsandboxed probe is the proof. The session is told its wrapper
+    ledger, which starts empty."""
     import re
 
     record = tmp_path / "fakeagy-record.json"
@@ -490,7 +520,7 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
         for text in ("view/src/ufo2p/original_x.c", "notes.md", "origins/x",
                      f"{attempt_dir.as_posix()}/..x/y", *sorted(files)):  # fmt: skip
             assert not denied(text), (action, text)
-    assert _rule(deny, "unsandboxed") == ["regex:.*"]
+    assert not [rule for rule in (*allow, *deny) if rule.startswith("unsandboxed")], deny
     assert not path.is_relative_to(attempt_dir)
     assert not (night.repo / ".gemini").exists() and not (rig.repo / ".gemini").exists()
     ledger = Path(night.launched[0].env[driver.attempt.WRAPPER_LEDGER_ENV])
@@ -586,12 +616,34 @@ FALLBACK = "gemini-3.8-flash-openrouter"
 USAGE_ARGV = ["agy", "-p", "/usage"]
 
 
+ALLOWED = "allowed"
+PROBES = ("outside-write", "fetch", "unsandboxed", "relative-read", "different-case-read",
+          "dot-dot-read", "short-name-read")  # fmt: skip
+# each session's default scenario: the allowed path's wrapper flow and each probe denied the
+# way spike 012 captured it (the step ends ERROR with the permission check's message)
+SCENARIOS = {ALLOWED: "canary_agy_allowed", "outside-write": "canary_agy_soft_denied",
+             "fetch": "canary_agy_deny_fetch", "unsandboxed": "canary_agy_deny_unsandboxed",
+             **{name: "canary_agy_deny_read" for name in PROBES if name.endswith("-read")}}
+CANARY_LEFT = {"outside-write": "agy-canary-outside.txt",
+               "unsandboxed": "agy-canary-unsandboxed.txt"}  # fmt: skip
+
+
+def _session_name(transcript: Path) -> str:
+    """Which canary session a launch is, by the transcript the driver gave it."""
+    if transcript.name == driver.TRANSCRIPT:
+        return ALLOWED
+    return transcript.stem.removeprefix("agy-canary-")
+
+
 def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: dict | None = None,
-                    outside: bool = False, unsandboxed: bool = False) -> Rig:  # fmt: skip
+                    scenarios: dict | None = None, escape: str | None = None,
+                    raises: str | None = None) -> Rig:  # fmt: skip
     """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
-    an agy session: fakeagy through the real run_session, then what the real wrapper would have
-    left (its check line, the consumed note and their ledger entries) and, when asked, a probe's
-    escape outside the workspace. The runner answers `agy --version` and `agy -p /usage` (the
+    agy sessions: fakeagy through the real run_session, each session replaying its scenario
+    (SCENARIOS, `scenarios` overriding by session name). After the allowed session, what the
+    real wrapper would have left (context.md, its check line, the consumed note and their
+    ledger entries); after the probe named `escape`, its file outside the workspace; the
+    session named `raises` raises. The runner answers `agy --version` and `agy -p /usage` (the
     latter from tests/fixtures/agy/<usage>.txt)."""
     import hashlib
 
@@ -603,36 +655,41 @@ def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: di
     text = (FIXTURES / f"{usage}.txt").read_text(encoding="utf-8")
     rig.runner.replies.append((lambda argv: argv == USAGE_ARGV, (0, text, "")))
     line = PASSING_CHECK if check is None else check
+    chosen = {**SCENARIOS, **(scenarios or {})}
 
-    def run(argv, *, cwd, env, transcript, timeout_s, popen):
-        rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
-        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
-                             popen=popen)  # fmt: skip
-        attempt_dir = Path(env[driver.attempt.DIR_ENV])
-        wrote = {"checks.jsonl": json.dumps(line) + "\n",
+    def wrapper_output(attempt_dir: Path, ledger: Path) -> None:
+        wrote = {"context.md": "# context\n", "checks.jsonl": json.dumps(line) + "\n",
                  "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
-        with Path(env[driver.attempt.WRAPPER_LEDGER_ENV]).open("a", encoding="utf-8") as fh:
+        with ledger.open("a", encoding="utf-8") as fh:
             for rel, body in wrote.items():
                 (attempt_dir / rel).parent.mkdir(parents=True, exist_ok=True)
                 (attempt_dir / rel).write_text(body, encoding="utf-8", newline="\n")
                 digest = hashlib.sha256((attempt_dir / rel).read_bytes()).hexdigest()
                 fh.write(json.dumps({"path": rel, "sha256": digest}) + "\n")
-        for wanted, name in ((outside, driver.AGY_CANARY_OUTSIDE),
-                             (unsandboxed, driver.AGY_CANARY_UNSANDBOXED)):  # fmt: skip
-            if wanted:
-                (attempt_dir.parent / name).write_text("canary\n", encoding="utf-8")
+
+    def run(argv, *, cwd, env, transcript, timeout_s, popen):
+        name = _session_name(Path(transcript))
+        env = {**env, "FAKEAGY_SCENARIO": chosen[name]}
+        rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        if name == raises:
+            raise OSError("made-up launch failure")
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
+                             popen=popen)  # fmt: skip
+        attempt_dir = Path(env[driver.attempt.DIR_ENV])
+        if name == ALLOWED:
+            wrapper_output(attempt_dir, Path(env[driver.attempt.WRAPPER_LEDGER_ENV]))
+        if name == escape:
+            (attempt_dir.parent / CANARY_LEFT[name]).write_text("canary\n", encoding="utf-8")
         return result
 
     rig.session = run
     return rig
 
 
-def _agy_canary(rig: Rig, capsys, scenario: str = "canary_agy_pass",
-                arm: str = GEMINI) -> tuple[int, dict]:  # fmt: skip
-    env = _keyed(rig.env, FAKEAGY_SCENARIO=scenario)
+def _agy_canary(rig: Rig, capsys, arm: str = GEMINI) -> tuple[int, dict]:
     code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=arm, canary_model=arm,
                              allow_egress=(arm,),
-                             seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip
+                             seams={"base_env": rig.env, "agy_argv": fake_agy_argv})  # fmt: skip
     return code, json.loads(out)
 
 
@@ -640,24 +697,42 @@ def _pass_file(rig: Rig, arm: str = GEMINI) -> Path:
     return rig.repo / driver.CANARY_PASS_DIR / f"{arm}.json"
 
 
+def _no_pass(rig: Rig, arm: str = GEMINI) -> bool:
+    path = _pass_file(rig, arm)
+    return not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+def _failed(doc: dict) -> str:
+    return " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+
+
+def _timeout(argv: list[str]) -> str:
+    return argv[argv.index("--print-timeout") + 1]
+
+
 def test_agy_canary_pass(tmp_path, capsys):
-    """A clean init, a refused outside write, a refused network call, a denied unsandboxed
-    command, a wrapper check that logged exit 0 with its consumed note, and `/usage` reporting
-    remaining weekly quota: CANARY PASS, and the pass file records the CLI version (`agy
-    --version`), the date, the canary session's tokens and the remaining quota (D-25: the owner
-    sizes the arm to it)."""
+    """Spike 012: headless agy ends the turn at its first soft-denied tool, so the canary is a
+    sequence of short sessions in one attempt dir, each proving one thing: the allowed path
+    first (the wrapper's context, a plan through `attempt plan`, the check), then one session
+    per forbidden probe, each denied as agy's stream shows it. With every session as expected,
+    the side effects absent and `/usage` reporting remaining quota: CANARY PASS, and the pass
+    file records the CLI version, the date, the allowed session's tokens and the quota."""
     rig = _agy_canary_rig(tmp_path)
     code, doc = _agy_canary(rig, capsys)
-    failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
-    assert (code, doc.get("canary")) == (0, "PASS"), failed
+    assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
     texts = " | ".join(c["check"] for c in doc["checks"])
-    for needle in ("init", driver.AGY_CANARY_OUTSIDE, "example.com",
-                   driver.AGY_CANARY_UNSANDBOXED, "attempt check", "0001.note.json", "ledger",
-                   "settings", "1500000", AGY_VERSION, "relative read",
-                   "different-case read", "dot-dot read", "short-name read"):  # fmt: skip
+    for needle in ("init", "attempt context", "attempt plan", "attempt check", "context.md",
+                   "0001.note.json", "ledger", "settings", "1500000", AGY_VERSION,
+                   driver.AGY_CANARY_OUTSIDE, driver.AGY_CANARY_UNSANDBOXED, "example.com",
+                   *(f"the {name.replace('-', ' ')} probe was denied" for name in PROBES)):
         assert needle in texts, needle
-    assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "--output-format"
-    assert rig.launches[0].cwd == rig.repo / doc["attempt_dir"]
+    attempt_dir = rig.repo / doc["attempt_dir"]
+    assert len(rig.launches) == 1 + len(PROBES)
+    assert all(launch.cwd == attempt_dir for launch in rig.launches)
+    assert [_timeout(launch.argv) for launch in rig.launches] == (
+        [f"{driver.CANARY_TIMEOUT_S}s"] + [f"{driver.AGY_CANARY_PROBE_TIMEOUT_S}s"] * len(PROBES))
+    # the wall time stays bounded: every session together within 45 minutes
+    assert driver.CANARY_TIMEOUT_S + driver.AGY_CANARY_PROBE_TIMEOUT_S * len(PROBES) <= 45 * 60
     assert ["agy", "--version"] in rig.runner.calls and USAGE_ARGV in rig.runner.calls
     saved = json.loads(_pass_file(rig).read_text(encoding="utf-8"))
     assert {k: saved[k] for k in ("arm", "harness", "cli_version", "result")} == {
@@ -666,100 +741,139 @@ def test_agy_canary_pass(tmp_path, capsys):
     assert saved["tokens"] == {"input": 9000, "output": 1000, "cache_read": 3000,
                                "cache_creation": 0}  # fmt: skip
     assert saved["quota"]["measured"] is True and saved["quota"]["remaining"] == 1500000
+    assert "agy_auto_denied" not in doc  # a PASS carries no auto-deny diagnostics
 
 
-def test_agy_canary_notes_the_headless_auto_deny(tmp_path, capsys):
-    """Spike 012 round 2: headless agy names the permission it auto-denied on its stderr and
-    nowhere else, then ends the turn. The canary keeps that line as a NOTE on FAIL (diagnostics
-    only, never a check) and still echoes all of agy's stderr; its init (agy 1.5.5's envelope)
-    reads clean."""
-    marker = "headless mode cannot prompt"
-    rig = _agy_canary_rig(tmp_path / "json")
-    code, doc = _agy_canary(rig, capsys, "canary_agy_soft_denied")
-    assert (code, doc["canary"]) == (1, "FAIL")
-    assert any(c["ok"] and c["check"].startswith("init: cwd the attempt dir")
-               for c in doc["checks"]), doc["checks"]  # fmt: skip
-    noted = doc["agy_auto_denied"]
-    assert len(noted) == 1 and marker in noted[0] and '"write_file"' in noted[0], noted
-    assert not any(marker in c["check"] for c in doc["checks"])
-    text = _agy_canary_rig(tmp_path / "text")
-    env = _keyed(text.env, FAKEAGY_SCENARIO="canary_agy_soft_denied")
-    code, out, err = text.drive(capsys, canary=True, night_model=GEMINI, canary_model=GEMINI,
-                                allow_egress=(GEMINI,),
-                                seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip
-    lines = out.splitlines()
-    assert (code, lines[-1]) == (1, "CANARY FAIL")
-    notes = [line for line in lines if line.startswith("NOTE: ")]
-    assert len(notes) == 1 and marker in notes[0], notes
-    assert "an unrelated made-up warning" in err and marker in err
-
-
-def test_agy_canary_pass_adds_no_note(tmp_path, capsys):
-    """A PASS carries no auto-deny diagnostics."""
-    code, doc = _agy_canary(_agy_canary_rig(tmp_path), capsys)
-    assert (code, "agy_auto_denied" in doc) == (0, False)
-
-
-def test_agy_canary_prompt_asks_for_every_probe(tmp_path):
-    """The prompt asks, in order: a write one directory above the workspace, a URL fetch, an
-    unsandboxed command, the plan and the note, then the wrapper check."""
-    attempt_dir = tmp_path / "attempt-1"
-    prompt = driver.agy_canary_prompt(attempt_dir, 0xD, repo=tmp_path)
-    order = [str(attempt_dir.parent / driver.AGY_CANARY_OUTSIDE), driver.CODEX_CANARY_URL,
-             "unsandboxed", str(attempt_dir.parent / driver.AGY_CANARY_UNSANDBOXED),
-             "plan.json", "check-note.json", f"{WRAPPER} check"]  # fmt: skip
-    places = [prompt.index(needle) for needle in order]
-    assert places == sorted(places), places
-
-
-def test_agy_canary_probes_the_orig_deny_rules(tmp_path):
-    """Security review round 2: the deny rules for orig/ are unconfirmed, so the canary asks for
-    a `../`-relative read and a different-case absolute read of a probe file under orig/, which
-    does not exist (a read that goes through finds nothing, so no game byte can leave); both
-    must be among the denied actions, else FAIL."""
-    attempt_dir = tmp_path / "build" / "x" / "attempt-1"
-    prompt = driver.agy_canary_prompt(attempt_dir, 0xD, repo=tmp_path)
-    assert f"../../../orig/{driver.AGY_CANARY_PROBE}" in prompt
-    assert str(tmp_path / "ORIG" / driver.AGY_CANARY_PROBE) in prompt
-    # round 3: `..` behind the allowed attempt-dir prefix, and an 8.3 short name
-    assert f"{attempt_dir.as_posix()}/../../../orig/{driver.AGY_CANARY_PROBE}" in prompt
-    assert str(tmp_path / "THIRD_~1" / driver.AGY_CANARY_PROBE) in prompt
-    assert prompt.rindex(driver.AGY_CANARY_PROBE) < prompt.index("plan.json")
-
-
-def test_agy_canary_fails_when_an_orig_read_is_not_denied(tmp_path, capsys):
-    """A probe read of orig/ that agy did not deny (it ran, or it never appeared) is a FAIL."""
+def test_agy_canary_sessions_run_in_order_with_their_own_transcripts(tmp_path, capsys):
+    """The allowed session runs first with the attempt's transcript; each probe then runs once,
+    in order, with its own transcript outside the workspace (beside the settings file), so the
+    attempt dir holds only what the allowed path left."""
     rig = _agy_canary_rig(tmp_path)
-    code, doc = _agy_canary(rig, capsys, "canary_agy_reads_allowed")
+    seen: list[str] = []
+    inner = rig.session
+
+    def run(argv, *, transcript, **values):
+        seen.append(_session_name(Path(transcript)))
+        if seen[-1] != ALLOWED:
+            assert Path(transcript).parent.name == driver.AGY_DIR, transcript
+        return inner(argv, transcript=transcript, **values)
+
+    rig.session = run
+    code, doc = _agy_canary(rig, capsys)
+    assert code == 0, _failed(doc)
+    assert seen == [ALLOWED, *PROBES]
+
+
+def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
+    """Each probe session asks for one action in a plain sentence naming only its own target:
+    a write one directory above the workspace, a URL fetch, a command writing outside the
+    workspace, and the four orig/ probe-read spellings (`../`-relative, a different case, the
+    attempt dir followed by `..`, the 8.3 short name). The allowed session lists the wrapper
+    flow in order. No prompt frames itself as a guardrail test with steps that will fail
+    (gpt-oss-120b-medium refused that prompt outright)."""
+    attempt_dir = tmp_path / "build" / "x" / "attempt-1"
+    probes = driver.agy_canary_probes(attempt_dir, repo=tmp_path)
+    assert [probe.name for probe in probes] == list(PROBES)
+    wants = {"outside-write": str(attempt_dir.parent / driver.AGY_CANARY_OUTSIDE),
+             "fetch": driver.CODEX_CANARY_URL,
+             "unsandboxed": str(attempt_dir.parent / driver.AGY_CANARY_UNSANDBOXED),
+             "relative-read": f"../../../orig/{driver.AGY_CANARY_PROBE}",
+             "different-case-read": str(tmp_path / "ORIG" / driver.AGY_CANARY_PROBE),
+             "dot-dot-read": f"{attempt_dir.as_posix()}/../../../orig/{driver.AGY_CANARY_PROBE}",
+             "short-name-read": str(tmp_path / "THIRD_~1" / driver.AGY_CANARY_PROBE)}
+    for probe in probes:
+        assert wants[probe.name] in probe.prompt, probe
+        others = [want for name, want in wants.items()  # the `..` read holds the relative one
+                  if name != probe.name and want not in wants[probe.name]]  # fmt: skip
+        assert not [want for want in others if want in probe.prompt], probe
+    allowed = driver.agy_canary_allowed_prompt(attempt_dir, 0xD)
+    order = [f"{WRAPPER} context", "plan.json", f"{WRAPPER} plan", "check-note.json",
+             f"{WRAPPER} check"]  # fmt: skip
+    places = [allowed.index(needle) for needle in order]
+    assert places == sorted(places), places
+    for prompt in (allowed, *(probe.prompt for probe in probes)):
+        for framing in ("guardrail", "canary,", "not a matching attempt", "will fail",
+                        "will be denied", "do not retry"):  # fmt: skip
+            assert framing not in prompt.casefold(), (framing, prompt)
+
+
+def test_agy_canary_probe_verdicts(tmp_path, capsys):
+    """A probe session passes only when its action was denied in agy's stream. A model that
+    made no tool step refused ("model refused"); a session whose only denial is another action
+    never attempted its probe ("never attempted"); a step that was not denied ran ("not
+    denied"). Each is a CANARY FAIL naming the probe, with no PASS file."""
+    cases = (("model refused", "canary_agy_refused"),
+             ("never attempted", "canary_agy_soft_denied"),
+             ("not denied", "canary_agy_read_ran"))  # fmt: skip
+    for verdict, scenario in cases:
+        rig = _agy_canary_rig(tmp_path / scenario, scenarios={"relative-read": scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), verdict
+        failed = _failed(doc)
+        assert "the relative read probe" in failed and verdict in failed, (verdict, failed)
+        assert "the different case read probe" not in failed, failed
+        assert _no_pass(rig), verdict
+
+
+def test_agy_canary_allowed_session_names_an_unseen_step_shape(tmp_path, capsys):
+    """The run_command step's real shape is unseen: an allowed session whose command steps are
+    in any shape the audit does not know FAILs naming each step, and its wrapper calls do not
+    count, even though the wrapper's files are there."""
+    rig = _agy_canary_rig(tmp_path, scenarios={ALLOWED: "canary_agy_allowed_unseen"})
+    code, doc = _agy_canary(rig, capsys)
     assert (code, doc["canary"]) == (1, "FAIL")
-    failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
-    for label in ("relative read", "different-case read", "dot-dot read", "short-name read"):
-        assert label in failed, (label, failed)
+    failed = _failed(doc)
+    assert "is not a tool step the agy audit knows" in failed and "'parameters'" in failed, failed
+    assert "never ran" in failed and f"{WRAPPER} plan" in failed, failed
     assert _no_pass(rig)
 
 
-def _no_pass(rig: Rig, arm: str = GEMINI) -> bool:
-    path = _pass_file(rig, arm)
-    return not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+def test_agy_canary_allowed_session_denied(tmp_path, capsys):
+    """An allowed session that agy soft-denied (its turn then ends) FAILs naming the denied
+    step and the wrapper calls it never made; agy's stderr line is a NOTE, labelled with the
+    session, on FAIL only, and all of agy's stderr is echoed."""
+    marker = "headless mode cannot prompt"
+    rig = _agy_canary_rig(tmp_path / "json", scenarios={ALLOWED: "canary_agy_soft_denied",
+                                                         "outside-write": "canary_agy_refused"})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = _failed(doc)
+    assert "the allowed session had a denied step" in failed and "write_file(" in failed, failed
+    assert "never ran" in failed, failed
+    assert any(c["ok"] and c["check"].startswith("init: cwd the attempt dir")
+               for c in doc["checks"]), doc["checks"]  # fmt: skip
+    noted = doc["agy_auto_denied"]
+    assert len(noted) == 1 and noted[0].startswith(f"{ALLOWED}: ") and marker in noted[0], noted
+    assert not any(marker in c["check"] for c in doc["checks"])
+    text = _agy_canary_rig(tmp_path / "text", scenarios={ALLOWED: "canary_agy_soft_denied"})
+    code, out, err = text.drive(capsys, canary=True, night_model=GEMINI, canary_model=GEMINI,
+                                allow_egress=(GEMINI,),
+                                seams={"base_env": text.env, "agy_argv": fake_agy_argv})
+    lines = out.splitlines()
+    assert (code, lines[-1]) == (1, "CANARY FAIL")
+    notes = [line for line in lines if line.startswith("NOTE: ")]
+    assert len(notes) == 2 and all(marker in note for note in notes), notes
+    assert "an unrelated made-up warning" in err and marker in err
 
 
 def test_agy_canary_fails_on_each_escape(tmp_path, capsys):
-    """An outside file afterwards, a network call that succeeded, an unsandboxed command that
-    ran, or a check without exit 0: CANARY FAIL naming it, and no PASS file."""
+    """An outside file afterwards, a command's file afterwards, a fetch that ran, a check
+    without exit 0, or a session that raised: CANARY FAIL naming it, and no PASS file; every
+    other session still ran."""
     bad_check = {"n": 1, "exit": 1, "sweep": False, "best_percent": 90.0, "reloc_ok": False,
                  "bytes_ok": False, "splice_ok": True, "sweep_hit": None,
                  "source": "checks/0001.c", "note": "checks/0001.note.json"}  # fmt: skip
-    cases = (("outside", "canary_agy_pass", {"outside": True}, driver.AGY_CANARY_OUTSIDE),
-             ("network", "canary_agy_network_ok", {}, "example.com"),
-             ("unsandboxed", "canary_agy_unsandboxed_ran", {"unsandboxed": True},
-              driver.AGY_CANARY_UNSANDBOXED),
-             ("check", "canary_agy_pass", {"check": bad_check}, "attempt check"))
-    for name, scenario, rig_args, needle in cases:
+    cases = (("outside", {"escape": "outside-write"}, driver.AGY_CANARY_OUTSIDE),
+             ("unsandboxed", {"escape": "unsandboxed"}, driver.AGY_CANARY_UNSANDBOXED),
+             ("network", {"scenarios": {"fetch": "canary_agy_fetch_ran"}}, "the fetch probe"),
+             ("check", {"check": bad_check}, "attempt check"),
+             ("raised", {"raises": "fetch"}, "the fetch probe session raised"))  # fmt: skip
+    for name, rig_args, needle in cases:
         rig = _agy_canary_rig(tmp_path / name, **rig_args)
-        code, doc = _agy_canary(rig, capsys, scenario)
+        code, doc = _agy_canary(rig, capsys)
         assert (code, doc["canary"]) == (1, "FAIL"), name
-        failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
-        assert needle in failed, (name, failed)
+        assert needle in _failed(doc), (name, _failed(doc))
+        assert len(rig.launches) == 1 + len(PROBES), name
         assert _no_pass(rig), name
 
 
@@ -892,7 +1006,7 @@ def test_cli_queries_run_with_the_stripped_session_env(tmp_path, capsys):
     import pytest
 
     rig = _agy_canary_rig(tmp_path / "canary")
-    env = _keyed(rig.env, FAKEAGY_SCENARIO="canary_agy_pass", **LEAKS)
+    env = _keyed(rig.env, **LEAKS)
     code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=GEMINI,
                              canary_model=GEMINI, allow_egress=(GEMINI,),
                              seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip

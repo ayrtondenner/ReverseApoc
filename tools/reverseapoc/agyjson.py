@@ -32,7 +32,11 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   command, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
   the audit counts each as a stray (WR-02).
 - `denied_actions`: the result's denied actions as `action(target)` strings.
-- `executions`: every command step with its exit code (the canary's probes).
+- `denials`, `undenied_steps`, `response` (the agy canary's evidence): each tool step agy's
+  permission check refused, with its action and target read from the step's own error message
+  (spike 012: `permission check failed for write_file "<path>": user denied permission for
+  write_file(<path>)`, state ERROR), or a step ending DENIED by its tool and path or command;
+  every other tool step (it ran); the result's response text.
 - `failure`: the result's status and error when the status is not SUCCESS, else None.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is STOP when it says authentication is required, LIMIT when it says a quota or rate
@@ -42,6 +46,7 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -172,6 +177,7 @@ _COMMAND_TOOLS = frozenset({"run_command"})
 _READ_TOOLS = frozenset({"read_file"})
 _WRITE_TOOLS = frozenset({"write_file"})
 _DENIED_STATE = "DENIED"  # a step's own last state when the settings soft-denied it
+_ERROR_STATE = "ERROR"  # agy 1.5.5's last state for a soft-denied step (spike 012)
 _TOOL_STEP = "TOOL"
 _TOOL_FIELDS = ("tool_name", "tool_info", "subagent_info")
 
@@ -227,27 +233,6 @@ def _path(info: Mapping) -> str | None:
     return value if isinstance(value, str) else repr(value)
 
 
-class Execution(NamedTuple):
-    """One command step: its command and its exit code (None when the stream holds none)."""
-
-    command: str
-    exit_code: int | None
-
-
-def executions(events: Sequence[dict]) -> list[Execution]:
-    """Every command step, denied ones included, in order, as it ended (the agy canary)."""
-    out = []
-    for step in _steps(events):
-        info = _mapping(step.get("tool_info"))
-        if "command" not in info:
-            continue
-        code = info.get("exit_code")
-        out.append(Execution(_command_text(info["command"]),
-                             code if isinstance(code, int) and not isinstance(code, bool)
-                             else None))  # fmt: skip
-    return out
-
-
 def commands(events: Sequence[dict]) -> list[str]:
     """Every command step that ran (see the module docstring), whatever its tool's name."""
     return [_command_text(_mapping(step.get("tool_info"))["command"]) for step in _steps(events)
@@ -298,6 +283,64 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
             out.append(f"step {step.get('step_index')!r}: tool {step.get('tool_name')!r} with "
                        f"{keys} is not a tool step the agy audit knows")  # fmt: skip
     return out
+
+
+# spike 012: agy 1.5.5's text for a step its permission check refused, in tool_info.error
+# (its binary's format: `permission check failed for %s %q: %w`), the target Go-quoted
+_PERMISSION_FAILED = re.compile(r'permission check failed for (\S+) "((?:[^"\\]|\\.)*)"')
+_ERROR = "error"
+_MESSAGE = "message"
+
+
+class Denial(NamedTuple):
+    """One tool step agy's permission check refused: its index, its tool, the permission
+    action and the target (from the error message, else the step's path or command)."""
+
+    step: int | None
+    tool: str | None
+    action: str | None
+    target: str | None
+
+
+def _unquote(raw: str) -> str:
+    """A Go %q body as its text; one that is not also a JSON string body stays as written."""
+    try:
+        return json.loads(f'"{raw}"')
+    except ValueError:
+        return raw
+
+
+def _denial(step: Mapping) -> Denial | None:
+    info = _mapping(step.get("tool_info"))
+    index, tool = step.get("step_index"), step.get("tool_name")
+    index = index if isinstance(index, int) and not isinstance(index, bool) else None
+    tool = tool if isinstance(tool, str) else None
+    message = _mapping(info.get(_ERROR)).get(_MESSAGE)
+    found = _PERMISSION_FAILED.search(message) if isinstance(message, str) else None
+    if found is not None and step.get("state") in (_DENIED_STATE, _ERROR_STATE):
+        return Denial(index, tool, found.group(1), _unquote(found.group(2)))
+    if step.get("state") != _DENIED_STATE:
+        return None
+    target = _command_text(info["command"]) if "command" in info else _path(info)
+    return Denial(index, tool, tool, target)
+
+
+def denials(events: Sequence[dict]) -> list[Denial]:
+    """Every tool step agy's permission check refused, in order (the agy canary's evidence):
+    a step ending ERROR whose error message is the permission check's, or ending DENIED."""
+    return [found for step in _steps(events) if (found := _denial(step)) is not None]
+
+
+def undenied_steps(events: Sequence[dict]) -> list[str]:
+    """`step <index>: <tool> (<state>)` for every tool step that is not a denial: it ran."""
+    return [f"step {step.get('step_index')!r}: {step.get('tool_name')} ({step.get('state')})"
+            for step in _steps(events) if _denial(step) is None]  # fmt: skip
+
+
+def response(events: Sequence[dict]) -> str:
+    """The last result's response text, stripped ('' with none)."""
+    text = _mapping(_result(events)).get("response")
+    return text.strip() if isinstance(text, str) else ""
 
 
 def failure(events: Sequence[dict]) -> str | None:
