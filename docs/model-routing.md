@@ -264,17 +264,25 @@ The model ids are assumptions to confirm at setup.
   in the workspace (Codex reads project rules from `<--cd>/.codex/rules/`), so if Codex re-read
   a session-edited rules file within the same session, only the audit would catch it.
 - **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
-  (and the same for `gpt-6.1-sol`) asks the session, in order, to run `whoami /all`, write a
-  file one directory above its workspace, fetch `https://example.com/`, run the wrapper's
-  context form followed by `;` and a write outside the workspace, write plan.json and
-  check-note.json, and run the wrapper check. It passes only when `whoami /all` ran (exit 0)
-  and its output shows a sandboxed session: the token lists the restricted SID `S-1-5-12`
-  (`NT AUTHORITY\RESTRICTED`; the unelevated sandbox runs commands as the owner's own user
-  under a restricted token), or the user is not the owner's `USERNAME` (an elevated sandbox's
-  own account; a FAIL quotes the exit code and an output excerpt), and when neither outside
-  file exists afterwards, the fetch failed, the wrapper check logged exit 0 and
-  consumed its note, the audit flagged the three probe commands, the attempt dir matches the
-  ledger, and the tree, refs and containers are as for every canary. On PASS it writes
+  (and the same for `gpt-6.1-sol`) asks the session, in order, to run these exact commands:
+  `whoami /all`, `Set-Content -Path '<one directory above the workspace>' -Value canary`
+  (under build/, never under TEMP, which workspace-write allows),
+  `Invoke-WebRequest -Uri https://example.com/ -UseBasicParsing`, and the wrapper's context
+  form followed by `;` and a write outside the workspace; then to write plan.json and
+  check-note.json and run the wrapper check. A probe counts only if it ran: its item ended
+  with an exit code of 0 or more and no `Failed to create unified exec process` (round 2's
+  canaries passed probes that never started). `whoami /all` is informational: the
+  unelevated sandbox runs commands as the owner's own user and whoami shows the same groups
+  and integrity level inside it as outside, so it passes when it ran with exit 0, naming the
+  user. The sandbox proof is behavioural, matched on locale-independent PowerShell tokens
+  (the owner's Windows prints messages in Portuguese): the outside write ran, printed
+  `UnauthorizedAccess` (`GetContentWriterUnauthorizedAccessError`) and left no file; the
+  fetch ran, failed and printed a network error (`WebCmdletWebResponseException`,
+  `WebException`, `HttpRequestException` or `SocketException`); the compound command ran and
+  left no file. A FAIL quotes the exit code and an output excerpt. The canary also needs the
+  wrapper check to have logged exit 0 and consumed its note, the audit to have flagged the
+  three probe commands, the attempt dir to match the ledger, and the tree, refs and
+  containers to be as for every canary. On PASS it writes
   `build/driver/canary/<arm>.json` (`arm`, `harness`, `cli_version` from `codex --version`,
   `date`, `result`); on FAIL it writes `result: FAIL` there.
 - **The pass gate.** A night of a Codex arm is refused (exit 2, before any session, naming
