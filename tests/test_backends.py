@@ -267,6 +267,13 @@ def test_local_arm():
     assert arm.accepted_init == ("qwen3.6-35b-a3b",) and arm.coauthor
 
 
+def test_claude_arms_take_a_night_of_ten_workers():
+    """Nights run `--workers 10` on the Claude login (night 20261107-030004), and spike 012's
+    Claude arms run at the same count, so a Claude arm's cap must not refuse it."""
+    claude = [arm for arm in _arms().values() if arm.backend == "anthropic"]
+    assert claude and all(arm.max_workers >= 10 for arm in claude)
+
+
 def test_both_qwen_entries_are_one_model_family():
     """The owner's Qwen ruling: the hosted and the local Qwen run the same weights, and differ
     in backend (and so in endpoint, key, egress, price and workers), not in model family."""
