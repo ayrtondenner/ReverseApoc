@@ -28,7 +28,11 @@ After each session, in this order:
    committed: each stray file is copied or moved into build/driver/<run>/quarantine/ (created
    at run start; no link followed, O_EXCL, never overwritten) and put back as it was, the
    attempt is reset, the snapshot is taken again, and the record lists every path. A session
-   that raises is contained the same way before its ERROR stop. build/ itself is not audited:
+   that raises is contained the same way before its ERROR stop. Owner ruling 2026-11-10: on
+   a night of several arms, a session whose only strays are transcript writes the hook denied
+   (permission_denials), with nothing changed after its reset, stops its arm only
+   (`_stop_arm`): recorded GAVE_UP guardrail, named on the console and in the run record's
+   detail, while the other arms go on. build/ itself is not audited:
    the attempt wrapper writes there by design (a known limit);
 3. streamjson.classify (D-08): STOP stops the night; a check_init problem stops it too; LIMIT
    keeps the session's work (the gate runs on it as usual), then backs off 60, 120, 240 s and
@@ -1261,6 +1265,12 @@ def _write_targets(events: Sequence[dict]) -> list[str | None]:
     return [use.target for use in streamjson.tool_uses(events) if use.name in hooks.EDIT_TOOLS]
 
 
+def _write_ids(events: Sequence[dict]) -> list[str | None]:
+    """The tool_use id of every write-tool call, in `_write_targets`' order."""
+    uses = zip(streamjson.tool_uses(events), streamjson.tool_use_ids(events), strict=True)
+    return [use_id for use, use_id in uses if use.name in hooks.EDIT_TOOLS]
+
+
 def _roots(repo: Path, cwd: object) -> list[str]:
     """The casefolded forms of the checkout root: the driver's path and the cwd the CLI reports
     in its init event (the same directory, possibly spelled another way)."""
@@ -1826,6 +1836,16 @@ def _hook_blocks(events: Sequence[Mapping]) -> int:
     return len(_items(results[-1].get("permission_denials"))) if results else 0
 
 
+def _denied_ids(events: Sequence[Mapping]) -> frozenset[str]:
+    """Owner ruling 2026-11-10: the tool_use ids in the last result event's
+    `permission_denials` (`_hook_blocks`' list), the calls the hook or the permission mode
+    denied; a session without a result event denied none we can prove."""
+    results = [e for e in events if isinstance(e, Mapping) and e.get("type") == "result"]
+    denials = _items(results[-1].get("permission_denials")) if results else []
+    ids = (d.get("tool_use_id") for d in denials if isinstance(d, Mapping))
+    return frozenset(use_id for use_id in ids if isinstance(use_id, str))
+
+
 def matched_starts(data: bytes | None, unit: str | None = None) -> frozenset[int]:
     """The starts of the `matched` rows of a status.csv's bytes (None: no table), only those of
     `unit` when one is given. Read loosely (any column order, `#` lines skipped), since only
@@ -1982,6 +2002,31 @@ def pass_index(log: Path) -> dict[Key, int]:
             v1_runs.setdefault(key, set()).add(record["run"])
     return {key: max(len(v1_runs.get(key, ())), v2_pass.get(key, 0))
             for key in v1_runs.keys() | v2_pass.keys()}  # fmt: skip
+
+
+_CUT_SHORT = (GUARDRAIL, TOOL)  # the abort_reason of an attempt record a stop cut short
+
+
+def hold_progress(log: Path, run: str) -> tuple[frozenset[Key], dict[Key, int]]:
+    """Owner approval 2026-11-10 (resume a hold run): the functions run `run` already attempted
+    with a counted session, read from attempts.jsonl (the night starts only on a log equal to
+    HEAD, so these are committed), and the highest attempt number each function's attempt or
+    abort records in `run` carry, so a redo gets a fresh attempt directory. Counted: a
+    hold-run attempt record that `_hold_counted` wrote (abort_reason null or timeout: HOLD_EXACT,
+    PARTIAL, GAVE_UP). Not counted, so attempted again: a GAVE_UP guardrail or tool record (the
+    night's stop or its arm's cut the attempt short and reset its work), a transient abort, and
+    a session the stop killed, which left no record."""
+    done: set[Key] = set()
+    last: dict[Key, int] = {}
+    for record in _log_records(log):
+        if record["kind"] not in (KIND_ATTEMPT, KIND_ABORT) or record["run"] != run:
+            continue
+        key = (record["exe"], int(record["start"], 16))
+        last[key] = max(last.get(key, 0), record["attempt"])
+        if (record["kind"] == KIND_ATTEMPT and record.get("hold_run") is True
+                and record["abort_reason"] not in _CUT_SHORT):  # fmt: skip
+            done.add(key)
+    return frozenset(done), last
 
 
 def passes_of(log: Path, key: Key) -> int:
@@ -2527,8 +2572,12 @@ class _Lane:
     unit was busy (`deferred`), so under --hold each function is attempted once per arm. Its
     own usage-limit `pause` and its own session cap (`max_sessions`, backends.toml; None: the
     night's cap only) with the sessions, spent transient launches and reserved slots counted
-    against it beside the night's totals (D-22). Read and written under the night's
-    condition."""
+    against it beside the night's totals (D-22). `stopped` (owner ruling 2026-11-10): a
+    session of the arm made a write the hook denied, so it launches nothing more
+    (`_Night._stop_arm`). On a hold run (owner approval 2026-11-10, `hold_progress`) `done`
+    starts with the functions its run's committed records already counted and `attempted`
+    holds each function's highest recorded attempt number, so a resumed drive skips the first
+    and gives a redo the next attempt number. Read and written under the night's condition."""
 
     arm: str | None
     run: str
@@ -2544,6 +2593,8 @@ class _Lane:
     picks: Iterator[Pick] = field(default_factory=lambda: iter(()))
     tiers: TierQueue | None = None
     exhausted: bool = False  # a pool queue read to its end
+    stopped: bool = False
+    attempted: dict[Key, int] = field(default_factory=dict)
 
     def drop(self, key: Key) -> None:
         """A function another arm matched tonight: no more work for this arm."""
@@ -2655,6 +2706,8 @@ class _Coordinator:
             source = night.deps.queue(frozenset(difficult))
             if isinstance(source, TierQueue):
                 source.use_passes(lane.passes)  # one pass index: the records' and the queue's
+                for key in lane.done:  # a resumed hold run's counted functions (`release`)
+                    source.finish(key, matched=False, parked=True)
                 lane.tiers = source
             else:
                 lane.picks = iter(source)
@@ -2818,6 +2871,7 @@ class _Night:
         self.stop = threading.Event()  # set by the first failure (stop-all) or an interrupt
         self.failure: BaseException | None = None  # the first worker failure, re-raised
         self.halt_notes: list[str] = []  # what each halted worker's containment did
+        self.arm_stops: list[str] = []  # owner ruling 2026-11-10: why each arm stopped (cond)
         for lane in self.lanes:  # 07.2-16 (D-22): each arm its own pause and session cap
             lane.pause = _Pause(self.cond, self.stop, deps.clock)
             lane.max_sessions = self.arms[lane.arm].max_sessions if lane.arm else None
@@ -2905,8 +2959,10 @@ class _Night:
 
     def _lane_end(self, lane: _Lane) -> bool:
         """07.2-16 (D-22): the arm has launched its own cap of sessions (counted ones and spent
-        transient launches); under the night's condition."""
-        return lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
+        transient launches), or (owner ruling 2026-11-10) a denied write stopped it; under the
+        night's condition."""
+        capped = lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
+        return capped or lane.stopped
 
     def _settle(self, *, counted: bool, spent: bool) -> None:
         """Under the night's condition: this worker's reserved slot (if it holds one) becomes a
@@ -3088,6 +3144,8 @@ class _Night:
             self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows(),
                              guard=False)  # fmt: skip  # nothing is committed after an interrupt
             raise
+        if self.arm_stops:  # owner ruling 2026-11-10: the run record names each stopped arm
+            detail = _detail("; ".join([*([detail] if detail else []), *self.arm_stops]))
         found = [] if self.breached else self._ledger_breaches()
         if found:  # fix round 1: never commit a driver-owned file holding bytes it did not write
             event, reason = STOPPED, GUARDRAIL
@@ -3209,8 +3267,14 @@ class _Night:
             return self.land_held()
         with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
             index = pass_index(self.log)
+            resume = ({lane.run: hold_progress(self.log, lane.run) for lane in self.lanes}
+                      if self.config.hold else {})  # fmt: skip
         for lane in self.lanes:  # 07.2-16: each arm counts its own passes from there
             lane.passes.update(index)
+            done, lane.attempted = resume.get(lane.run, (frozenset(), {}))
+            for key in done:  # a resumed hold run: as `_hold_done` and `release` left them
+                lane.passes[key] = lane.passes.get(key, 0) + 1
+                lane.done.add(key)
         self.coordinator = _Coordinator(self)
         end = self.coordinator.run()
         self._retry_deferred()  # 07-34: every claim of the night is released now
@@ -3248,10 +3312,12 @@ class _Night:
         outcome; nothing goes to the difficult list. Quick 261109-gzu: PARKED when an attempt's
         record parks the function (`_parks`): a finished pass (its count in `passes` goes up,
         so its callers may follow) but no difficult-list entry; it comes back next night.
-        07.2-06 (D-17, D-22): a hold run attempts each function once (`_hold_done`)."""
+        07.2-06 (D-17, D-22): a hold run attempts each function once (`_hold_done`); a resumed
+        one (owner approval 2026-11-10) numbers a redo after the run's recorded attempts."""
         readability = self.config.session == READABILITY
         key = (pick.exe, pick.start)
-        for n in range(1, self._attempts() + 1):
+        first = self.lane.attempted.get(key, 0) + 1
+        for n in range(first, first + self._attempts()):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return None
             try:
@@ -3391,6 +3457,10 @@ class _Night:
         transient = 0
         while True:
             self._halt_if_stopping()
+            with self.cond:  # owner ruling 2026-11-10: a stopped arm relaunches nothing
+                stopped = self.lane.stopped
+            if stopped:
+                raise _Halt()
             # D-07: no launch while the pause holds (07.2-16: this worker's arm's pause, D-22)
             probe = self.lane.pause.wait_to_launch()
             claim = self._claim(pick, n)
@@ -3681,7 +3751,7 @@ class _Night:
                                     launch_files)  # fmt: skip
             self.live = session
             try:
-                self._audit(session)
+                self._audit(session, note=note)
             except _Stop as stop:
                 if note:
                     raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
@@ -3760,6 +3830,13 @@ class _Night:
         is as it was at launch, and the unit is a regular file; every pinned path outside
         git's view and every fingerprinted file is unchanged; every write tool the transcript
         names passed the hook's view-mode allowlist."""
+        stray, writes = self._audited(session)
+        return [*stray, *(text for text, _ in writes)]
+
+    def _audited(self, session: _Session) -> tuple[list[str], list[tuple[str, bool]]]:
+        """`_strays` in two parts (owner ruling 2026-11-10): every stray but a Claude
+        transcript write, then each transcript write stray with whether the hook denied it
+        (its tool_use id is in the result event's permission_denials, `_denied_ids`)."""
         allowed = self._allowed(session.claim, self._tracked())
         stray = [p for p in self._unexplained(session.after) if not allowed(p)]
         stray += [name for name in self._view_changes(session) if name not in stray]
@@ -3768,12 +3845,14 @@ class _Night:
         stray += [name for name in self._base_changed(session) if name not in stray]
         if session.claim.harness != backends.CLAUDE:  # 07.2-13, 07.2-15: never read as Claude's
             stray += [s for s in self._signed_in_strays(session, allowed) if s not in stray]
-            return stray
-        raws = _write_targets(session.events)
-        for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
-            if rels is None or not all(allowed(rel) for rel in rels):
-                stray.append(f"{raw}{_TRANSCRIPT_MARK}")
-        return stray
+            return stray, []
+        events = session.events
+        denied = _denied_ids(events)
+        uses = zip(_write_targets(events), transcript_paths(events, self.repo), _write_ids(events),
+                   strict=True)  # fmt: skip
+        writes = [(f"{raw}{_TRANSCRIPT_MARK}", use_id in denied) for raw, rels, use_id in uses
+                  if rels is None or not all(allowed(rel) for rel in rels)]  # fmt: skip
+        return stray, writes
 
     def _guard_launch(self, claim: _Claim) -> dict[str, str]:
         """07.2-13 (D-13, D-26): before a Codex session, in its fresh attempt dir, the rules file
@@ -4046,8 +4125,12 @@ class _Night:
             changed.append(claim.view_unit_rel)
         return changed
 
-    def _audit(self, session: _Session) -> None:
-        stray = self._strays(session)
+    def _audit(self, session: _Session, *, note: str = "") -> None:
+        """Any stray stops the night (`_guardrail`), but (owner ruling 2026-11-10) one whose
+        strays are all transcript writes the hook denied, with no containers `note`, stops
+        its arm only (`_stop_arm`), and its worker leaves quietly (_Halt)."""
+        other, writes = self._audited(session)
+        stray = [*other, *(text for text, _ in writes)]
         if not stray:
             return
         # 07-21 stop-all: a session the stop killed is contained like any other, but neither
@@ -4055,7 +4138,41 @@ class _Night:
         counted = session.counted and not self.stop.is_set()
         if counted:
             self._count()
+        denied_only = not other and not note and all(denied for _, denied in writes)
+        if denied_only and self._stop_arm(session, stray, record=counted):
+            raise _Halt()
         self._guardrail(session, stray, record=counted)
+
+    def _stop_arm(self, session: _Session, stray: Sequence[str], *, record: bool) -> bool:
+        """Owner ruling 2026-11-10: the session's only strays are writes the hook denied, so
+        no file of it needs containing. Reset the attempt as a guardrail does; when nothing
+        is still changed after it (`_still_changed`), record the attempt GAVE_UP guardrail as
+        a guardrail does, stop this worker's arm (its lane launches nothing more, its sessions
+        in flight finish) and name it on the console and in the night's run record. False,
+        and the night stops as before: one arm (stopping it is stopping the night), a night
+        already stopping, or a reset or a check that failed or found a change (the guardrail
+        that follows contains and names it)."""
+        if len(self.lanes) == 1 or self.stop.is_set():
+            return False
+        try:
+            self._reset(session)
+            if self._still_changed(session):
+                return False
+        except Exception:  # noqa: BLE001 - _guardrail resets and checks again, and names it
+            return False
+        claim = session.claim
+        paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray]
+        line = (f"{self._label(claim.pick, claim.n)}: arm {self.lane.arm} stopped (guardrail): "
+                f"the hook denied its write to {_listed(paths)} and nothing changed; the other "
+                "arms go on")  # fmt: skip
+        with self.cond:
+            self.lane.stopped = True
+            self.arm_stops.append(line)
+            self.cond.notify_all()
+        if record:
+            self._record_attempt(session, GAVE_UP, GUARDRAIL, read_checks(claim.attempt_dir))
+        self.deps.say(line)
+        return True
 
     def _guardrail(
         self, session: _Session, stray: Sequence[str], *, record: bool, extra: Sequence[str] = ()

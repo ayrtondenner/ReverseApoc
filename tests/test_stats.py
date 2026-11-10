@@ -901,6 +901,23 @@ def test_by_arm(tmp_path, capsys):
                         "cost $0.00")  # fmt: skip
 
 
+def test_a_resumed_hold_function_counts_once_per_arm(tmp_path, capsys):
+    """Owner approval 2026-11-10 (hold resume): an arm's uncounted attempt of a function (GAVE_UP
+    guardrail, attempt 1) and its redo (HOLD_EXACT, attempt 2) are two sessions, but one
+    function attempted and held exact, in the split by arm and in the comparison."""
+    haiku, run = "claude-haiku-5-5", "spike012-claude-haiku-5-5"
+    mine = {"run": run, "model_requested": haiku, "hold_run": True}
+    records = (_on_v3(0x10000, outcome="GAVE_UP", abort_reason="guardrail", **mine),
+               _on_v3(0x10000, outcome="HOLD_EXACT", attempt=2, **mine))  # fmt: skip
+    repo, _ = _repo(tmp_path)
+    log, config = _log(tmp_path, *records), tmp_path / "config"
+    report = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    arm = report["by_arm"][_arm(haiku)]
+    assert (arm["attempted"], arm["hold_exact"], arm["matched"]) == (1, 1, 0)
+    total = report["comparison"]["arms"][_arm(haiku)]["cells"]["total"]
+    assert (total["attempted"], total["exact"], total["sessions"]) == (1, 1, 2)
+
+
 def test_by_model_size_by_arm(tmp_path, capsys):
     """D-22: the model x size table splits by arm: one model id on two backends is two rows."""
     repo, _ = _repo(tmp_path)

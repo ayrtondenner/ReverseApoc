@@ -23,6 +23,7 @@ from reverseapoc.streamjson import (
     parse_line,
     parse_version,
     stream_usage,
+    tool_use_ids,
     tool_uses,
     usage,
 )
@@ -405,6 +406,22 @@ def test_tool_uses_lists_paths():
 
 def test_tool_uses_of_the_success_fixture():
     assert tool_uses(_events("success")) == [ToolUse("Edit", "/repo/src/ufo2p/u_00010000.c")]
+
+
+def test_tool_use_ids_follow_tool_uses():
+    """Owner ruling 2026-11-10: each tool_use block's id, in tool_uses' order (None when a
+    block has none), so the driver can tell which write the hook denied."""
+    events = (
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "toolu_a", "name": "Read", "input": {}},
+            {"type": "text", "text": "and"},
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "/repo/x"}},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": 7, "name": "Edit", "input": {}}]}},
+    )  # fmt: skip
+    assert tool_use_ids(events) == ["toolu_a", None, None]
+    assert tool_use_ids(_events("denied_write")) == ["toolu_fake_02"]
 
 
 def test_malformed_lines_are_counted():

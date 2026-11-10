@@ -526,3 +526,14 @@ def tool_uses(events: Sequence[dict]) -> list[ToolUse]:
         for block in _blocks(events)
         if block.get("type") == "tool_use"
     ]
+
+
+def tool_use_ids(events: Sequence[dict]) -> list[str | None]:
+    """The id of every tool_use block, in `tool_uses`' order (None when it has no string id):
+    the driver matches it against the result event's permission_denials (owner ruling
+    2026-11-10: a write the hook denied stops its arm only)."""
+    return [
+        block["id"] if isinstance(block.get("id"), str) else None
+        for block in _blocks(events)
+        if block.get("type") == "tool_use"
+    ]
