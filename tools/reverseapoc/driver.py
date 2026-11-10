@@ -1265,6 +1265,156 @@ def transcript_paths(events: Sequence[dict], repo: Path) -> list[list[str] | Non
     return [_relative(raw, repo, roots) for raw in _write_targets(events)]
 
 
+# ---- the Codex guard set (07.2-13; D-13, D-26; RESEARCH Q8, Pitfalls 6 and 11) ----
+#
+# Codex runs none of Claude Code's hooks, its `allow` rules run outside the sandbox and nothing
+# denies by default, so the driver's audit carries what the hooks give a Claude session: every
+# command must be an exact wrapper form and name neither orig/ nor third_party/ (D-10), every
+# file_change must pass the session's write allowlist, and the attempt dir may hold afterwards
+# only the session files, the driver's own files as they were at launch and wrapper output
+# whose sha256 is the wrapper's ledger's last entry for it. This is detection after the fact,
+# not prevention: a read of orig/ is caught, quarantined and stops the night, but what the
+# session sent before it ended has left (docs/model-routing.md "Codex arms").
+
+CODEX_RULES = ".codex/rules/attempt.rules"  # under <attempt dir>, in gitignored build/
+CODEX_RULES_TEXT = (f"prefix_rule(pattern=[{', '.join(json.dumps(p) for p in hooks.ATTEMPT_PREFIX)}"
+                    '], decision="allow")\n')  # fmt: skip
+LEDGER_DIR = "ledger"  # build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl
+_AUDIT_MARK = " (codex audit)"  # a stray that is a reason, not a file to contain
+_FORBIDDEN_PARTS = ("orig", "third_party")  # D-10: never sent to a non-Anthropic backend
+_PATH_PARTS = re.compile(r"[^a-z0-9_.-]+")  # any other character splits a command into parts
+_SESSION_FILES = (attempt.NOTES_FILE, attempt.PROPOSALS_FILE, *hooks.SESSION_FILE_NAMES)
+_CACHE_PARTS = (attempt.VIEW_DIR, attempt.VIEW_BUILD, attempt.CACHE_DIR)
+_WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
+_WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
+_WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
+
+
+def write_codex_rules(attempt_dir: Path) -> None:
+    """<attempt dir>/.codex/rules/attempt.rules, the one prefix rule that lets the attempt
+    wrapper run (RESEARCH Q8 option a): generated per session under gitignored build/, never
+    committed, and judged unchanged by the audit."""
+    path = attempt_dir / CODEX_RULES
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, CODEX_RULES_TEXT.encode("ascii"))
+
+
+def _forbidden_part(text: str) -> str | None:
+    """orig or third_party when `text` names it as a path part in any spelling (case, either
+    slash, quotes, drive or `..` around it), else None."""
+    parts = set(_PATH_PARTS.split(text.casefold()))
+    return next((name for name in _FORBIDDEN_PARTS if name in parts), None)
+
+
+def codex_command_strays(commands: Sequence[str]) -> list[str]:
+    """Why each command is a stray: it names orig/ or third_party/, or it is not an exact
+    attempt wrapper form of a matching session (hooks.bash_allowed)."""
+    out = []
+    for command in commands:
+        named = _forbidden_part(command)
+        if named is not None:
+            out.append(f"command `{command}` names {named}/ (D-10)")
+        elif not hooks.bash_allowed(command, kind=MATCHING_KIND):
+            out.append(f"command `{command}` is not an exact attempt wrapper form")
+    return out
+
+
+def _codex_rels(raw: str, attempt_dir: Path, roots: Sequence[str]) -> list[str] | None:
+    """Every repo-relative form of a file_change path (relative paths are Codex's --cd, the
+    attempt dir), or None when one is outside the checkout."""
+    try:
+        forms = hooks.candidates(raw, str(attempt_dir))
+    except hooks.HookError:
+        return None
+    rels = [_below(form.casefold(), roots) for form in forms]
+    return None if any(rel is None for rel in rels) else rels
+
+
+def codex_write_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path,
+                       allowed: Callable[[str], bool]) -> list[str]:  # fmt: skip
+    """Why each file_change path is a stray: outside the checkout, naming orig/ or
+    third_party/, or refused by the session's write allowlist (`allowed`, repo-relative). A
+    wrapper-owned file is never the session's to write."""
+    roots = _roots(repo, None)
+    out = []
+    for raw in targets:
+        rels = _codex_rels(raw, attempt_dir, roots)
+        if rels is None or _forbidden_part(raw) or not all(allowed(rel) for rel in rels):
+            out.append(f"{raw}: a write outside this session's allowlist")
+    return out
+
+
+def _inventory_add(found: dict[str, str], root: Path, path: Path) -> None:
+    rel = path.relative_to(root).as_posix()
+    found[rel] = (f"link:{os.readlink(path)}" if _is_link(path)
+                  else _sha256(_read(path)) or "unreadable")  # fmt: skip
+
+
+def _inventory_tree(found: dict[str, str], root: Path, top: Path, skip: Sequence[str]) -> None:
+    for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+        here = Path(dirpath)
+        links = [d for d in dirnames if _is_link(here / d)]  # a directory link is a file here
+        dirnames[:] = [d for d in dirnames
+                       if d not in links and not (here == root and d in skip)]  # fmt: skip
+        for name in (*filenames, *links):
+            _inventory_add(found, root, here / name)
+
+
+def attempt_inventory(attempt_dir: Path) -> dict[str, str]:
+    """Every file of the attempt dir (attempt-dir-relative, POSIX) with its sha256, a link by
+    its target, never followed: all of it but view/ (the view hashes judge that), plus the
+    wrapper's cache under view/build/ (which the view hashes skip)."""
+    found: dict[str, str] = {}
+    if attempt_dir.is_dir():
+        _inventory_tree(found, attempt_dir, attempt_dir, (attempt.VIEW_DIR,))
+    cache = attempt_dir.joinpath(*_CACHE_PARTS)
+    if cache.is_dir() and not _is_link(cache):
+        _inventory_tree(found, attempt_dir, cache, ())
+    return found
+
+
+def read_wrapper_ledger(path: Path) -> dict[str, str]:
+    """The wrapper's ledger: each path's last sha256. A line that is not a {"path", "sha256"}
+    object vouches for nothing; no file, no entries."""
+    out: dict[str, str] = {}
+    data = _read(path)
+    for raw in (data or b"").decode("utf-8", "replace").splitlines():
+        entry = streamjson.parse_line(raw)
+        if entry is not None and isinstance(entry.get("path"), str) and isinstance(
+                entry.get("sha256"), str):  # fmt: skip
+            out[entry["path"]] = entry["sha256"]
+    return out
+
+
+def _wrapper_owned(rel: str) -> bool:
+    return rel in _WRAPPER_FILES or rel.startswith(_WRAPPER_TREES)
+
+
+def _inventory_problem(rel: str, digest: str, launch: Mapping[str, str],
+                       ledger: Mapping[str, str]) -> str | None:  # fmt: skip
+    if rel in ledger:
+        return None if ledger[rel] == digest else "differs from the wrapper's ledger"
+    if rel in launch:
+        return None if launch[rel] == digest else "changed since the launch (the driver's file)"
+    if rel == TRANSCRIPT or rel in _SESSION_FILES:
+        return None
+    if _wrapper_owned(rel):
+        return _WRAPPER_UNSEEN
+    return "not a file a session may leave in its attempt dir"
+
+
+def codex_inventory_strays(now: Mapping[str, str], *, launch: Mapping[str, str],
+                           ledger: Mapping[str, str]) -> list[tuple[str, str]]:  # fmt: skip
+    """(path, why) for every file of the attempt dir after the session (`now`, from
+    attempt_inventory) that is neither a session file, nor a driver file as it was at launch
+    (`launch`; the rules file among them), nor wrapper output holding its ledger entry's hash;
+    and for every launch file that is gone."""
+    out = [(rel, why) for rel, digest in sorted(now.items())
+           if (why := _inventory_problem(rel, digest, launch, ledger)) is not None]  # fmt: skip
+    out += [(rel, "removed during the session") for rel in sorted(launch.keys() - now.keys())]
+    return out
+
+
 # ---- checks.jsonl and the best C (F10) ----
 
 
@@ -1809,12 +1959,23 @@ class _Claim:
         """07.2-13 (D-13): the session runs under the Codex CLI (its arm's harness)."""
         return self.arm is not None and self.arm.harness == backends.CODEX
 
+    @property
+    def wrapper_ledger(self) -> Path:
+        """07.2-13 (D-26): build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl, the
+        wrapper's hash ledger, outside the session's workspace (the attempt dir)."""
+        name = f"{self.pick.exe}__{self.function}__attempt-{self.n}.jsonl"
+        return self.repo.joinpath(self.runs, self.run, LEDGER_DIR, name)
+
     def env(self, base: Mapping[str, str], arms: Mapping[str, backends.Arm]) -> dict[str, str]:
         """The session's environment: the arm's (backends.session_env, D-12: no arm's key
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
         plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
-        that the hooks and the wrapper validate."""
+        that the hooks and the wrapper validate. 07.2-13: a Codex session also names its
+        wrapper ledger (D-26); no other session inherits one."""
         own = backends.session_env(self.arm_in(arms), base, arms)
+        own.pop(attempt.WRAPPER_LEDGER_ENV, None)
+        if self.codex:
+            own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
@@ -1855,6 +2016,8 @@ class _Session:
     view_head: str = ""  # the commit the view was taken from (F34)
     after: dict[str, tuple[str, str | None]] = field(default_factory=dict)  # git status after
     view_hashes: dict[str, str] = field(default_factory=dict)  # the view at launch (D-24, b)
+    # 07.2-13: a Codex session's attempt dir at launch (attempt_inventory), rules file included
+    launch_files: dict[str, str] = field(default_factory=dict)
 
     @property
     def events(self) -> tuple[dict, ...]:
@@ -3083,6 +3246,7 @@ class _Night:
             write_atomic(claim.attempt_dir / attempt.UNIT_BASE, unit_before)
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        launch_files = self._codex_launch(claim) if claim.codex else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
@@ -3111,7 +3275,8 @@ class _Night:
             note = self._remove_containers(claim)
             with self.gate_lock:
                 session = self._measure(claim, None, pack, 0.0, before, scaffolded,
-                                        unit_before, view_head, view_hashes)  # fmt: skip
+                                        unit_before, view_head, view_hashes,
+                                        launch_files)  # fmt: skip
                 stray = self._strays(session)
                 contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
                 contained += f"; {note}" if note else ""
@@ -3129,7 +3294,8 @@ class _Night:
         # the driver's own bytes (D-24 a).
         with self.gate_lock:
             session = self._measure(claim, result, pack, seconds, before, scaffolded,
-                                    unit_before, view_head, view_hashes)  # fmt: skip
+                                    unit_before, view_head, view_hashes,
+                                    launch_files)  # fmt: skip
             self.live = session
             try:
                 self._audit(session)
@@ -3186,7 +3352,7 @@ class _Night:
         return ""
 
     def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before,
-                 view_head, view_hashes) -> _Session:
+                 view_head, view_hashes, launch_files=None) -> _Session:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
@@ -3196,7 +3362,8 @@ class _Night:
         prints = tuple(sorted(n for n in before.prints.keys() | after.prints.keys()
                               if before.prints.get(n) != after.prints.get(n)))  # fmt: skip
         return _Session(claim, result, pack, seconds, changed, scaffolded, unit_before, before,
-                        pinned, prints, view_head, after.status, view_hashes)  # fmt: skip
+                        pinned, prints, view_head, after.status, view_hashes,
+                        dict(launch_files or {}))  # fmt: skip
 
     def _strays(self, session: _Session) -> list[str]:
         """D-24's two invariants, plus the Phase 6 checks (D-17, F3, security rulings): (a)
@@ -3211,11 +3378,46 @@ class _Night:
         stray += [name for name in session.pinned_changed if name not in stray]
         stray += [name for name in session.print_changed if name not in stray]
         stray += [name for name in self._base_changed(session) if name not in stray]
+        if session.claim.codex:  # 07.2-13: the Codex stream is never read as a Claude one
+            stray += [s for s in self._codex_strays(session, allowed) if s not in stray]
+            return stray
         raws = _write_targets(session.events)
         for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
             if rels is None or not all(allowed(rel) for rel in rels):
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
+
+    def _codex_launch(self, claim: _Claim) -> dict[str, str]:
+        """07.2-13 (D-13, D-26): before a Codex session, in its fresh attempt dir, the rules file
+        that allows only the wrapper, and an empty wrapper ledger outside the workspace (a
+        relaunch's earlier entries never vouch for this session's files). Returns the attempt
+        dir's inventory at launch, which the audit compares against."""
+        write_codex_rules(claim.attempt_dir)
+        claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(claim.wrapper_ledger, b"")
+        return attempt_inventory(claim.attempt_dir)
+
+    def _codex_strays(self, session: _Session, allowed: Callable[[str], bool]) -> list[str]:
+        """07.2-13 (D-13, D-26): what a Codex session did that no hook stopped: its commands and
+        file_change paths (codexjson), and its attempt dir against the launch inventory and the
+        wrapper's ledger. A file to contain is named by its repo-relative path; every reason
+        carries _AUDIT_MARK."""
+        claim = session.claim
+        reasons = codex_command_strays(codexjson.commands(session.events))
+        reasons += codex_write_strays(codexjson.write_targets(session.events),
+                                      attempt_dir=claim.attempt_dir, repo=self.repo,
+                                      allowed=allowed)  # fmt: skip
+        files = []
+        found = codex_inventory_strays(attempt_inventory(claim.attempt_dir),
+                                       launch=session.launch_files,
+                                       ledger=read_wrapper_ledger(claim.wrapper_ledger))
+        for rel, why in found:
+            path = claim.attempt_dir / rel
+            shown = path.relative_to(self.repo).as_posix()
+            if path.is_file() or _is_link(path):
+                files.append(shown)
+            reasons.append(f"{shown}: {why}")
+        return files + [f"{reason}{_AUDIT_MARK}" for reason in reasons]
 
     def _base_changed(self, session: _Session) -> list[str]:
         """07.2-07 (T-07.2-18): a readability session's unit-base.c is the driver's; it must
@@ -3455,7 +3657,7 @@ class _Night:
         again, and describe all of it. A refused quarantine write (a link) writes nothing more
         and is named."""
         self.breached = True  # fix round 2 J2: sticky, whatever the final reason
-        files = [s for s in stray if not s.endswith(_TRANSCRIPT_MARK)]
+        files = [s for s in stray if not s.endswith((_TRANSCRIPT_MARK, _AUDIT_MARK))]
         done = self._contain(session, files)
         try:
             self._reset(session)

@@ -27,6 +27,7 @@ LUNA = "gpt-6-luna"
 SOL = "gpt-6.1-sol"
 CODEX_VERSION = "0.167.0"
 UNIT_PATH = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/view/src/{EXE}/{UNIT}.c"
+REAL_DRIVE = driver.drive
 
 
 def _events(name: str) -> tuple[dict, ...]:
@@ -68,7 +69,7 @@ def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
     codex_version_reply(rig)
     night = Night(tmp_path / "night", gate_exits=[1])
     night._current = spec or Sess(write=None)
-    real = driver.drive
+    real = REAL_DRIVE  # never an earlier call's patch
 
     def drive(config, deps, *, lock=None):
         moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
@@ -209,7 +210,8 @@ def test_codex_session_env_strips_every_other_vendor():
 
 ATTEMPT = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1"
 WRAPPER = "uv run --frozen reverseapoc attempt"
-RULES_TEXT = 'prefix_rule(pattern=["uv", "run", "--frozen", "reverseapoc", "attempt"], decision="allow")\n'
+RULES_TEXT = ('prefix_rule(pattern=["uv", "run", "--frozen", "reverseapoc", "attempt"], '
+              'decision="allow")\n')  # fmt: skip
 
 
 def _run_codex(capsys, rig: Rig, env: dict) -> tuple[int, str, str]:
@@ -224,18 +226,21 @@ def test_rules_file_allows_only_the_wrapper(tmp_path, capsys, monkeypatch):
     the checkout's root; the session is told where its wrapper ledger is, outside its
     workspace, and the ledger starts empty."""
     record = tmp_path / "fakecodex-record.json"
-    rig, night, env = codex_night(tmp_path, monkeypatch, extra_env={"FAKECODEX_RECORD": str(record)})
+    rig, night, env = codex_night(tmp_path, monkeypatch,
+                                  extra_env={"FAKECODEX_RECORD": str(record)})  # fmt: skip
     code, _, err = _run_codex(capsys, rig, env)
     assert code == 0, err
     assert driver.CODEX_RULES == ".codex/rules/attempt.rules"
     rules = night.attempt_dir() / driver.CODEX_RULES
     assert rules.read_text(encoding="utf-8") == RULES_TEXT
     assert not (night.repo / ".codex").exists() and not (rig.repo / ".codex").exists()
-    ledger = Path(night.launched[0].env[driver.attempt.WRAPPER_LEDGER_ENV])
-    assert ledger == night.repo / "build" / "driver" / RUN / "ledger" / f"{EXE}__{FUNC}__attempt-1.jsonl"
+    ledger_env = driver.attempt.WRAPPER_LEDGER_ENV
+    ledger = Path(night.launched[0].env[ledger_env])
+    name = f"{EXE}__{FUNC}__attempt-1.jsonl"
+    assert ledger == night.repo / "build" / "driver" / RUN / "ledger" / name
     assert not ledger.is_relative_to(night.attempt_dir())
     assert ledger.read_bytes() == b""
-    assert driver.attempt.WRAPPER_LEDGER_ENV in json.loads(record.read_text(encoding="utf-8"))["env"]
+    assert ledger_env in json.loads(record.read_text(encoding="utf-8"))["env"]
 
 
 def test_audit_flags_a_non_wrapper_command():
@@ -371,7 +376,8 @@ def test_audit_quarantines_a_session_written_codex_config(tmp_path, capsys, monk
     """Finding 3: a .codex/config.toml the session writes into its trusted workspace is a
     stray: quarantined, the night stops, and no later launch ever sees it (each launch also
     starts from a fresh attempt dir with the driver's rules file only)."""
-    spec = Sess(write=None, files=((f"{ATTEMPT}/.codex/config.toml", "approval_policy = 'on-request'\n"),))
+    config = (f"{ATTEMPT}/.codex/config.toml", "approval_policy = 'on-request'\n")
+    spec = Sess(write=None, files=(config,))
     rig, night, env = codex_night(tmp_path, monkeypatch, scenario="transient_no_turn", spec=spec)
     code, _, _ = _run_codex(capsys, rig, env)
     assert code != 0
