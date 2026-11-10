@@ -1207,6 +1207,16 @@ def extract_head(git: Callable[..., subprocess.CompletedProcess], dest: Path) ->
     return head
 
 
+def _remove_entry(path: Path) -> None:
+    """Remove `path` itself, never what a link points at: a junction or a directory symlink
+    is removed as a link (07.2-13, security review finding 4: a session may leave one in its
+    attempt dir), any other entry is unlinked."""
+    if os.path.isjunction(path) or (_is_link(path) and path.is_dir() and os.name == "nt"):
+        os.rmdir(path)
+    else:
+        path.unlink()
+
+
 def _write_new(target: Path, data: bytes) -> None:
     """Create `target` with O_CREAT|O_EXCL (and O_NOFOLLOW where it exists): never overwrites,
     never writes through a link."""
@@ -1360,15 +1370,36 @@ def _inventory_tree(found: dict[str, str], root: Path, top: Path, skip: Sequence
             _inventory_add(found, root, here / name)
 
 
+def _cache_dir(found: dict[str, str], attempt_dir: Path) -> Path | None:
+    """The wrapper's cache dir, view/build/attempt-cache, when every component from the
+    attempt dir down to it is a real directory, never a link (security review finding 4), and
+    it resolves inside the attempt dir. A linked component goes into `found` as a link (a
+    stray) and nothing behind it is walked; a cache that resolves elsewhere is a stray too."""
+    path = attempt_dir
+    for part in _CACHE_PARTS:
+        path = path / part
+        if _is_link(path):
+            _inventory_add(found, attempt_dir, path)
+            return None
+        if not path.is_dir():
+            return None
+    if not path.resolve().is_relative_to(attempt_dir.resolve()):
+        found[path.relative_to(attempt_dir).as_posix()] = f"outside:{path.resolve()}"
+        return None
+    return path
+
+
 def attempt_inventory(attempt_dir: Path) -> dict[str, str]:
     """Every file of the attempt dir (attempt-dir-relative, POSIX) with its sha256, a link by
     its target, never followed: all of it but view/ (the view hashes judge that), plus the
-    wrapper's cache under view/build/ (which the view hashes skip)."""
+    wrapper's cache under view/build/ (which the view hashes skip) when no component down to
+    it is a link (`_cache_dir`)."""
     found: dict[str, str] = {}
-    if attempt_dir.is_dir():
-        _inventory_tree(found, attempt_dir, attempt_dir, (attempt.VIEW_DIR,))
-    cache = attempt_dir.joinpath(*_CACHE_PARTS)
-    if cache.is_dir() and not _is_link(cache):
+    if not attempt_dir.is_dir():
+        return found
+    _inventory_tree(found, attempt_dir, attempt_dir, (attempt.VIEW_DIR,))
+    cache = _cache_dir(found, attempt_dir)
+    if cache is not None:
         _inventory_tree(found, attempt_dir, cache, ())
     return found
 
@@ -3734,7 +3765,7 @@ class _Night:
                 k += 1
                 target = target.with_name(f"{stem}.{k}")
         if move:
-            path.unlink()
+            _remove_entry(path)
         return f"{name} -> {target.relative_to(self.repo).as_posix()}"
 
     def _keep(self, done: _Contained, name: str, path: Path, *, move: bool) -> bool:
