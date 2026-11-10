@@ -2405,7 +2405,9 @@ class _Pause:
     exactly one launch is the probe (`probe_taken`): a probe that is not LIMIT clears the
     pause for all and restarts the streak (`on_clear`); another LIMIT renews the pause one
     step longer. A LIMIT from a session launched before the pause leaves it as it is. With one
-    worker every launch after a LIMIT is the probe, which is the Phase 6 backoff exactly."""
+    worker every launch after a LIMIT is the probe, which is the Phase 6 backoff exactly.
+    07.2-16 (D-22): one pause per arm (`_Lane.pause`), so a Codex Plus window or an Antigravity
+    weekly quota pauses that arm's workers only; "every worker" above is every worker of it."""
 
     def __init__(self, cond: threading.Condition, stop: threading.Event,
                  clock: Callable[[], float]) -> None:  # fmt: skip
@@ -2476,12 +2478,20 @@ class _Lane:
     D-26, RESEARCH Pitfall 7), `workers` the night-wide numbers of its workers. It keeps its own
     pick source over the same picks and what it counts on its own: the finished passes its
     queue reads (`passes`), the picks it took (`done`) and, for a pool queue, the picks whose
-    unit was busy (`deferred`), so under --hold each function is attempted once per arm. Read
-    and written under the night's condition."""
+    unit was busy (`deferred`), so under --hold each function is attempted once per arm. Its
+    own usage-limit `pause` and its own session cap (`max_sessions`, backends.toml; None: the
+    night's cap only) with the sessions, spent transient launches and reserved slots counted
+    against it beside the night's totals (D-22). Read and written under the night's
+    condition."""
 
     arm: str | None
     run: str
     workers: tuple[int, ...]
+    pause: _Pause | None = None
+    max_sessions: int | None = None
+    sessions: int = 0
+    spent: int = 0
+    reserved: int = 0
     passes: dict[Key, int] = field(default_factory=dict)
     done: set[Key] = field(default_factory=set)
     deferred: list[Pick] = field(default_factory=list)
@@ -2663,9 +2673,10 @@ class _Coordinator:
                 night.cond.wait(_TICK_S)
 
     def _offer(self, lane: _Lane) -> tuple[_Lane, int, Pick] | None:
-        """The lane's next eligible pick for the lowest free worker of its arm, or None."""
+        """The lane's next eligible pick for the lowest free worker of its arm, or None (also
+        once the arm has launched its own session cap)."""
         ident = next((n for n in self.free if n in lane.workers), None)
-        if ident is None:
+        if ident is None or self.night._lane_end(lane):
             return None
         pick = self._tier_pick(lane) if lane.tiers is not None else self._eligible(lane)
         return None if pick is None else (lane, ident, pick)
@@ -2673,7 +2684,10 @@ class _Coordinator:
     def _finished(self, lane: _Lane) -> bool:
         """Nothing the lane can hand out tonight: a pool queue read to its end with nothing
         deferred; a tier queue with no pass running anywhere (then every lane was just asked
-        with every worker free, and nothing can become eligible tonight)."""
+        with every worker free, and nothing can become eligible tonight); an arm at its own
+        session cap."""
+        if self.night._lane_end(lane):
+            return True
         if lane.tiers is not None:
             return not self.busy
         return lane.exhausted and not lane.deferred
@@ -2758,7 +2772,10 @@ class _Night:
         self.stop = threading.Event()  # set by the first failure (stop-all) or an interrupt
         self.failure: BaseException | None = None  # the first worker failure, re-raised
         self.halt_notes: list[str] = []  # what each halted worker's containment did
-        self.pause = _Pause(self.cond, self.stop, deps.clock)  # D-07: one for every worker
+        for lane in self.lanes:  # 07.2-16 (D-22): each arm its own pause and session cap
+            lane.pause = _Pause(self.cond, self.stop, deps.clock)
+            lane.max_sessions = self.arms[lane.arm].max_sessions if lane.arm else None
+        self.pause = self.lanes[0].pause  # D-07: one arm's pause holds for its every worker
         # 07-21 stop-all: worker -> the pid of its live session (run_session's on_start/on_end)
         self.pids: dict[int, int] = {}
         self.pid_lock = threading.Lock()
@@ -2823,43 +2840,58 @@ class _Night:
         the attempt ends otherwise (`_release`). A LIMIT relaunch keeps its attempt's slot.
         While every free slot is reserved by attempts still running, the worker waits, since
         one may end uncounted. False: the night is ending (a cap reached, or a stop) and
-        nothing more launches."""
+        nothing more launches. 07.2-16 (D-22): the worker's arm's own cap (`_Lane.max_sessions`)
+        is held the same way beside the night's: an arm at its cap launches nothing more, while
+        the other arms go on."""
+        lane = self.lane
         with self.cond:
             while True:
-                if self.stop.is_set() or self._end():
+                if self.stop.is_set() or self._end() or self._lane_end(lane):
                     return False
-                if self.sessions + self.spent + self.reserved < self.config.max_sessions:
+                if (self.sessions + self.spent + self.reserved < self.config.max_sessions
+                        and (lane.max_sessions is None
+                             or lane.sessions + lane.spent + lane.reserved < lane.max_sessions)):
                     self.reserved += 1
+                    lane.reserved += 1
                     self.local.slot = True
                     return True
                 self.cond.wait(_TICK_S)
 
+    def _lane_end(self, lane: _Lane) -> bool:
+        """07.2-16 (D-22): the arm has launched its own cap of sessions (counted ones and spent
+        transient launches); under the night's condition."""
+        return lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
+
+    def _settle(self, *, counted: bool, spent: bool) -> None:
+        """Under the night's condition: this worker's reserved slot (if it holds one) becomes a
+        counted session, a spent transient launch, or is given back, in the night's totals and
+        its arm's alike."""
+        lane = self.lane
+        self.sessions += counted
+        lane.sessions += counted
+        self.spent += spent
+        lane.spent += spent
+        if getattr(self.local, "slot", False):
+            self.local.slot = False
+            self.reserved -= 1
+            lane.reserved -= 1
+        self.cond.notify_all()
+
     def _release(self) -> None:
         """Give this worker's reserved slot back (an attempt that ended uncounted)."""
         with self.cond:
-            if getattr(self.local, "slot", False):
-                self.local.slot = False
-                self.reserved -= 1
-                self.cond.notify_all()
+            self._settle(counted=False, spent=False)
 
     def _spend(self) -> None:
         """A transient launch (07-26 fix round 1): this worker's reserved slot is spent, so the
         night cap bounds transient relaunches too; it is not a counted session."""
         with self.cond:
-            self.spent += 1
-            if getattr(self.local, "slot", False):
-                self.local.slot = False
-                self.reserved -= 1
-            self.cond.notify_all()
+            self._settle(counted=False, spent=True)
 
     def _count(self) -> None:
         """One counted session (D-07, D-48), from any worker: its reserved slot becomes it."""
         with self.cond:
-            self.sessions += 1
-            if getattr(self.local, "slot", False):
-                self.local.slot = False
-                self.reserved -= 1
-            self.cond.notify_all()
+            self._settle(counted=True, spent=False)
 
     def _fail(self, exc: BaseException) -> None:
         """A worker failed: the first failure is the night's, and every worker stops."""
@@ -3313,7 +3345,8 @@ class _Night:
         transient = 0
         while True:
             self._halt_if_stopping()
-            probe = self.pause.wait_to_launch()  # D-07: no launch while the pause holds
+            # D-07: no launch while the pause holds (07.2-16: this worker's arm's pause, D-22)
+            probe = self.lane.pause.wait_to_launch()
             claim = self._claim(pick, n)
             session = self._launch(claim)
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
@@ -3327,7 +3360,7 @@ class _Night:
                 if matched:
                     return MATCHED
                 continue
-            self.pause.on_clear(probe)
+            self.lane.pause.on_clear(probe)
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 self._spend()
@@ -3355,8 +3388,10 @@ class _Night:
     def _limited(self, pick: Pick, n: int, probe: bool) -> None:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
         backoff, then the next launch of any worker is the probe; under a pause another worker
-        started, this worker just waits at its next launch."""
-        limited = self.pause.on_limit(probe)
+        started, this worker just waits at its next launch. 07.2-16 (D-22): the pause is this
+        worker's arm's; the other arms keep launching."""
+        pause = self.lane.pause
+        limited = pause.on_limit(probe)
         if limited is None:
             self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
             return
@@ -3366,7 +3401,7 @@ class _Night:
             self._record_limit(seconds, streak)  # 07-23 (DEC-06): every wait is recorded
             self._nap(seconds)
         finally:
-            self.pause.backoff_done()
+            pause.backoff_done()
 
     def _nap(self, seconds: float) -> None:
         """The backoff wait. With the real clock it ends early when the night stops, so a stop
@@ -5468,8 +5503,9 @@ class _Night:
         self._append(record)
 
     def _record_limit(self, seconds: int, streak: int) -> None:
-        """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker)."""
-        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.config.run_id,
+        """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker of its arm;
+        07.2-16: the record names the arm's run id)."""
+        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.lane.run,
                   "worker": self.worker, "seconds": seconds, "streak": streak,
                   "date": self.deps.today()}  # fmt: skip
         self._append(record)

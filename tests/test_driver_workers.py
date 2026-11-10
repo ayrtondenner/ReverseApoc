@@ -1560,7 +1560,8 @@ def _runs_launched(night: Night, run: str) -> int:
         return sum(_run_of(night, launch) == run for launch in night.launched)
 
 
-def _until(predicate) -> bool:
+def _poll(predicate) -> bool:
+    """True once `predicate()` holds, False after WAIT_S."""
     deadline = time.monotonic() + WAIT_S
     while time.monotonic() < deadline:
         if predicate():
@@ -1586,7 +1587,7 @@ def _one_arm_limited(tmp_path, monkeypatch):
 
     def sleep(seconds):
         paused.set()
-        seen["haiku_launched_while_paused"] = _until(
+        seen["haiku_launched_while_paused"] = _poll(
             lambda: _runs_launched(night, _arm_run(HAIKU)) >= 3)
         seen["sonnet_launched_while_paused"] = _runs_launched(night, _arm_run(SONNET))
         night._sleep(seconds)
@@ -1602,7 +1603,7 @@ def test_limit_pauses_only_its_arm(tmp_path, monkeypatch):
     its backoff passed, and its probe clears its own pause."""
     night, nights, seen, report = _one_arm_limited(tmp_path, monkeypatch)
     assert report.event == "ENDED", report.detail
-    assert seen["haiku_launched_while_paused"], "the Haiku arm stopped launching under Sonnet's pause"
+    assert seen["haiku_launched_while_paused"], "Sonnet's pause stopped the Haiku arm"
     assert seen["sonnet_launched_while_paused"] == 1
     assert night.sleeps == [60]
     assert _runs_launched(night, _arm_run(SONNET)) == 5  # the LIMIT launch, then four attempts
@@ -1660,7 +1661,8 @@ def test_local_arm_beside_cloud(tmp_path, capsys):
                                "base_env": _keyed(night.env)})  # fmt: skip
     assert report.event == "ENDED", report.detail
     assert night.peak == 3
-    local = {i for i, launch in enumerate(night.launched) if _run_of(night, launch) == _arm_run(LOCAL)}
+    local = {i for i, launch in enumerate(night.launched)
+             if _run_of(night, launch) == _arm_run(LOCAL)}  # fmt: skip
     active = peak = 0
     for event, index in night.events:
         if index in local:
