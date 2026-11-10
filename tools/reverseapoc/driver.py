@@ -156,7 +156,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, backends, callgraph, hooks, mechanics, streamjson, unitdefs
+from . import attempt, backends, callgraph, codexjson, hooks, mechanics, streamjson, unitdefs
 from .callgraph import CallGraph
 from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
@@ -213,9 +213,12 @@ from .session import (
     MODEL_NAMES,
     OPUS_MODEL,
     READABILITY_SKILL,
+    SKILL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
+    build_codex_argv,
+    codex_prompt,
     goal_prompt,
     kill_tree,
     model_for_pass,
@@ -254,6 +257,7 @@ BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
+CODEX_EXE = "codex"  # 07.2-13 (D-13): the Codex CLI, found on PATH like claude
 TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
 MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
@@ -452,6 +456,15 @@ class Deps:
     # 07-38 fix round 1 (owner ruling: every landing path lints): the C89 lint (0/1/2) of the
     # repo-relative .c files a naming commit writes or reaches; none wired: a tool error.
     lint_paths: Callable[[Sequence[str]], int] = lambda paths: EXIT_TOOL
+    # 07.2-13 (D-13): the argv of a Codex arm's session, (prompt, *, model, attempt_dir):
+    # session.build_codex_argv with the `codex` on PATH.
+    codex_argv: Callable[..., Sequence[str]] = (
+        lambda prompt, **values: build_codex_argv(prompt, codex=_which(CODEX_EXE), **values))
+
+
+def _which(name: str) -> str:
+    """The executable `name` resolves to on PATH, as default_seams resolves claude."""
+    return shutil.which(name) or name
 
 
 @dataclass(frozen=True)
@@ -1791,6 +1804,11 @@ class _Claim:
         """The session's arm: `arm`, else the Claude arm `arms` keys by `model`."""
         return self.arm if self.arm is not None else arms[self.model]
 
+    @property
+    def codex(self) -> bool:
+        """07.2-13 (D-13): the session runs under the Codex CLI (its arm's harness)."""
+        return self.arm is not None and self.arm.harness == backends.CODEX
+
     def env(self, base: Mapping[str, str], arms: Mapping[str, backends.Arm]) -> dict[str, str]:
         """The session's environment: the arm's (backends.session_env, D-12: no arm's key
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
@@ -1845,7 +1863,8 @@ class _Session:
     @property
     def disposition(self) -> Disposition:
         r = self.result
-        return streamjson.classify(r.events, r.exit_code, r.timed_out)
+        classify = codexjson.classify if self.claim.codex else streamjson.classify  # 07.2-13
+        return classify(r.events, r.exit_code, r.timed_out)
 
     @property
     def counted(self) -> bool:
@@ -1858,11 +1877,16 @@ class _Session:
     @property
     def measured(self) -> bool:
         """The CLI ended the session with a result event, so `usage` holds its own figures
-        (else stream_usage's lower bound)."""
+        (else stream_usage's lower bound). 07.2-13: a Codex session is measured once a turn
+        completed (codexjson.usage, its duration the driver's wall clock)."""
+        if self.claim.codex:
+            return codexjson.turns(self.events) > 0
         return any(e.get("type") == "result" for e in self.events)
 
     @property
     def usage(self) -> streamjson.Usage:
+        if self.claim.codex:
+            return codexjson.usage(self.events, self.seconds)
         results = [e for e in self.events if e.get("type") == "result"]
         if results:
             return streamjson.usage(results[-1])
@@ -3074,8 +3098,7 @@ class _Night:
         start = self.deps.clock()
         result = None
         try:
-            argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                                  max_turns=self.config.max_turns, **skill)  # fmt: skip
+            argv = self._argv(claim, prompt, skill)
             result = self.deps.session(argv, cwd=self.repo,
                                        env=claim.env(base, self.arms),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
@@ -3138,8 +3161,20 @@ class _Night:
             goal = readability_goal(claim.pick.unit, claim.pick.exe,
                                     unit_path=claim.view_unit_rel)  # fmt: skip
             return goal, {"skill": READABILITY_SKILL}
-        return goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
-                           unit_path=claim.view_unit_rel), {}  # fmt: skip
+        goal = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                           unit_path=claim.view_unit_rel)  # fmt: skip
+        if claim.codex:  # 07.2-13 (D-13): no skill loader, so the skill rides in the prompt
+            skill_text = (backends.REPO_ROOT / SKILL).read_text(encoding="utf-8")
+            return codex_prompt(goal, skill_text), {}
+        return goal, {}
+
+    def _argv(self, claim: _Claim, prompt: str, skill: Mapping[str, str]) -> Sequence[str]:
+        """The session's argv: Deps.codex_argv for a Codex arm (07.2-13, D-13), else the
+        claude argv with the pass's model, budget and turns and the kind's skill."""
+        if claim.codex:
+            return self.deps.codex_argv(prompt, model=claim.model, attempt_dir=claim.attempt_dir)
+        return self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
+                              max_turns=self.config.max_turns, **skill)  # fmt: skip
 
     def _remove_containers(self, claim: _Claim) -> str:
         """Fix round 1 S1: remove the attempt's containers; a failure never gates the audit and
@@ -3606,7 +3641,11 @@ class _Night:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
         judged only when it produced a result (a hang or a crash before init is not). 07-30
         (D-09): the init must name the model the session asked for (streamjson's accepted IDs),
-        so a Fable pass passes and a request answered by another model stops the night."""
+        so a Fable pass passes and a request answered by another model stops the night.
+        07.2-13: a Codex session streams no init event, so it has no init check (its record
+        keeps the requested model and a null `model`)."""
+        if session.claim.codex:
+            return
         init = streamjson.init_event(session.events)
         if init is None and not (session.counted and not session.result.timed_out):
             return
@@ -5291,6 +5330,10 @@ class Seams:
     claude: str = "claude"
     base_env: Mapping[str, str] | None = None
     now: Callable[[], datetime] = datetime.now
+    # 07.2-13 (D-13): the Codex CLI (its `--version` names the installed CLI) and the argv of
+    # a Codex arm's session (Deps.codex_argv).
+    codex: str = CODEX_EXE
+    codex_argv: Callable[..., Sequence[str]] = Deps.codex_argv
 
 
 def stamp(now: datetime) -> str:
@@ -5656,7 +5699,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
-                argv=seams.argv, session=seams.session, lint=lint, lint_paths=lint_paths,
+                argv=seams.argv, codex_argv=seams.codex_argv, session=seams.session,
+                lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
@@ -6781,9 +6825,12 @@ def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Cand
 def default_seams(repo: Path) -> Seams:
     """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
     (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
-    claude = shutil.which("claude") or "claude"
+    claude = _which("claude")
+    codex = _which(CODEX_EXE)  # 07.2-13
     return Seams(run=command_runner(repo), git=git_runner(repo),
                  world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
                  session=run_session,
                  argv=lambda prompt, **values: build_argv(prompt, claude=claude, **values),
-                 claude=claude)  # fmt: skip
+                 claude=claude, codex=codex,
+                 codex_argv=lambda prompt, **values: build_codex_argv(prompt, codex=codex,
+                                                                      **values))  # fmt: skip

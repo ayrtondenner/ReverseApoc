@@ -23,6 +23,13 @@ because Claude Code would otherwise send the claude.ai login to that endpoint (P
 env builder refuses the same empty token on its own. No message ever holds a key's value. A
 loopback arm with no key variable (the local llama.cpp server, D-18) gets the fixed
 LOOPBACK_TOKEN instead; a non-loopback base URL always needs a key variable.
+
+07.2-13 (D-12, D-13): a Codex arm (harness `codex`) runs the Codex CLI on the owner's ChatGPT
+login, so it takes no base URL and no key variable, and lists no init ids (Codex streams no
+init event). Its session env loses, besides every arm key, OPENAI_API_KEY and OPENAI_BASE_URL
+(which would move the CLI off that login), every inherited ANTHROPIC_* variable and every
+Google key variable (RULINGS "Token-leak guard covers every arm"): no harness ever sees another
+vendor's credential.
 """
 
 from __future__ import annotations
@@ -54,6 +61,10 @@ NONESSENTIAL_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 MODEL_PINS = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_HAIKU_MODEL")  # fmt: skip
 INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped from every session
+CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
+OPENAI_ENV = ("OPENAI_API_KEY", "OPENAI_BASE_URL")  # stripped from a Codex session (D-12)
+_ANTHROPIC_PREFIX = "ANTHROPIC_"
+_GOOGLE_KEY = re.compile(r"(?:GOOGLE|GEMINI)[A-Z0-9_]*_(?:KEY|CREDENTIALS)", re.IGNORECASE)
 
 _REQUIRED = ("harness", "backend", "model", "sends_disassembly", "max_workers")
 _HOSTED = ("accepted_init", "prices", "coauthor")  # required off the Claude login
@@ -134,8 +145,10 @@ def _prices(value: object) -> Price:
     return Price(*(float(n) for n in numbers))
 
 
-def _accepted(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list) or not value:
+def _accepted(value: object, harness: str) -> tuple[str, ...]:
+    """The init ids; empty only off the Claude Code harness, whose CLI streams no init event
+    (07.2-13: Codex)."""
+    if not isinstance(value, list) or (not value and harness == "claude"):
         raise ArmError(f"accepted_init: {value!r} is not a non-empty list of model ids")
     for item in value:
         if not isinstance(item, str) or not _MODEL.fullmatch(item):
@@ -156,6 +169,11 @@ def _present(table: Mapping, hosted: bool, harness: str) -> None:
     missing = [key for key in need if key not in table]
     if missing:
         raise ArmError(f"{', '.join(missing)}: missing")
+    if harness != "claude":  # 07.2-13 (D-12): its CLI's own login, never an endpoint or a key
+        extra = [key for key in _ENDPOINT if key in table]
+        if extra:
+            raise ArmError(f"{', '.join(extra)}: not allowed on the {harness} harness, which "
+                           "signs in with its own CLI login (D-12)")  # fmt: skip
     if not hosted:
         extra = [key for key in (*_ENDPOINT, *_HOSTED) if key in table]
         if extra:
@@ -186,7 +204,8 @@ def _arm(name: str, table: object) -> Arm:
                sends_disassembly=table["sends_disassembly"], max_workers=workers,
                base_url=_base_url(table["base_url"]) if "base_url" in table else None,
                key_env=_key_env(table["key_env"]) if "key_env" in table else None,
-               accepted_init=_accepted(table["accepted_init"]) if "accepted_init" in table
+               accepted_init=_accepted(table["accepted_init"], harness)
+               if "accepted_init" in table
                else (),
                prices=_prices(table["prices"]) if "prices" in table else None,
                coauthor=_text(table, "coauthor", _COAUTHOR) if "coauthor" in table
@@ -228,15 +247,26 @@ def _token(arm: Arm, env: Mapping[str, str]) -> str:
     return value
 
 
+def _foreign(name: str) -> bool:
+    """Another vendor's variable in a Codex session: any ANTHROPIC_* name, any Google key or
+    credentials name (case-insensitive: Windows names are)."""
+    return name.upper().startswith(_ANTHROPIC_PREFIX) or bool(_GOOGLE_KEY.fullmatch(name))
+
+
 def session_env(arm: Arm, base_env: Mapping[str, str],
                 arms: Mapping[str, Arm] | None = None) -> dict[str, str]:  # fmt: skip
     """A session's environment (D-12): `base_env` without every arm's key variable (the
     committed table's when `arms` is None) and without INHERITED; then, for an arm with a base
     URL, the endpoint, its own key as ANTHROPIC_AUTH_TOKEN, an empty ANTHROPIC_API_KEY, no
-    nonessential traffic and the default-model pins (RESEARCH Q7). `base_env` is not changed."""
+    nonessential traffic and the default-model pins (RESEARCH Q7). A Codex arm's session also
+    loses OPENAI_ENV, every ANTHROPIC_* variable and every Google key variable (07.2-13).
+    `base_env` is not changed."""
     table = load_arms() if arms is None else arms
     drop = {*INHERITED, *(a.key_env for a in (*table.values(), arm) if a.key_env)}
-    env = {key: value for key, value in base_env.items() if key not in drop}
+    if arm.harness == CODEX:
+        drop.update(OPENAI_ENV)
+    env = {key: value for key, value in base_env.items()
+           if key not in drop and not (arm.harness == CODEX and _foreign(key))}  # fmt: skip
     if arm.backend != ANTHROPIC:  # D-10: the hook then denies its reads of orig/, third_party/
         env[EGRESS_ENV] = "1"
     if arm.base_url is None:

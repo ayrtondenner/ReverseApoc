@@ -44,6 +44,46 @@ model = "claude-sonnet-5-5"
 sends_disassembly = true
 max_workers = 10
 
+# GPT-6 Luna and GPT-6.1 Sol through the Codex CLI on the owner's ChatGPT Plus login (07.2-13;
+# D-12, D-13, D-18: third and fourth in the run order). No base_url and no key_env: Codex signs
+# in with its own login, and the driver strips OPENAI_API_KEY and OPENAI_BASE_URL from the
+# session. No init ids: `codex exec --json` streams no event naming the model, so the record
+# keeps the requested model and a null `model`. Prices are 0: a Plus subscription is measured
+# in tokens and its 5-hour windows, not in dollars. One worker for the Plus windows (the owner
+# may raise max_workers). A Codex arm runs only after its canary passed on the installed CLI
+# (build/driver/canary/<arm>.json). ASSUMPTION, confirm at setup: the ids `gpt-6-luna` and
+# `gpt-6.1-sol` (RESEARCH Q8, from OpenAI's help page and CLI 0.159.1's catalogue) and the
+# noreply@openai.com co-author address.
+[arms."gpt-6-luna"]
+harness = "codex"
+backend = "openai"
+model = "gpt-6-luna"
+sends_disassembly = true
+accepted_init = []
+coauthor = "GPT-6 Luna <noreply@openai.com>"
+max_workers = 1
+
+[arms."gpt-6-luna".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+
+[arms."gpt-6.1-sol"]
+harness = "codex"
+backend = "openai"
+model = "gpt-6.1-sol"
+sends_disassembly = true
+accepted_init = []
+coauthor = "GPT-6.1 Sol <noreply@openai.com>"
+max_workers = 1
+
+[arms."gpt-6.1-sol".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+
 # DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
 # yet, so both cache classes are priced as input: the estimate may overstate, never understate.
 [arms."deepseek-flash"]

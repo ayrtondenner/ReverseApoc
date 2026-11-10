@@ -15,10 +15,15 @@ the argv, saves every stdout line as it arrives to the attempt's transcript.json
 with streamjson. At
 the 30-minute wall clock it kills the whole process tree with `kill_tree` (Pitfall 7) and
 reports `timed_out`; streamjson.classify counts that as an attempt.
+
+07.2-13 (D-13): `build_codex_argv` is a Codex arm's `codex exec --json` argv and `codex_prompt`
+its prompt (the goal, the watcom-decomp skill's body and the session rules, since Codex loads
+no skill and runs no hook); run_session runs it the same way.
 """
 
 from __future__ import annotations
 
+import json
 import ntpath
 import os
 import queue
@@ -32,7 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
-from .hooks import ATTEMPT_NAME, ATTEMPT_PREFIX
+from .hooks import _NOTES_NAME as _NOTES_FILE
+from .hooks import ATTEMPT_NAME, ATTEMPT_PREFIX, SESSION_FILE_NAMES
 from .streamjson import EXPECTED_TOOLS, parse_line
 
 OPUS_MODEL = "claude-opus-5-5"  # D-35, the literal id
@@ -81,6 +87,8 @@ _TOOLS = ",".join(EXPECTED_TOOLS)
 _READ_WRITE_TOOLS = ",".join(tool for tool in EXPECTED_TOOLS if tool != "Bash")
 _WRAPPER = " ".join(ATTEMPT_PREFIX)
 _CHECK = f"{_WRAPPER} check"
+_GOAL_COMMAND = "/goal "  # Claude Code's /goal; a Codex prompt carries the goal without it
+_FRONT_MATTER = "---"  # a SKILL.md's front matter fence
 
 
 def model_for_pass(pass_number: int) -> str:
@@ -131,6 +139,50 @@ def build_argv(
         "--max-budget-usd",
         str(max_budget_usd),
     ]
+
+
+def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) -> list[str]:
+    """07.2-13 (D-13; RESEARCH Q8): the argv of one Codex session, `codex` being the CLI
+    executable: `codex exec --json` in a workspace-write sandbox rooted at `attempt_dir`, no
+    git-repo check, nothing persisted, no user config, approval `never` and the sandbox's
+    network off, and `attempt_dir` trusted so the per-session rules the driver generates under
+    it (<attempt dir>/.codex/rules/) load. The approval key (RESEARCH A4) and the trusted
+    project layer under gitignored build/ (A5) are assumptions the Codex canary settles. Never
+    an auto-approval flag, the unrestricted sandbox mode or the flag that skips the rules files
+    (tests/test_codex.py pins the list). The prompt is the last argument."""
+    trust = f"projects.{json.dumps(str(attempt_dir))}.trust_level=\"trusted\""
+    return [codex, "exec", "--json", "--model", model, "--sandbox", "workspace-write",
+            "--cd", str(attempt_dir), "--skip-git-repo-check", "--ephemeral",
+            "--ignore-user-config", "-c", 'approval_policy="never"',
+            "-c", "sandbox_workspace_write.network_access=false", "-c", trust,
+            prompt]  # fmt: skip
+
+
+def _skill_body(skill_text: str) -> str:
+    """A SKILL.md without its `---` front matter (the name and description lines)."""
+    lines = skill_text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != _FRONT_MATTER:
+        return skill_text
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == _FRONT_MATTER:
+            return "".join(lines[index + 1 :]).lstrip("\n")
+    return skill_text
+
+
+def codex_prompt(goal: str, skill_text: str) -> str:
+    """07.2-13 (D-13): the prompt of a Codex session, which has no skill loader, no /goal and
+    no hooks: the matching goal (goal_prompt's, without its /goal command), the watcom-decomp
+    skill's body (`skill_text`, front matter stripped), and a closing block naming the session
+    files beside notes.md and that only the attempt wrapper may be run (the driver audits every
+    command and file afterwards)."""
+    files = ", ".join((_NOTES_FILE, *SESSION_FILE_NAMES))
+    closing = (f"Session rules: the only command you may run is `{_WRAPPER}` with one of the "
+               "forms the skill quotes, exactly as written; run nothing else, not even to read "
+               f"or list a file. The files you may write are the private unit named above and, in "
+               f"this attempt's directory, {files}. Every command you run and every file you "
+               "write is checked after the session; anything else stops the night.")  # fmt: skip
+    return "\n\n".join((goal.removeprefix(_GOAL_COMMAND), _skill_body(skill_text).strip(),
+                        closing))  # fmt: skip
 
 
 def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:
