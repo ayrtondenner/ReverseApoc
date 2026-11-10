@@ -224,6 +224,27 @@ output = 0.40
 cache_read = 0.061
 cache_creation = 0.061
 
+# GPT-OSS 20B through OpenRouter (owner, 2026-11-10), another small model that could later run
+# on his machine: open-weight (Hugging Face openai/gpt-oss-20b), about 21B total parameters
+# (MoE), so it can get a local twin later like Qwen3.6-35B-A3B and GLM-4.7-Flash. Context 131072
+# on OpenRouter. OpenRouter lists cache reads at 0.03. Not the agy `gpt-oss` arm (GPT-OSS 120B).
+[arms."gpt-oss-20b"]
+harness = "claude"
+backend = "openrouter"
+model = "openai/gpt-oss-20b"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["openai/gpt-oss-20b"]
+coauthor = "GPT-OSS 20B <noreply@openai.com>"
+max_workers = 3
+
+[arms."gpt-oss-20b".prices]
+input = 0.03
+output = 0.13
+cache_read = 0.03
+cache_creation = 0.03
+
 # Muse Spark Open through OpenRouter (released 2026-10-15). The id and the price are confirmed
 # from OpenRouter's list (2026-11-10). OpenRouter lists cache reads at 0.15.
 [arms."muse-spark-open"]
