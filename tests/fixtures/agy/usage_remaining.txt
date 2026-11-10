@@ -1,0 +1,1 @@
+{"weekly": {"limit_tokens": 2000000, "remaining_tokens": 1500000, "resets_at": "2026-11-16T00:00:00Z"}}

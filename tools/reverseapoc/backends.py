@@ -30,6 +30,12 @@ init event). Its session env loses, besides every arm key, OPENAI_API_KEY and OP
 (which would move the CLI off that login), every inherited ANTHROPIC_* variable and every
 Google key variable (RULINGS "Token-leak guard covers every arm"): no harness ever sees another
 vendor's credential.
+
+07.2-15 (D-21, D-24): an Antigravity arm (harness `agy`) runs the agy CLI on the owner's Google
+AI Plus sign-in; like a Codex arm it takes no base URL and no key variable. Its session env
+loses the same set: OPENAI_API_KEY and OPENAI_BASE_URL, every ANTHROPIC_* variable and every
+Google key variable (GEMINI_API_KEY and GOOGLE_API_KEY among them, which would move agy off the
+sign-in), plus every arm key.
 """
 
 from __future__ import annotations
@@ -61,8 +67,11 @@ NONESSENTIAL_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 MODEL_PINS = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_HAIKU_MODEL")  # fmt: skip
 INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped from every session
+CLAUDE = HARNESSES[0]  # the Claude Code harness: hooks, its login or an Anthropic endpoint
 CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
-OPENAI_ENV = ("OPENAI_API_KEY", "OPENAI_BASE_URL")  # stripped from a Codex session (D-12)
+AGY = "agy"  # the Antigravity CLI harness (07.2-15, D-21)
+SIGNED_IN = (CODEX, AGY)  # harnesses on their own CLI login: no endpoint, no key, env stripped
+OPENAI_ENV = ("OPENAI_API_KEY", "OPENAI_BASE_URL")  # stripped from Codex and agy (D-12)
 _ANTHROPIC_PREFIX = "ANTHROPIC_"
 _GOOGLE_KEY = re.compile(r"(?:GOOGLE|GEMINI)[A-Z0-9_]*_(?:KEY|CREDENTIALS)", re.IGNORECASE)
 
@@ -248,7 +257,7 @@ def _token(arm: Arm, env: Mapping[str, str]) -> str:
 
 
 def _foreign(name: str) -> bool:
-    """Another vendor's variable in a Codex session: any ANTHROPIC_* name, any Google key or
+    """A variable a Codex or agy session never gets: any ANTHROPIC_* name, any Google key or
     credentials name (case-insensitive: Windows names are)."""
     return name.upper().startswith(_ANTHROPIC_PREFIX) or bool(_GOOGLE_KEY.fullmatch(name))
 
@@ -258,15 +267,16 @@ def session_env(arm: Arm, base_env: Mapping[str, str],
     """A session's environment (D-12): `base_env` without every arm's key variable (the
     committed table's when `arms` is None) and without INHERITED; then, for an arm with a base
     URL, the endpoint, its own key as ANTHROPIC_AUTH_TOKEN, an empty ANTHROPIC_API_KEY, no
-    nonessential traffic and the default-model pins (RESEARCH Q7). A Codex arm's session also
-    loses OPENAI_ENV, every ANTHROPIC_* variable and every Google key variable (07.2-13).
-    `base_env` is not changed."""
+    nonessential traffic and the default-model pins (RESEARCH Q7). A Codex or agy arm's session
+    also loses OPENAI_ENV, every ANTHROPIC_* variable and every Google key variable (07.2-13,
+    07.2-15). `base_env` is not changed."""
     table = load_arms() if arms is None else arms
     drop = {*INHERITED, *(a.key_env for a in (*table.values(), arm) if a.key_env)}
-    if arm.harness == CODEX:
+    signed_in = arm.harness in SIGNED_IN
+    if signed_in:
         drop.update(OPENAI_ENV)
     env = {key: value for key, value in base_env.items()
-           if key not in drop and not (arm.harness == CODEX and _foreign(key))}  # fmt: skip
+           if key not in drop and not (signed_in and _foreign(key))}  # fmt: skip
     if arm.backend != ANTHROPIC:  # D-10: the hook then denies its reads of orig/, third_party/
         env[EGRESS_ENV] = "1"
     if arm.base_url is None:

@@ -1,0 +1,2 @@
+{"type": "init", "cwd": "/made-up/elsewhere", "model": "@model", "tools": ["run_command"], "permission_mode": "default"}
+{"type": "result", "conversation_id": "made-up-4", "status": "SUCCESS", "response": "made-up reply", "error": null, "duration_seconds": 1.0, "num_turns": 1, "usage": {"input_tokens": 10, "output_tokens": 1, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 11}, "denied_actions": []}

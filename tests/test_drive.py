@@ -104,11 +104,13 @@ class Runner:
 
     replies: list[tuple] = field(default_factory=list)
     calls: list[list[str]] = field(default_factory=list)
+    envs: list[dict | None] = field(default_factory=list)  # 07.2-15: the env of each call
     version: str = "2.1.302 (Claude Code)"
 
-    def __call__(self, argv) -> subprocess.CompletedProcess:
+    def __call__(self, argv, env=None) -> subprocess.CompletedProcess:
         argv = list(argv)
         self.calls.append(argv)
+        self.envs.append(None if env is None else dict(env))
         for match, reply in self.replies:
             if match(argv):
                 code, out, err = reply
