@@ -1851,3 +1851,122 @@ def test_drive_help_lists_allow_egress(capsys):
     with pytest.raises(SystemExit):
         cli.main(["drive", "--help"])
     assert "--allow-egress" in capsys.readouterr().out
+
+
+# ---- 07.2-12 Task 2 (D-10, D-16, D-26): init, cost, credit and reads of hosted arms ----
+
+DEEPSEEK_COAUTHOR = "Co-Authored-By: DeepSeek V4.1-Flash <noreply@deepseek.com>"
+HOSTED_TRAILERS = [driver.MATCHED_BY, f"Matched-By: {DEEPSEEK}", DEEPSEEK_COAUTHOR]
+# hosted_success.jsonl's tokens at deepseek-flash's prices (input, output, both cache classes
+# at the input price): its result event's own total_cost_usd, 9.99, is not trusted.
+HOSTED_ESTIMATE = (1200 * 0.30 + 300 * 1.20 + 5000 * 0.30 + 800 * 0.30) / 1_000_000
+
+
+def _hosted_run(night: Night, **config) -> driver.DriveReport:
+    """A night of the DeepSeek arm in the night harness, with a made-up key (D-12)."""
+    fields = {"night_model": DEEPSEEK, "attempts_per_function": 1,
+              "base_env": _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)}  # fmt: skip
+    fields.update(config)
+    return night.run(config=fields)
+
+
+def test_hosted_record_is_an_estimate(tmp_path):
+    """RESEARCH A3: a hosted session's cost is the estimate from its arm's prices, even when
+    its result event reports one; a Claude arm's keeps the CLI's figure."""
+    from test_driver import Sess
+
+    night = Night(tmp_path / "hosted", sessions=[Sess("hosted_success")], gate_exits=[1])
+    report = _hosted_run(night)
+    assert report.event == "ENDED", report.detail
+    record = night.kinds("attempt")[0]
+    assert (record["backend"], record["cost_source"], record["model"]) == (
+        "deepseek", "estimate", DEEPSEEK)  # fmt: skip
+    assert record["cost_usd"] == pytest.approx(HOSTED_ESTIMATE)
+    assert record["duration_ms"] == 45000 and record["tokens"]["input"] == 1200
+    driver.validate_record(record)
+    claude = Night(tmp_path / "claude", sessions=[Sess()], gate_exits=[1])
+    claude.run(config={"attempts_per_function": 1})
+    mine = claude.kinds("attempt")[0]
+    assert (mine["backend"], mine["cost_source"], mine["cost_usd"]) == ("anthropic", "cli", 0.25)
+
+
+def test_hosted_init_is_checked_against_the_arms_ids(tmp_path):
+    """A hosted session whose init names another model (DeepSeek maps claude ids to its own
+    models) stops the night at the init check."""
+    from test_driver import Sess
+
+    night = Night(tmp_path, sessions=[Sess("hosted_success")], gate_exits=[0])
+    real = night._argv
+
+    def argv(prompt, **values):  # fakeclaude --init-model: the init names another model
+        return [*real(prompt, **values), "--init-model", "deepseek-v4-pro"]
+
+    report = night.run(config={"night_model": DEEPSEEK, "attempts_per_function": 1,
+                               "base_env": _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)},
+                       argv=argv)  # fmt: skip
+    assert (report.event, report.reason) == ("STOPPED", driver.INIT), report.detail
+    assert "deepseek-v4-pro" in report.detail
+    assert night.gate_calls == []
+
+
+def test_hosted_match_trailers(tmp_path):
+    """D-26: a hosted arm's match commit carries the driver's trailer, then Matched-By: <model
+    id>, then its vendor's co-author line, and no Claude line; stats still classes it
+    unattended (RULINGS "Matched-By")."""
+    from reverseapoc import stats
+    from test_driver import MATCH_SUBJECT, Sess
+
+    night = Night(tmp_path, sessions=[Sess("hosted_success")], gate_exits=[0])
+    report = _hosted_run(night)
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    body = night.message(MATCH_SUBJECT)
+    assert body.rstrip("\n").splitlines()[-3:] == HOSTED_TRAILERS
+    assert "noreply@anthropic.com" not in body
+    assert stats.classify(stats._trailers(body)) == (stats.UNATTENDED, False)
+    assert night.kinds("attempt")[0]["outcome"] == "MATCHED"
+
+
+def test_the_commit_hook_adds_no_claude_line_to_a_hosted_match(tmp_path):
+    """RULINGS: the repository's commit-msg hook adds its Claude line only when no
+    Co-Authored-By trailer is there, so the vendor line of a hosted match suppresses it."""
+    from test_githooks import SH, _coauthor_lines, _env, _run_hook
+
+    if SH is None:
+        pytest.skip("needs sh")
+    usage = driver.streamjson.Usage(1, 1, 1, 1, 1, 0.0, 1)
+    message = driver.commit_message(exe="ufo2p", function="func_00010010", unit="u_00010000",
+                                    attempt_n=1, attempts=1, model=DEEPSEEK, usage=usage,
+                                    seconds=1.0, sha1s=[], requested_model=DEEPSEEK,
+                                    arm=driver.backends.load_arms()[DEEPSEEK])  # fmt: skip
+    msg = tmp_path / "COMMIT_EDITMSG"
+    msg.write_text(message, encoding="utf-8", newline="\n")
+    assert _run_hook(msg, _env(tmp_path, claudecode=True)).returncode == 0
+    assert _coauthor_lines(msg.read_text(encoding="utf-8")) == [DEEPSEEK_COAUTHOR]
+
+
+def test_land_held_credits_a_hosted_arm(tmp_path):
+    """06's --land-held credits a hosted hold run to its arm: the same three trailers."""
+    night = _table_night(tmp_path, gate_exits=[0])
+    record = _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK)
+    record["backend"] = "deepseek"
+    _commit_log(night, [record])
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    body = night.message("feat(")
+    assert body.rstrip("\n").splitlines()[-3:] == HOSTED_TRAILERS
+    assert "noreply@anthropic.com" not in body
+
+
+def test_egress_env_set_for_hosted_arms(tmp_path):
+    """D-10: a hosted arm's session runs with REVERSEAPOC_EGRESS=1; a Claude arm's never does,
+    even when the driver's own environment carries it."""
+    from reverseapoc import hooks
+    from test_driver import Sess
+
+    night = Night(tmp_path / "hosted", sessions=[Sess("hosted_success")], gate_exits=[1])
+    _hosted_run(night)
+    assert night.launched[0].env.get(hooks.EGRESS_ENV) == "1"
+    claude = Night(tmp_path / "claude", sessions=[Sess()], gate_exits=[1])
+    claude.run(config={"attempts_per_function": 1,
+                       "base_env": {**claude.env, hooks.EGRESS_ENV: "1"}})  # fmt: skip
+    assert hooks.EGRESS_ENV not in set(claude.launched[0].env)

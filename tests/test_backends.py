@@ -212,3 +212,52 @@ def test_preflight_passes():
     arms = _arms()
     preflight(arms[DEEPSEEK], {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK}, allow_egress=(DEEPSEEK,))
     preflight(arms[OPUS], {}, allow_egress=())
+
+
+# ---- Task 2: the other hosted arms, the cost estimate and the egress marker ----
+
+
+@pytest.mark.parametrize(("name", "backend", "url", "key_env", "model"), [
+    ("glm-5.3", "zai", "https://api.z.ai/api/anthropic", "ZAI_API_KEY", "glm-5.3"),
+    ("muse-spark-open", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+     "meta/muse-spark-open"),
+    ("qwen-hosted", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+     "qwen/qwen3.6-35b-a3b"),
+])  # fmt: skip
+def test_hosted_arms_load(name, backend, url, key_env, model):
+    """D-18 and the owner's Qwen ruling: GLM on z.ai, Muse Spark Open and the hosted Qwen
+    through OpenRouter, each with its prices, its own init id and its vendor's credit line."""
+    arm = _arms()[name]
+    assert (arm.backend, arm.base_url, arm.key_env, arm.model) == (backend, url, key_env, model)
+    assert arm.egress and arm.accepted_init == (model,)
+    assert arm.prices is not None and arm.prices.input > 0 and arm.prices.output > 0
+    assert arm.coauthor is not None and "<noreply@" in arm.coauthor
+
+
+def test_every_hosted_cache_price_is_at_least_the_input_price():
+    """Until the owner records the providers' cache prices, both cache classes are priced as
+    input, so an estimate may overstate and never understate."""
+    for arm in _arms().values():
+        if arm.egress:
+            assert arm.prices.cache_read == arm.prices.input == arm.prices.cache_creation, arm.name
+
+
+def test_estimate_cost():
+    """Tokens times the arm's prices per million tokens, over the four classes (RESEARCH A3:
+    the CLI's figure for an unknown model is not trusted)."""
+    from reverseapoc.streamjson import Usage
+
+    usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000, cache_read_tokens=1_000_000,
+                  cache_creation_tokens=0, turns=3, cost_usd=9.99, duration_ms=1)  # fmt: skip
+    assert backends.estimate_cost(usage, _arms()[DEEPSEEK]) == pytest.approx(0.30 + 1.20 + 0.30)
+
+
+def test_session_env_marks_egress_sessions():
+    """D-10: a hosted arm's session carries REVERSEAPOC_EGRESS=1, so the hook denies its reads
+    of orig/ and third_party/; a Claude arm's never does, even when the variable is inherited."""
+    from reverseapoc import hooks
+
+    arms = _arms()
+    base = {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK, hooks.EGRESS_ENV: "1"}
+    assert session_env(arms[DEEPSEEK], base, arms)[hooks.EGRESS_ENV] == "1"
+    assert hooks.EGRESS_ENV not in session_env(arms[OPUS], base, arms)

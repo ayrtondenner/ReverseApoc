@@ -2087,3 +2087,36 @@ def test_view_unit_include_rule(repo, name):
         assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
     bare = SCAFFOLD + BARE_INCLUDES["quoted"]
     assert not matching(in_repo(write(native(unit), bare), repo), env).deny
+
+
+# --- 07.2-12 (D-10): an egress session reads neither orig/ nor third_party/ -------------------
+
+
+def _egress_reads(repo: Path) -> list[dict]:
+    """Read, Glob and Grep of the game files and the compiler, by path and by pattern."""
+    return [
+        tool("Read", repo, file_path=native(repo / "orig" / "UFO2P.EXE")),
+        tool("Read", repo, file_path=native(repo / "ORIG" / "tacp.exe")),  # NTFS: any case
+        tool("Glob", repo, pattern="*", path=native(repo / "orig")),
+        tool("Glob", repo, pattern="orig/**"),
+        tool("Glob", repo, pattern="{src,third_party}/**/*.h"),
+        tool("Grep", repo, pattern="x", path=native(repo / "third_party" / "watcom")),
+        tool("Grep", repo, pattern="x", glob="third_party/**"),
+        tool("Grep", repo, pattern="x", path=native(repo / "orig") + os.sep),
+    ]
+
+
+def test_egress_session_cannot_read_orig(repo):
+    """With REVERSEAPOC_EGRESS=1 (a session of a non-Anthropic arm), every read of orig/ or
+    third_party/ is denied naming D-10; without it the same reads behave as today, and other
+    reads of the egress session do too."""
+    egress = {**view_env(repo), hooks.EGRESS_ENV: "1"}
+    assert hooks.EGRESS_ENV == "REVERSEAPOC_EGRESS"
+    for payload in _egress_reads(repo):
+        decision = matching(payload, egress)
+        assert decision.deny and "D-10" in decision.reason, payload["tool_input"]
+        assert not matching(payload).deny, payload["tool_input"]
+    for payload in (tool("Read", repo, file_path=native(repo / "src" / "ufo2p" / "x.c")),
+                    tool("Grep", repo, pattern="x", path=native(repo / "include")),
+                    tool("Glob", repo, pattern="src/**/*.c")):  # fmt: skip
+        assert not matching(payload, egress).deny, payload["tool_input"]
