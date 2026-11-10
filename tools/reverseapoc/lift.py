@@ -112,6 +112,9 @@ DWORD = MOVE_BYTES["movsd"]
 REP_MOVE = "rep movsd"
 UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
 REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
+# An address-taken slot of this many bytes is declared `int s[1]`: three char[4] leave M2 on wcc386
+# 10.6 and three int[1] keep it (07.1-REVIEW CR-01; probe/cg_slots.c pr_arr_int1_x3).
+ONE_INT = 4
 # The functions a header the lifter includes declares, among the callees a draft can meet, with the
 # parameter types its prototype spells. A draft that includes the header gives them no prototype of
 # its own (one that disagrees is E1062/E1071), and each call passes the header's count (else E1151)
@@ -767,10 +770,16 @@ class Lifter:
         name = self.exe.symbols.c_name(self.row.start)
         self.externs.pop(name, None)  # the definition is its own declaration
         decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
-        # Nearest the entry first: a frame of one size puts the first declared highest (probe M2).
+        # Nearest the entry first, so the first declared is the highest, which is M2. Taken slots
+        # of 4 bytes are one int each, and slots.order_is_known holds for a tie of any number of
+        # them, where it fails for three char[4]. Wider taken slots are char arrays, sorted by
+        # size (M1) unless two or more share one: such a tie has no known order, and this is the
+        # draft's guess. Scalar slots are register candidates in the compiler (M5), not modelled.
         slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
         dims = self.array_dims()
-        decls += [f"    {t} {n}{dims.get(n, '')};" for n, t in slots]
+        for n, t in slots:
+            t, dim = dims.get(n, (t, ""))
+            decls.append(f"    {t} {n}{dim};")
         decls += [f"    int {n};" for n in sorted(self.hole_vars)]
         decls += [f"    {t} {n};" for n, t in self.temps.items()]
         lines = [f"/* IDIOM {hit} */" for hit in self.idioms()]
@@ -842,9 +851,16 @@ class Lifter:
         below = [t for t in self.taken if t <= off]
         return max(below) if below and off < self.frame_top else None
 
-    def array_dims(self) -> dict[str, str]:
+    def array_extents(self) -> dict[int, int]:
+        """The bytes of each address-taken slot, by frame offset: to the next one or the top."""
         edges = sorted(self.taken) + [self.frame_top]
-        return {_slot_name(a): f"[{b - a}]" for a, b in itertools.pairwise(edges)}
+        return {a: b - a for a, b in itertools.pairwise(edges)}
+
+    def array_dims(self) -> dict[str, tuple[str, str]]:
+        """The type and dimension each address-taken slot is declared with: one int for 4 bytes
+        (ONE_INT), else that many chars."""
+        return {_slot_name(a): ("int", "[1]") if n == ONE_INT else ("char", f"[{n}]")
+                for a, n in self.array_extents().items()}  # fmt: skip
 
 
 class Block_:
@@ -1118,6 +1134,11 @@ class Block_:
         """The access `op` makes at `off`, inside the array at `base`."""
         m, size = op.mem, op.size
         array = var(_slot_name(base))
+        stepped = m.scale != size if m.index else off != base
+        if stepped and self.lf.array_extents()[base] == ONE_INT:
+            # Arithmetic on an int array steps 4 bytes: add the offset to a char pointer. A cast
+            # binds tighter than `+`, so it stands as an atom there.
+            array = E(f"(char *){array.text}", atom=True)
         if not m.index:
             return load(binop("+", array, const(off - base)), size, signed)
         i = self.get(ci.reg_name(m.index))
