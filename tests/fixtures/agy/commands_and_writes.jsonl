@@ -1,0 +1,9 @@
+{"type": "init", "cwd": "@cwd", "model": "@model", "tools": ["run_command", "read_file", "write_file"], "permission_mode": "default"}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 1, "state": "RUNNING", "step_type": "TOOL", "tool_name": "run_command", "tool_info": {"command": "uv run --frozen reverseapoc attempt context"}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 1, "state": "DONE", "step_type": "TOOL", "tool_name": "run_command", "tool_info": {"command": "uv run --frozen reverseapoc attempt context", "exit_code": 0}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 2, "state": "DONE", "step_type": "TOOL", "tool_name": "write_file", "tool_info": {"path": "notes.md"}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 3, "state": "DONE", "step_type": "TOOL", "tool_name": "read_file", "tool_info": {"path": "context.md"}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 4, "state": "DONE", "step_type": "TOOL", "tool_name": "run_command", "tool_info": {"command": "type notes.md", "exit_code": 0}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 5, "state": "DONE", "step_type": "TOOL", "tool_name": "edit_file", "tool_info": {"path": "view/src/ufo2p/u_00010000.c"}}
+{"type": "step_update", "conversation_id": "made-up-3", "step_index": 6, "state": "DENIED", "step_type": "TOOL", "tool_name": "run_command", "tool_info": {"command": "rm made-up.txt"}}
+{"type": "result", "conversation_id": "made-up-3", "status": "ERROR", "response": "", "error": "made-up failure", "duration_seconds": 3.0, "num_turns": 1, "usage": {"input_tokens": 1, "output_tokens": 1, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 2}, "denied_actions": [{"action": "command", "target": "rm made-up.txt"}]}
