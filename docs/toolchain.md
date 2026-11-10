@@ -440,9 +440,9 @@ kept in the repo, in `.env`, or in any log or record (CLAUDE.md, hard rules). Ea
 | Arm | Credential | Where it lives |
 |---|---|---|
 | Claude (Haiku, Sonnet, Opus) | the Claude Code login | Claude Code itself; no variable |
-| OpenRouter (Muse Spark Open, hosted Qwen3.6-35B-A3B) | `OPENROUTER_API_KEY` | Windows user environment variable |
-| DeepSeek V4.1-Flash | `DEEPSEEK_API_KEY` | Windows user environment variable |
-| z.ai GLM-5.x | `ZAI_API_KEY` | Windows user environment variable |
+| OpenRouter (DeepSeek V4.1-Flash, GLM-5.3, GLM-4.7-Flash, Muse Spark Open, hosted Qwen3.6-35B-A3B, the Gemini fallback) | `OPENROUTER_API_KEY` | Windows user environment variable |
+| DeepSeek direct | `DEEPSEEK_API_KEY`: not used. DeepSeek runs through OpenRouter since 2026-11-10 | none; the driver strips it from every session |
+| z.ai direct | `ZAI_API_KEY`: not used. GLM runs through OpenRouter since 2026-11-10 | none; the driver strips it from every session |
 | GPT-6 Luna / GPT-6.1 Sol | the ChatGPT sign-in of the Codex CLI (`codex login`) | the Codex CLI's own store |
 | Gemini 3.8 Flash, GPT-OSS 120B | the Google sign-in of the Antigravity CLI (run `agy` once) | the Antigravity CLI's own store |
 | Local Qwen3.6-35B-A3B | none | llama.cpp on localhost |
