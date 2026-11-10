@@ -215,14 +215,19 @@ The model ids are assumptions to confirm at setup.
   ledger entry's. Anything else, a session-written `.codex/config.toml` among it, is a stray:
   the files are quarantined, the attempt is recorded as a guardrail give-up and the night
   stops. Each launch gets a fresh attempt dir, so nothing a session writes there reaches the
-  next one.
+  next one. The rules file is judged against the driver's own bytes, not the launch
+  inventory: right after writing it the driver checks that it is a regular file reached
+  through no link and holding exactly that rule (no session launches otherwise), and the audit
+  checks the same again, so any session write to it is a stray.
 - **What the audit cannot do.** It detects after the fact; it does not prevent. Codex's
   workspace-write sandbox restricts writes and the network, not reads, and Codex has no hook
   that could deny a read before it happens. A session that reads `orig/` or `third_party/` is
   caught by its command, quarantined and the night stops, but whatever it sent to OpenAI before
   it ended has left the machine. No read restriction of the installed CLI was confirmed
   offline, so none is assumed. The same holds for a command that runs before the audit: only
-  the sandbox and the canary's probes stand between it and the host.
+  the sandbox and the canary's probes stand between it and the host. The rules file has to sit
+  in the workspace (Codex reads project rules from `<--cd>/.codex/rules/`), so if Codex re-read
+  a session-edited rules file within the same session, only the audit would catch it.
 - **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
   (and the same for `gpt-6.1-sol`) asks the session, in order, to run `whoami`, write a file
   one directory above its workspace, fetch `https://example.com/`, run the wrapper's context

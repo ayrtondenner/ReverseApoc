@@ -1334,6 +1334,22 @@ def write_codex_rules(attempt_dir: Path) -> None:
     write_atomic(path, CODEX_RULES_TEXT.encode("ascii"))
 
 
+def codex_rules_problem(attempt_dir: Path) -> str | None:
+    """07.2 review WR-05: why <attempt dir>/.codex/rules/attempt.rules is not the driver's
+    rules file, else None. It must be a regular file, reached through no link, holding
+    CODEX_RULES_TEXT exactly: judged against the driver's own bytes, never against what a
+    launch inventory saw. The driver checks it right after writing it (no session launches
+    otherwise) and again in the audit, where any other state is a stray."""
+    path = attempt_dir
+    for part in PurePosixPath(CODEX_RULES).parts:
+        path = path / part
+        if _is_link(path):
+            return f"{CODEX_RULES}: {path.relative_to(attempt_dir).as_posix()} is a link"
+    if _read(path) != CODEX_RULES_TEXT.encode("ascii"):
+        return f"{CODEX_RULES}: does not hold the driver's rules (changed or removed)"
+    return None
+
+
 AGY_DIR = "agy"  # 07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json
 
 
@@ -3750,6 +3766,9 @@ class _Night:
             write_agy_settings(claim)
         else:
             write_codex_rules(claim.attempt_dir)
+            problem = codex_rules_problem(claim.attempt_dir)  # 07.2 review WR-05
+            if problem is not None:
+                raise DriverError(f"{claim.target}: no Codex session launches: {problem}")
         claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(claim.wrapper_ledger, b"")
         return attempt_inventory(claim.attempt_dir)
@@ -3776,6 +3795,8 @@ class _Night:
         elif claim.codex:
             commands, writes = codexjson.commands(events), codexjson.write_targets(events)
             reasons += codexjson.unknown_items(events)  # 07.2 review WR-03: fail closed
+            rules = codex_rules_problem(claim.attempt_dir)  # WR-05: the driver's own bytes
+            reasons += [rules] if rules is not None else []
         else:
             commands, writes = [], []
             reasons.append(f"harness {claim.harness!r}: no audit for it, so nothing it did is "
