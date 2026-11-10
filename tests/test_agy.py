@@ -198,28 +198,77 @@ def test_agyjson_commands_writes_denied():
     assert agyjson.denied_actions(_events("gemini_success")) == ["command(type notes.md)"]
 
 
-def _step(index: int, tool: str, **info) -> dict:
-    return {"type": "step_update", "step_index": index, "tool_name": tool, "tool_info": info}
+def _step(index: int, tool: str, *, state: str = "DONE", **info) -> dict:
+    return {"type": "step_update", "step_index": index, "state": state, "step_type": "TOOL",
+            "tool_name": tool, "tool_info": info}  # fmt: skip
 
 
-def test_agyjson_a_denial_hides_only_its_own_kind_and_count():
-    """A denied action hides one step of its own kind with its target, never a step of another
-    kind and never a second step: a denied command or read of a path must not hide a read or a
-    write of it that ran (security review, fail-open audit)."""
+def test_agyjson_only_a_steps_own_denied_state_hides_it():
+    """07.2 review WR-02: a step is dropped as denied only when the step itself ends DENIED. A
+    result's denied action never hides a step that ran, whatever its kind, target or count
+    (it is a hook block, nothing more)."""
     target = "../../../orig/UFO2P.EXE"
     events = [_step(1, "run_command", command=target),
-              _step(2, "view_file", path=target),
-              _step(3, "view_file", path=target),
-              _step(4, "write_to_file", path=target),
+              _step(2, "read_file", path=target),
+              _step(3, "read_file", path=target, state="DENIED"),
+              _step(4, "write_file", path=target),
               {"type": "result", "status": "SUCCESS",
-               "denied_actions": [f"command({target})", f"read_file({target})"]}]
-    assert agyjson.commands(events) == []
+               "denied_actions": [f"command({target})", f"read_file({target})",
+                                  f"write_file({target})"]}]  # fmt: skip
+    assert agyjson.commands(events) == [target]
     assert agyjson.read_targets(events) == [target]
     assert agyjson.write_targets(events) == [target]
     unsandboxed = [_step(1, "run_command", command="type notes.md"),
                    {"type": "result", "status": "SUCCESS",
                     "denied_actions": ["unsandboxed(type notes.md)"]}]
-    assert agyjson.commands(unsandboxed) == []
+    assert agyjson.commands(unsandboxed) == ["type notes.md"]
+
+
+def test_agyjson_reads_are_an_allowlist():
+    """WR-02: only a read-only tool the audit knows (read_file) is a read; any other tool step
+    that names a path is judged as a write, so an unknown writing tool never passes as a read
+    inside the checkout."""
+    events = [_step(1, "view_file", path="context.md"), _step(2, "read_file", path="notes.md"),
+              _step(3, "write_to_file", path="notes.md")]
+    assert agyjson.read_targets(events) == ["notes.md"]
+    assert agyjson.write_targets(events) == ["context.md", "notes.md"]
+
+
+def test_agyjson_unknown_steps():
+    """WR-02: a tool step that ran is a stray unless it is a tool the audit knows in its known
+    shape: run_command with a command, read_file or write_file with a path. A missing or
+    non-string tool name, an unknown tool (a fetch, a listing, a search), a known tool without
+    its field and a subagent step are each named; a denied step and a step that is no tool
+    step (model text) are not."""
+    stray = [_step(1, "web_fetch", url="https://made-up.invalid/"),
+             _step(2, "list_dir", path="."),
+             {"type": "step_update", "step_index": 3, "state": "DONE", "step_type": "TOOL",
+              "tool_info": {"command": "type notes.md"}},
+             {"type": "step_update", "step_index": 4, "state": "DONE", "step_type": "TOOL",
+              "tool_name": ["run_command"], "tool_info": {"command": "type notes.md"}},
+             _step(5, "read_file", query="orig"),
+             _step(6, "run_command", path="notes.md"),
+             {**_step(7, "run_command", command="uv run --frozen reverseapoc attempt check"),
+              "subagent_info": {"name": "made-up"}}]  # fmt: skip
+    fine = [_step(10, "run_command", command="uv run --frozen reverseapoc attempt check"),
+            _step(11, "read_file", path="context.md"), _step(12, "write_file", path="notes.md"),
+            _step(13, "web_fetch", state="DENIED", url="https://made-up.invalid/"),
+            {"type": "step_update", "step_index": 14, "state": "DONE",
+             "step_type": "PLANNER_RESPONSE", "text_delta": "made-up text"}]  # fmt: skip
+    found = agyjson.unknown_steps([*stray, *fine])
+    assert len(found) == len(stray), found
+    for index, text in zip(range(1, 8), found, strict=True):
+        assert f"step {index}" in text, (index, text)
+
+
+def test_an_unknown_agy_tool_stops_the_night(tmp_path, capsys, monkeypatch):
+    """WR-02 at night: a session whose stream holds a tool step the audit does not know (here
+    a URL fetch that names no command and no path) stops the night at the guardrail."""
+    rig, night, env = agy_night(tmp_path, monkeypatch, scenario="unknown_tool")
+    code, _, _ = _run_agy(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "web_fetch" in stopped["detail"], stopped
 
 
 def test_drive_agy_arm_records(tmp_path, capsys, monkeypatch):
