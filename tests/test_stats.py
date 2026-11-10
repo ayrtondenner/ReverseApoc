@@ -249,9 +249,12 @@ def _landing(start: int, outcome: str = "MATCHED") -> dict:
 
 def test_landing_counts_as_logged_match_once(tmp_path, capsys):
     """A held attempt (cost 1.0) and its MATCHED landing: one matched function, and the cost
-    counted once, in the attempt record (the landing has none)."""
+    counted once, in the attempt record (the landing has none). 07.2-06: a hold run's records
+    are read through `--run` (the default report leaves them out)."""
     held = _attempt_v3(outcome="HOLD_EXACT", hold_run=True, cost_usd=1.0)
-    report = _report(capsys, tmp_path, held, _landing(0x10010))
+    repo, _ = _repo(tmp_path)
+    report = _json(capsys, repo, _log(tmp_path, held, _landing(0x10010)), "--run", "night1",
+                   config=tmp_path / "config")  # fmt: skip
     assert report["per_match"]["matched_functions"] == 1
     assert report["per_match"]["cost_usd"] == "1.00"
     assert report["totals"]["cost_usd"] == "1.00"
@@ -727,7 +730,8 @@ def test_run_filter_keeps_a_landing_of_its_run(tmp_path, capsys):
 
 def test_by_model_size(tmp_path, capsys):
     """Per requested model and size bucket: the distinct functions attempted, matched (a MATCHED
-    attempt or landing) and held exact (a HOLD_EXACT attempt); readability sessions are out."""
+    attempt or landing) and held exact (a HOLD_EXACT attempt); readability sessions are out.
+    07.2-06: the hold runs' records are read through `--run`."""
     _functions(tmp_path / "config", "ufo2p", {0x10000: 32, 0x10100: 300})
     haiku, sonnet = "claude-haiku-5-5", "claude-sonnet-5-5"
     records = (
@@ -739,7 +743,9 @@ def test_by_model_size(tmp_path, capsys):
         {**_landing(0x10100), "model": sonnet},
         _on_v3(0x10000, model_requested=sonnet, session="readability", outcome="LANDED"),
     )  # fmt: skip
-    report = _report(capsys, tmp_path, *records)
+    repo, _ = _repo(tmp_path)
+    log, config = _log(tmp_path, *records), tmp_path / "config"
+    report = _json(capsys, repo, log, "--run", "night1", config=config)
     small, large = "[0, 64)", "[256, 1024)"
     assert report["by_model_size"] == {
         haiku: {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
@@ -747,7 +753,7 @@ def test_by_model_size(tmp_path, capsys):
         sonnet: {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
                  large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
     }  # fmt: skip
-    assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
+    assert _run(repo, log, "--run", "night1", config=config) == 0
     lines = capsys.readouterr().out.splitlines()
     block = lines[lines.index("per model and size:") + 1:][:2]
     assert [line.split(":")[0].strip() for line in block] == [haiku, sonnet]
@@ -778,3 +784,36 @@ def test_help_lists_run(capsys):
         cli.main(["stats", "--help"])
     out = capsys.readouterr().out
     assert "--run" in out and "*" in out
+
+
+def _hold_runs() -> tuple[dict, ...]:
+    """An ordinary night's attempt and two hold-run attempts (07.2-06, D-17)."""
+    haiku = "claude-haiku-5-5"
+    return (_on_v3(0x10000, run="night1", cost_usd=0.25),
+            _on_v3(0x10100, run="spike012-haiku", model_requested=haiku, outcome="HOLD_EXACT",
+                   hold_run=True, cost_usd=0.10),
+            _on_v3(0x10200, run="spike012-haiku", model_requested=haiku, hold_run=True,
+                   cost_usd=0.40))  # fmt: skip
+
+
+def test_default_report_leaves_hold_runs_out(tmp_path, capsys):
+    """D-17: without --run, a hold run's attempts are not attempted and add nothing to the sums
+    or the splits."""
+    repo, _ = _repo(tmp_path)
+    report = _json(capsys, repo, _log(tmp_path, *_hold_runs()), config=tmp_path / "config")
+    assert (report["attempts"]["records"], report["attempts"]["sessions"]) == (1, 1)
+    assert report["totals"]["cost_usd"] == "0.25"
+    assert [b["attempted"] for b in report["by_size"] if b["attempted"]] == [1]
+    assert set(report["by_model"]["models"]) == {"claude-opus-5-5"}
+    assert set(report["by_model_size"]) == {"claude-opus-5-5"}
+
+
+def test_run_filter_keeps_hold_runs(tmp_path, capsys):
+    """`--run spike012-*`: the hold runs' attempts are in, HOLD_EXACT under hold_exact."""
+    repo, _ = _repo(tmp_path)
+    report = _json(capsys, repo, _log(tmp_path, *_hold_runs()), "--run", "spike012-*",
+                   config=tmp_path / "config")  # fmt: skip
+    assert (report["attempts"]["records"], report["attempts"]["sessions"]) == (2, 2)
+    assert report["totals"]["cost_usd"] == "0.50"
+    cells = report["by_model_size"]["claude-haiku-5-5"]["unknown"]
+    assert cells == {"attempted": 2, "matched": 0, "hold_exact": 1}

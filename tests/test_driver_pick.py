@@ -1349,3 +1349,113 @@ def test_hold_tier_queue_offers_each_pick_once(tmp_path):
     assert report.event == "ENDED", report.detail
     assert [p.start for p, _, _ in night.packed] == [leaf, mid, top]
     assert [r["hold_run"] for r in night.kinds("attempt")] == [True, True, True]
+
+
+# ---- 07.2-06 Task 2: hold runs count no pass; the stratified pick list (D-17) ----
+
+
+def _hold_record(run: str, start: int, *, pass_n: int = 1) -> dict:
+    """A schema-3 hold-run attempt record of the UFO2P function at `start`."""
+    from test_attempts_schema import _attempt_v3
+
+    record = _attempt_v3()
+    record.update(run=run, start=f"0x{start:08X}", function=f"func_{start:08X}", hold_run=True,
+                  outcome="PARTIAL", **{"pass": pass_n})  # fmt: skip
+    return record
+
+
+def test_pass_index_skips_hold_runs(tmp_path):
+    """D-17: a hold-run record finishes no pass; a v2 or an ordinary v3 record still does."""
+    from test_driver_records import _log, _v2
+
+    one, two, held = 0x00010010, 0x00010020, 0x00010030
+    ordinary = {**_hold_record("night2", two, pass_n=2), "hold_run": False}
+    log = _log(tmp_path, [_v2("night0", 1, 1, start=one), ordinary,
+                          _hold_record("spike012-haiku", held, pass_n=4),
+                          _hold_record("spike012-haiku", one, pass_n=5)])  # fmt: skip
+    assert driver.pass_index(log) == {(UFO2P, one): 1, (UFO2P, two): 2}
+
+
+STRATA_BASE = 0x00030000
+STRATA_SIZES = (20, 100, 300)  # row i is STRATA_SIZES[i % 3] bytes: under 64, 64-255, 256 and up
+
+
+def _strata_rig(tmp_path: Path, log_records: list[dict], count: int = 30):
+    """A signed-tier drive rig of `count` leaf members in address order (the queue's order),
+    their functions.csv sizes cycling through STRATA_SIZES, and `log_records` committed."""
+    from reverseapoc.functions import FunctionRow, write_functions_csv
+    from test_drive import _git
+    from test_driver_records import _lines
+
+    starts = [STRATA_BASE + 0x400 * i for i in range(count)]
+    rig = _signed_rig(tmp_path, [_member(s) for s in starts])
+    rows = [FunctionRow(s, s + STRATA_SIZES[i % 3], f"func_{s:08X}", "game", f"u_{s:08x}", "call")
+            for i, s in enumerate(starts)]  # fmt: skip
+    write_functions_csv(rig.repo / "config/ufo2p/functions.csv", rows, "UFO2P.EXE")
+    (rig.repo / "progress/attempts.jsonl").write_text(_lines(log_records), encoding="ascii",
+                                                      newline="\n")  # fmt: skip
+    _git(rig.repo, rig.env, "add", "--", "config/ufo2p/functions.csv", "progress/attempts.jsonl")
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "sizes and an attempt log (made up)")
+    return rig, starts, _rig_world(rig.packs, starts, ())
+
+
+def test_stratify_takes_unattempted_rows_by_size(tmp_path, capsys):
+    """`--dry-run --stratify 2,2,1 --write-picks FILE`: the first two unattempted rows under
+    64 B, the first two of 64-255 B and the first of 256 B and up, each in queue order (an
+    earlier pass and an earlier hold run's attempt: attempted, not attempted); the dry run
+    lists them in queue order and FILE reads back as those picks."""
+    from test_driver_records import _v2
+
+    starts = [STRATA_BASE + 0x400 * i for i in range(30)]
+    records = [_v2("night0", 1, 1, start=starts[0]), _v2("night0", 1, 1, start=starts[2]),
+               _hold_record("spike012-haiku", starts[1])]  # fmt: skip
+    rig, starts, worlds = _strata_rig(tmp_path, records)
+    path = tmp_path / "out" / "picks.txt"
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, stratify=(2, 2, 1),
+                             write_picks=path, seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, out
+    wanted = [starts[i] for i in (1, 3, 4, 5, 6)]
+    assert [int(p["start"], 16) for p in json.loads(out)["picks"]] == wanted
+    assert driver.read_picks(path) == frozenset((UFO2P, s) for s in wanted)
+    header = [line for line in path.read_text(encoding="utf-8").splitlines() if line[:1] == "#"]
+    assert any("2,2,1" in line for line in header) and any("night1" in line for line in header)
+
+
+def test_stratify_refuses_a_short_group(tmp_path, capsys, monkeypatch):
+    """No unattempted 256 B+ row in the first STRATIFY_PREVIEW picks: exit 2 naming the group
+    and how many it found; no picks file."""
+    monkeypatch.setattr(driver, "STRATIFY_PREVIEW", 6)
+    from test_driver_records import _v2
+
+    starts = [STRATA_BASE + 0x400 * i for i in range(30)]
+    records = [_v2("night0", 1, 1, start=starts[i]) for i in (2, 5)]
+    rig, _, worlds = _strata_rig(tmp_path, records)
+    path = tmp_path / "picks.txt"
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, stratify=(1, 1, 1),
+                             write_picks=path, seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "stratify")
+    assert "256 B and up" in doc["detail"] and "0 of 1" in doc["detail"]
+    assert "first 6 picks" in doc["detail"]
+    assert not path.exists()
+    assert driver.STRATIFY_PREVIEW == 6
+    monkeypatch.undo()
+    assert driver.STRATIFY_PREVIEW == 400  # past the 256 B todo's first 1 KB row (pick 289)
+
+
+def test_stratify_sizes_match_stats(tmp_path, capsys):
+    """The stratifier's sizes are stats.read_sizes' (functions.csv end - start), not the pick's
+    score size (20 bytes for every row of this world)."""
+    from reverseapoc import stats
+
+    rig, starts, worlds = _strata_rig(tmp_path, [])
+    assert {p.size for w in worlds.values() for p in w.ranks.values()} <= {20}
+    path = tmp_path / "picks.txt"
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, stratify=(1, 1, 1),
+                             write_picks=path, seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, out
+    sizes = stats.read_sizes(rig.repo / "config")
+    picked = sorted(driver.read_picks(path))
+    assert [sizes[key] for key in picked] == list(STRATA_SIZES)
+    assert picked == [(UFO2P, s) for s in starts[:3]]

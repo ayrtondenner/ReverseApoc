@@ -2923,3 +2923,61 @@ def test_context_cache_misses_on_a_changed_best_c(tree: attempt.Roots, monkeypat
     assert _best_definition(61) in _section(after[1], "Earlier best C")
     assert _pack(attempt_dir) == after[1].encode("utf-8")
     assert _attempt(capsys, "context") == after and len(loads) == 2
+
+
+# ---- 07.2-06 (D-17): a hold run's notes, records, give-ups and best C stay out of the pack ----
+
+
+def _run_notes(repo: Path, run: str, text: str) -> Path:
+    return _write(repo.joinpath("build", "driver", run, "ufo2p", "func_00010010", "attempt-1",
+                                "notes.md"), text)  # fmt: skip
+
+
+def _held(repo: Path, run: str) -> Path:
+    return _write(repo.joinpath("build", "driver", run, attempt.HOLD_RUN_MARKER), "hold run\n")
+
+
+def test_earlier_notes_skip_hold_runs(tmp_path: Path):
+    """notes.md under a run directory holding HELD, and the records, give-ups and best C of
+    hold_run records, are not in the pack; an ordinary run's are."""
+    repo = tmp_path / "repo"
+    _run_notes(repo, "spike012-haiku", "made-up hold-run note\n")
+    _held(repo, "spike012-haiku")
+    _run_notes(repo, "night1", "made-up night note\n")
+    held = {**_attempt_record("spike012-haiku", 1, percent=95.0,
+                              giveup=_made_up_giveup("flags", "checks/0001.c")),
+            "hold_run": True}  # fmt: skip
+    plain = _attempt_record("night1", 1, percent=40.0, giveup=_made_up_giveup("other", None))
+    _log_records(repo, held, plain)
+    _best_file(repo, "spike012-haiku", 1, 95)
+    _best_file(repo, "night1", 1, 40)
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert [text.splitlines()[0] for text in notes.texts] == [
+        "--- night1/ufo2p/func_00010010/attempt-1/notes.md"]
+    assert len(notes.records) == 1 and '"night1"' in notes.records[0]
+    assert [line.split(":")[0] for line in notes.giveups] == ["night1 attempt 1"]
+    assert notes.best_c == _best_definition(40)
+
+
+def test_earlier_notes_of_hold_runs_alone_are_none(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _run_notes(repo, "spike012-haiku", "made-up hold-run note\n")
+    _held(repo, "spike012-haiku")
+    _log_records(repo, {**_attempt_record("spike012-haiku", 1), "hold_run": True})
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010") is None
+
+
+def test_context_cache_misses_when_a_run_becomes_a_hold_run(tree: attempt.Roots, monkeypatch,
+                                                            capsys, loads):  # fmt: skip
+    """A HELD marker added to an earlier run changes the pack, so gzw's cache misses."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _run_notes(tree.repo, "run3", "made-up earlier note\n")
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert "made-up earlier note" in first[1]
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    _held(tree.repo, "run3")
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert "made-up earlier note" not in after[1]
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
