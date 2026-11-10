@@ -253,9 +253,8 @@ def test_header_gaps_ranked(tmp_path):
         {"name": "bar", "functions": 1},
         {"name": "struct unk_0010", "functions": 1},
     ]
-    text = report.format()
-    assert "shared-header gaps" in text and "none" not in text.split("shared-header gaps")[1]
-    assert text.index("foo") < text.index("struct unk_0010")
+    gaps = report.format().split("shared-header gaps")[1]
+    assert "none" not in gaps and gaps.index("foo") < gaps.index("struct unk_0010")
 
 
 def test_an_empty_gap_ranking_prints_none(tmp_path):
