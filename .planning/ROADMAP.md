@@ -438,7 +438,7 @@ tooling, and build the harness for measuring model and effort by function size. 
   2. Matched bytes unchanged: `gate --all` and `ninja verify` exit 0 on the final main
   3. `drive --canary` passes with the new verbs and backends, and spike 012 can run from the shipped harness
 
-**Plans:** 4/16 plans executed in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
+**Plans:** 6/16 plans executed in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
 
 Plans:
 
@@ -453,8 +453,8 @@ Plans:
 - [x] 07.2-03-PLAN.md — plan and notes: plan.json, check-note.json, the exit-2 refusal using no check, the tool-recorded observed note, the canary (PIPE-03)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 07.2-07-PLAN.md — RL07 provenance markers, the byte-identity proof, the readability skill (PIPE-07)
-- [ ] 07.2-04-PLAN.md — `reverseapoc causes`: per-try rates, Watcom codes, mismatch classes, header gaps (PIPE-04)
+- [x] 07.2-07-PLAN.md — RL07 provenance markers, the byte-identity proof, the readability skill (PIPE-07)
+- [x] 07.2-04-PLAN.md — `reverseapoc causes`: per-try rates, Watcom codes, mismatch classes, header gaps (PIPE-04)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 07.2-06-PLAN.md — harness: `--night-model`, `--picks`, `--stratify --write-picks`, `--hold`, `--land-held` (PIPE-06)
@@ -513,7 +513,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
 | 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
-| 7.2. FNV-inspired matching pipeline (INSERTED) | 4/16 | In Progress | - |
+| 7.2. FNV-inspired matching pipeline (INSERTED) | 6/16 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
