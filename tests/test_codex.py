@@ -530,3 +530,44 @@ def test_claude_md_states_the_exception():
         text = " ".join((REPO_ROOT / rel).read_text(encoding="utf-8").split())
         for needle in ("only agent runtime", "Codex", "reverseapoc drive", "spike 012", "build/"):
             assert needle in text, (rel, needle)
+
+
+# ---- security review finding 4: a linked ancestor of the wrapper's cache ----
+
+
+@pytest.mark.parametrize("linked", ["view/build", "view"])
+def test_inventory_never_follows_a_linked_cache_ancestor(tmp_path, linked):
+    """A session that turns view/ or view/build/ into a link (a junction on Windows) must not
+    steer the cache walk outside the attempt dir or hide files from it: the link itself is in
+    the inventory as a stray, nothing behind it is read, and the target is left untouched."""
+    from test_driver import _plant_dir_link
+
+    root = tmp_path / "attempt-1"
+    launch = _attempt_tree(root)
+    outside = tmp_path / "outside"
+    behind = outside / "build" / "attempt-cache" if linked == "view" else outside / "attempt-cache"
+    behind.mkdir(parents=True)
+    (behind / "x.json").write_text("{}\n", encoding="utf-8")
+    (outside / "keep.c").write_text("int keep;\n", encoding="utf-8")
+    _plant_dir_link(root / linked, outside)
+    now = driver.attempt_inventory(root)
+    assert not [rel for rel in now if rel.endswith("x.json")], now
+    assert now[linked].startswith("link:")
+    strays = dict(driver.codex_inventory_strays(now, launch=launch, ledger={}))
+    assert linked in strays
+    assert (behind / "x.json").is_file() and (outside / "keep.c").is_file()
+
+
+def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
+    """The same at night: the linked view/build is a stray, the night stops at the guardrail,
+    and the directory it pointed at keeps every file."""
+    outside = tmp_path / "outside"
+    (outside / "attempt-cache").mkdir(parents=True)
+    (outside / "attempt-cache" / "x.json").write_text("{}\n", encoding="utf-8")
+    spec = Sess(write=None, link=(f"{ATTEMPT}/view/build", outside))
+    rig, night, env = codex_night(tmp_path, monkeypatch, spec=spec)
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "view/build" in stopped["detail"], stopped
+    assert (outside / "attempt-cache" / "x.json").is_file()
