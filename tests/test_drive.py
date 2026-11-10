@@ -1682,7 +1682,7 @@ def test_land_held_lands_two_functions_of_one_unit(tmp_path):
         (FUNC, "MATCHED", None), (FUNC2, "MATCHED", None)]  # fmt: skip
     assert len(night.gate_calls) == 2
     assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == _two_function_unit(
-        night, _body(FUNC, 1), _body(FUNC2, 2))  # fmt: skip
+        _body(FUNC, 1), _body(FUNC2, 2))  # fmt: skip
 
 
 def test_land_held_still_refuses_two_functions_of_a_unit_changed_elsewhere(tmp_path):
