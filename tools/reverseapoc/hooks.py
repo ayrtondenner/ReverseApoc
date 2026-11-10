@@ -1100,6 +1100,17 @@ def _wild(segment: str) -> bool:
     return any(char in segment for char in "*?[")
 
 
+_PLAIN_GLOB = re.compile(r"[a-z0-9._*?-]*")  # a casefolded segment fnmatch models exactly
+
+
+def _glob_segment(segment: str) -> str:
+    """A Glob pattern or Grep glob segment as the egress rule judges it. fnmatch does not model
+    extglob (`@( )`, `+( )`, `!( )`), alternation, negation or the like, so a segment holding
+    anything but letters, digits, `._-` and the plain wildcards `*` and `?` fails closed as
+    `**`: it can stand for any run of segments (security review, MEDIUM)."""
+    return segment if _PLAIN_GLOB.fullmatch(segment) else "**"
+
+
 _WORKTREE_LEAD = (".claude", "worktrees", "*")  # the segments before a worktree's checkout
 
 
@@ -1172,7 +1183,7 @@ def _egress_problem(raw: str, payload: Mapping, root: tuple[str, ...],
     patterns += [tool_input.get("glob")] if tool == "Grep" else []
     for pattern in (p for p in patterns if isinstance(p, str)):
         for text in _brace_expansions(pattern) or [pattern]:
-            tail = _segments(text)
+            tail = [_glob_segment(seg) for seg in _segments(text)]
             tail = tail if "/" in text.replace("\\", "/") else ["**", *tail]
             if any(_reaches_egress_dir([*segs, *tail]) for segs in forms):
                 return f"has a pattern {pattern!r} that can reach orig/ or third_party/"
