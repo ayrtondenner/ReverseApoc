@@ -71,9 +71,11 @@ jobs:
             exit 1
           fi
 
-      # Only the C of src/ units, a rename's symbols.csv rows and Markdown are judged here;
-      # cflags, tools, config, headers and workflows need the owner.
-      - name: List the changed paths; refuse any outside the src units, symbols.csv and Markdown
+      # Only the C of src/ units, a rename's symbols.csv rows and the Markdown of docs/ and the
+      # root README.md are judged here; cflags, tools, config, headers, workflows and any
+      # Markdown a session reads as instructions (CLAUDE.md, .claude/ rules and skills) need
+      # the owner (07.2 review WR-07).
+      - name: List the changed paths; refuse any outside the src units, symbols.csv, docs/ and README.md
         run: |
           set -euo pipefail
           git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD
@@ -83,13 +85,13 @@ jobs:
           refused=0
           while IFS= read -r path; do
             case "$path" in
-              *.md) continue ;;
+              docs/*.md|README.md) continue ;;
               config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;
             esac
             if printf '%s\n' "$path" | grep -Eq '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'; then
               continue
             fi
-            echo "::error::$path is not a src unit, a symbols.csv or Markdown: the owner checks it"
+            echo "::error::$path is not a src unit, a symbols.csv, docs/ Markdown or README.md: the owner checks it"
             refused=1
           done < "$RUNNER_TEMP/changed.txt"
           [ "$refused" -eq 0 ]
@@ -98,6 +100,10 @@ jobs:
         run: |
           set -euo pipefail
           grep -E '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$' "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true
+          if [ ! -s "$RUNNER_TEMP/units.txt" ]; then
+            echo "::error::no src unit changed, so nothing was compared: the owner checks this pull request"
+            exit 1
+          fi
           while IFS= read -r unit; do
             if [ ! -f "$unit" ] || [ -L "$unit" ]; then
               echo "::error::$unit is no unit on main: a new unit is a new match, for the owner's gate"

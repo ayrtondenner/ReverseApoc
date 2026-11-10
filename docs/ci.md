@@ -30,8 +30,11 @@ offset and kind. It never prints a byte value, so no game byte reaches a public 
 It proves one thing: the pull request changed no byte of any matched object. It does not land
 anything, and it is not the matching gate. A new match, a new unit, a flag change or anything
 else still goes through the owner's gate on the owner's machine (D-08). A pull request that
-changes only a `symbols.csv` compiles nothing and passes; whether the C still links under the
-new names is the owner's gate's job too.
+touches no `src/` unit (only a `symbols.csv`, only docs) compares nothing, so the job fails and
+says so ("nothing was compared: the owner checks this pull request"); a green result always
+means at least one unit was compiled and compared. A `symbols.csv` row that renames a name an
+untouched unit uses is not compiled against that unit: whether the C still links under the new
+names is the owner's gate's job.
 
 Exit codes of `compare-objects`: 0 the objects match, 1 they differ, 2 an object or a config tree
 could not be read or judged. The job fails on 1 and 2, and on any compile failure.
@@ -44,10 +47,12 @@ any path outside this list:
 - `src/ufo2p/<unit>.c` and `src/tacp/<unit>.c`, the units it compiles;
 - `config/ufo2p/symbols.csv` and `config/tacp/symbols.csv`, the new names of a rename (read as
   data, names and addresses only);
-- Markdown files.
+- Markdown under `docs/` and the root `README.md`.
 
-Cflags, tools, other config, headers under `include/` and workflows need the owner. A unit that
-is new (a new match), removed, or a symbolic link fails too.
+Cflags, tools, other config, headers under `include/`, workflows and every other Markdown file
+need the owner: `CLAUDE.md`, the rules and skills under `.claude/` and any other instruction
+file are read into agent sessions, so they steer the agents. A unit that is new (a new match),
+removed, or a symbolic link fails too, and so does a pull request with no unit to compare.
 
 ## Running it
 
@@ -128,8 +133,9 @@ requests", GitHub Security Lab). The design stays within that guidance as follow
   ReverseApoc image. Main's tree and Watcom are mounted read-only, the pull request's `src/` is
   mounted read-only over `src/` for the head compile, and only the job's temp directory for the
   objects and the prepared venv volume are writable. No game file is mounted or present.
-- **Narrow input.** Only units, the two `symbols.csv` files and Markdown may change; anything
-  else fails before a compile. New, removed and linked units fail.
+- **Narrow input.** Only units, the two `symbols.csv` files, Markdown under `docs/` and the
+  root `README.md` may change; anything else fails before a compile. New, removed and linked
+  units fail, and so does a pull request with no unit to compare.
 - **A human in front.** It ships disabled (the repository variable), a maintainer labels each
   run after reading the pull request, and a push after the label needs a new label.
 
