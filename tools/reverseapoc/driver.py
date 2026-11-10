@@ -162,6 +162,7 @@ from . import (
     backends,
     callgraph,
     codexjson,
+    contextpack,
     hooks,
     mechanics,
     streamjson,
@@ -4746,8 +4747,10 @@ class _Night:
         (`held_exact`) lands once, from its cheapest such attempt (cost, then run id, then
         attempt), in (exe, unit, start) order so same-unit landings report one after the other.
         A function status.csv already matches is skipped. Each landing goes through the night's
-        own land, lint and gate (`_land_one`), never a path of its own. The end of run (ninja
-        verify, gate --all) and the attempt-log commit follow as after a night."""
+        own land, lint and gate (`_land_one`), never a path of its own. 07.2 review WR-06: every
+        held function of a unit can land, one after the other: `bases` keeps, per unit, HEAD
+        before this run's first landing of it. The end of run (ninja verify, gate --all) and
+        the attempt-log commit follow as after a night."""
         matched = matched_keys(self.repo / "config")
         best: dict[Key, tuple[tuple, Mapping]] = {}
         with self.gate_lock:  # the log is read while no record is appended
@@ -4758,56 +4761,90 @@ class _Night:
                     best[key] = (rank, record)
         landings = sorted((record for _, record in best.values()),
                           key=lambda r: (r["exe"], r["unit"], int(r["start"], 16)))  # fmt: skip
+        bases: dict[str, str] = {}
         for record in landings:
-            self._land_one(record)
+            self._land_one(record, bases)
         return QUEUE_EXHAUSTED if landings else NOTHING_TO_DO
 
-    def _land_one(self, held: Mapping) -> None:
+    def _land_one(self, held: Mapping, bases: dict[str, str]) -> None:
         """One held function: the C of its attempt's latest plain check that exited 0
         (`exact_source`) goes into a fresh view unit under this run's own attempt directory
         (the hold run's stays as it was), with the hold run's view head. A unit or include/
         changed since that head is refused unlanded (RESEARCH Pitfall 8); otherwise `_judge`
         (renames since the head, the copy into src/, the lint, the gate) under the gate lock,
         then `_commit_match` credited to the attempt's requested model, or a reset and a
-        REFUSED landing."""
+        REFUSED landing. 07.2 review WR-06: once this run landed a function of the unit
+        (`bases` names HEAD before that first landing), the head is judged against that base
+        instead, and only the held function's definition is spliced onto the unit as HEAD now
+        has it, so the earlier landing stays; the gate proves the result."""
         pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
         source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
         claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
                        model=held["model_requested"], arm=self._held_arm(held))  # fmt: skip
         head, exact = _view_head(source), exact_source(source)
+        base = bases.get(claim.unit_rel)
+        text = None
         if head is None or exact is None or _is_link(source / exact) or not (
                 source / exact).is_file():  # fmt: skip
             reason = "the hold run's attempt has no view head or no exact check C; re-run"
         else:
-            reason = self._stale_reason(head, claim)
+            reason = self._stale_reason(head, claim, base)
+        if reason is None:
+            text, reason = self._held_text(claim, (source / exact).read_bytes(), base)
         if reason is not None:
             self._record_landing(held, REFUSED, reason=reason)
             return
         self._fresh_dir(claim)
         claim.view_unit.parent.mkdir(parents=True)
-        write_atomic(claim.view_unit, (source / exact).read_bytes())
+        write_atomic(claim.view_unit, text)
         empty = _Snapshot({}, {}, {}, {})
         session = _Session(claim, None, PackInfo(0), 0.0, (), False, b"", empty, view_head=head)
+        before = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
         with self._landing(session):
             gate = self._judge(session)
             if self._gate_matched(session, gate):
                 self._commit_match(session, gate, CheckSummary(), held=held)
+                bases.setdefault(claim.unit_rel, before)
                 return
             self._reset(session)
             why = ("the C89 lint failed" if gate is None
                    else f"the gate refused it (exit {gate.exit_code})")  # fmt: skip
             self._record_landing(held, REFUSED, reason=why, gate=gate)
 
-    def _stale_reason(self, head: str, claim: _Claim) -> str | None:
+    def _held_text(self, claim: _Claim, exact: bytes,
+                   base: str | None) -> tuple[bytes | None, str | None]:  # fmt: skip
+        """WR-06: the unit the held function lands as, or the reason it cannot: the exact
+        check's whole unit file when this run landed nothing of the unit yet (`base` None),
+        else HEAD's unit with only the held function's definition spliced in."""
+        if base is None:
+            return exact, None
+        now = self._head_bytes(claim.unit_rel)
+        try:
+            spliced = None if now is None else contextpack.splice_definition(
+                now.decode("utf-8"), claim.function, exact.decode("utf-8"))  # fmt: skip
+        except UnicodeDecodeError:
+            spliced = None
+        if spliced is None:
+            return None, (f"{claim.function}: its definition cannot be spliced onto "
+                          f"{claim.unit_rel} as this run left it; re-run")  # fmt: skip
+        return spliced.encode("utf-8"), None
+
+    def _stale_reason(self, head: str, claim: _Claim, base: str | None = None) -> str | None:
         """Pitfall 8: why the held C may not land on today's src/: the unit or include/ changed
-        between the view head and HEAD (`git diff --quiet`), or the head is no commit here."""
-        done = self._git([LITERAL, "diff", "--quiet", head, "HEAD", "--", claim.unit_rel,
-                          "include"])  # fmt: skip
-        if done.returncode == 0:
-            return None
-        if done.returncode == 1:
-            return LAND_HELD_STALE
-        return f"the hold run's view head {head[:12]} is not a commit of this checkout; re-run"
+        between the view head and HEAD (`git diff --quiet`), or the head is no commit here.
+        WR-06: after this run's own landing of the unit, the unit and include/ are judged
+        between the head and `base` (HEAD before that landing), and include/ between `base`
+        and HEAD, so only this run's landings of the unit are not a change."""
+        checks = [(head, "HEAD", (claim.unit_rel, "include"))] if base is None else [
+            (head, base, (claim.unit_rel, "include")), (base, "HEAD", ("include",))]
+        for old, new, paths in checks:
+            done = self._git([LITERAL, "diff", "--quiet", old, new, "--", *paths])
+            if done.returncode == 1:
+                return LAND_HELD_STALE
+            if done.returncode != 0:
+                return (f"the hold run's view head {head[:12]} is not a commit of this "
+                        "checkout; re-run")  # fmt: skip
+        return None
 
     def _held_message(self, held: Mapping, gate: GateRun) -> str:
         """D-25's match message from the held attempt's own figures, with the hold run named;
