@@ -186,6 +186,28 @@ output = 4.25
 cache_read = 1.25
 cache_creation = 1.25
 
+# Gemini 3.8 Flash through OpenRouter in the Claude Code harness: D-21's fallback, run only when
+# the agy canary finds no usable AI Plus quota (it names this arm). A paid entry, so it needs
+# --allow-egress and OPENROUTER_API_KEY like Muse Spark. A paid Gemini Pro arm is not added
+# (D-25 defers it). ASSUMPTION, confirm at setup: the OpenRouter id `google/gemini-3.8-flash`
+# and the prices, placeholders above Flash-class prices so the estimate does not understate.
+[arms."gemini-3.8-flash-openrouter"]
+harness = "claude"
+backend = "openrouter"
+model = "google/gemini-3.8-flash"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["google/gemini-3.8-flash"]
+coauthor = "Gemini 3.8 Flash <noreply@google.com>"
+max_workers = 3
+
+[arms."gemini-3.8-flash-openrouter".prices]
+input = 0.60
+output = 3.60
+cache_read = 0.60
+cache_creation = 0.60
+
 # Qwen3.6-35B-A3B hosted through OpenRouter (owner, 2026-11-09): the same weights as the local
 # arm, run early with the other hosted arms as a fast check before the slow local run.
 # ASSUMPTION, confirm at setup: the OpenRouter id `qwen/qwen3.6-35b-a3b` and the prices, which

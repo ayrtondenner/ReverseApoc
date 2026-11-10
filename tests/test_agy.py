@@ -424,9 +424,8 @@ def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: di
     latter from tests/fixtures/agy/<usage>.txt)."""
     import hashlib
 
-    from test_drive import CONSUMED_NOTE, PASSING_CHECK, Launch, _canary_rig
-
     from reverseapoc.session import run_session
+    from test_drive import CONSUMED_NOTE, PASSING_CHECK, Launch, _canary_rig
 
     rig = _canary_rig(tmp_path, "canary_pass")
     agy_version_reply(rig)

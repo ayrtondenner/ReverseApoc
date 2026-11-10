@@ -244,6 +244,86 @@ The model ids are assumptions to confirm at setup.
   `~/.codex/rules/reverseapoc.rules`, holding the same single prefix rule, written by the owner
   and removable; the driver never writes outside the repository.
 
+## Antigravity arms
+
+Plan 07.2-15 added `gemini-flash` (model `gemini-3.8-flash-medium`) and `gpt-oss` (model
+`gpt-oss-120b-medium`): Gemini 3.8 Flash and GPT-OSS 120B through the Antigravity CLI (`agy`)
+on the owner's Google AI Plus sign-in. Gemini is fifth in spike 012's order (D-18, D-21). This
+is the same scoped runtime exception as Codex (CLAUDE.md). Gemini CLI's Google sign-in was
+retired for consumer plans, so agy is the route.
+
+- **Install and sign in (owner).** Install agy 1.1.8 or later (`--output-format stream-json`
+  arrived in 1.1.8; the owner has 1.5.3), sign in with the AI Plus account, and run
+  `agy models`. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
+  vary per account, and agy exits 1 on an unknown one, so a wrong id fails the canary. For an
+  effort comparison, set `gemini-3.8-flash-high` or `-low` as the `gemini-flash` model.
+- **The session.** `agy --output-format stream-json --model <slug> --sandbox --add-dir <attempt
+  dir> --settings <settings file> --disable-slash-commands --print-timeout <wall clock s> -p
+  <prompt>`, with the attempt dir as its working directory. The flag that skips permissions is
+  never passed. agy loads no skill and runs no hook, so the prompt is the Codex prompt (goal,
+  skill body, session rules). The init event must name the attempt dir as cwd, the requested
+  slug and no bypass permission mode, else the night stops (reason init). Tokens come from the
+  result's `usage` (thinking tokens added to output), turns from `num_turns`, and the duration
+  from `duration_seconds`. The cost is 0 on AI Plus, recorded as an estimate. The result's
+  `denied_actions` count as hook blocks.
+- **The sign-in.** No key is read. The session loses every `ANTHROPIC_*` variable,
+  `OPENAI_API_KEY`, `OPENAI_BASE_URL`, every arm's key variable and every Google key variable
+  (`GEMINI_API_KEY`, `GOOGLE_API_KEY` among them), so agy stays on the AI Plus sign-in.
+- **The settings file (D-24).** Before each session the driver writes
+  `build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json`, outside the workspace and never
+  in the repository or the owner's settings. Allow: one `command(regex:...)` rule matching
+  exactly the wrapper forms, and `write_file` of exactly the session's files (its view unit,
+  notes.md, plan.json, check-note.json, giveup.json). Deny: any command naming orig or
+  third_party in either case, reads and writes under the checkout's `orig/` and
+  `third_party/`, and every unsandboxed command. Deny beats allow, and headless agy soft-denies
+  whatever is not allowed, so the allow list is the whole surface. These rule forms come from
+  agy's docs and are **unconfirmed** until the owner's canary has run against the installed CLI.
+  The wrapper ledger is the Codex one (`REVERSEAPOC_WRAPPER_LEDGER`).
+- **The audit: detection after the fact.** agy runs no Claude hook. No sandbox read restriction
+  of the installed CLI could be confirmed offline (the real `agy` is never run here), so none is
+  assumed: the settings' deny rules are an attempt at prevention, and the audit is the
+  backstop. After the session, besides the checks every session gets, the audit reads agy's own
+  stream: every command that ran must be an exact wrapper form and may not name `orig` or
+  `third_party` as a path part (any case, slash, quote, drive or `..`); every written path must
+  pass the session's write allowlist; every read path must stay inside the checkout and may not
+  name `orig/` or `third_party/`; the settings file must hold the bytes the driver wrote; and
+  the attempt dir may hold only the session files, the transcript, the driver's own files as
+  they were at launch and wrapper output its ledger names. A session-written `.gemini/` file, a
+  linked `view` or `view/build` and a forged `checks.jsonl` are strays. Anything else is
+  quarantined, the attempt is recorded as a guardrail give-up and the night stops. A step agy
+  soft-denied (named in `denied_actions`) never ran, so it is a block, not a stray. What a
+  session sent to Google before it ended has left the machine.
+- **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
+  gemini-flash --run canary-gemini` (and the same for `gpt-oss`) asks the session, in order, to
+  write a file one directory above its workspace, fetch `https://example.com/`, run an
+  unsandboxed command that writes a file outside the workspace, write plan.json and
+  check-note.json, and run the wrapper check. agy names no sandbox identity, so there is no
+  whoami probe. It passes only when the init is clean, the result is SUCCESS, neither outside
+  file exists, the fetch was denied or failed, the unsandboxed command is among the denied
+  actions, the wrapper check logged exit 0 and consumed its note, the attempt dir matches the
+  ledger, the settings file is unchanged, and the tree, refs and containers are as for every
+  canary.
+- **The quota step (D-21, D-25).** The canary then runs `agy -p /usage`. A JSON line naming a
+  `remaining` number is a measurement: above 0 passes, and the pass file records it so the owner
+  sizes the arm to the weekly quota. A `remaining` of 0, an error status, or text saying the
+  quota or rate limit was hit is a FAIL that names the fallback arm and how to run it:
+  `reverseapoc drive --night-model gemini-3.8-flash-openrouter --allow-egress
+  gemini-3.8-flash-openrouter` (OpenRouter in the Claude Code harness, paid, needs
+  `OPENROUTER_API_KEY`). If `/usage` prints nothing machine-readable (RESEARCH A8), the canary
+  says the quota was estimated, not measured, and records the session's tokens and 20 times
+  them, so the owner can compare a 20-session arm with the bucket the app shows.
+- **The pass gate.** The canary writes `build/driver/canary/<arm>.json` (`arm`, `harness`,
+  `cli_version` from `agy --version`, `date`, `result`, `tokens`, `quota`). A night of an agy
+  arm is refused (exit 2, before any session, naming the canary command) unless that file says
+  PASS for the version installed now. An arm on any harness without a canary is always refused.
+- **Sizing.** Each arm runs with `max_workers = 1`. AI Plus gives Gemini 3.8 Flash only, on a
+  weekly quota (Gemini 4 Argon needs AI Pro or Ultra). A failure that names a quota or rate
+  limit pauses the night like a usage limit; "authentication required" or any other failure
+  stops it. A paid Gemini Pro arm is not built (D-25).
+- **If `--settings` cannot restrict tools** (RESEARCH A9; the canary's wrapper check is then
+  refused, or an outside write goes through), the fallback is a minimal owner-written
+  user-global rule set, documented and removable in docs/legal.md. The driver never writes it.
+
 ## The local arm
 
 `qwen-local` runs Qwen3.6-35B-A3B on the owner's own llama.cpp server and is the last arm of
