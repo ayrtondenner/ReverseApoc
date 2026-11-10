@@ -2932,6 +2932,8 @@ class _Night:
         self._fresh_dir(claim)
         view_head, scaffolded = self._make_view(claim)
         unit_before = claim.view_unit.read_bytes()
+        if claim.session == READABILITY:  # 07.2-07: <attempt dir>/unit-base.c, RL07's base text
+            write_atomic(claim.attempt_dir / attempt.UNIT_BASE, unit_before)
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
         prompt, skill = self._prompt(claim)
@@ -3050,11 +3052,23 @@ class _Night:
         stray += [name for name in self._view_changes(session) if name not in stray]
         stray += [name for name in session.pinned_changed if name not in stray]
         stray += [name for name in session.print_changed if name not in stray]
+        stray += [name for name in self._base_changed(session) if name not in stray]
         raws = _write_targets(session.events)
         for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
             if rels is None or not all(allowed(rel) for rel in rels):
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
+
+    def _base_changed(self, session: _Session) -> list[str]:
+        """07.2-07 (T-07.2-18): a readability session's unit-base.c is the driver's; it must
+        still hold the view unit's bytes at launch, as a regular file."""
+        claim = session.claim
+        if claim.session != READABILITY:
+            return []
+        path = claim.attempt_dir / attempt.UNIT_BASE
+        if not _is_link(path) and _read(path) == session.unit_before:
+            return []
+        return [path.relative_to(self.repo).as_posix()]
 
     def _head_bytes(self, rel: str) -> bytes | None:
         """HEAD's blob of `rel`, or None when HEAD has none (or git cannot show it)."""
@@ -3783,12 +3797,18 @@ class _Night:
         """Strict readlint (D-20) on the landed unit alone, as `readlint --units EXE/UNIT`
         runs it, over src/ and config/ as they are now (after the gate). Clean only when the
         unit was checked and no violation was found, in it or in a header it includes; a
-        readlint error (an unreadable file or table) is not clean (fail closed)."""
+        readlint error (an unreadable file or table) is not clean (fail closed). 07.2-07
+        (D-15): RL07 judges the renames against HEAD's text of the unit, not the session's
+        <attempt dir>/unit-base.c, so the proposals the driver applied are judged too and a
+        forged base cannot let an unmarked rename land."""
+        unit = self.repo / claim.unit_rel
+        head = self._head_bytes(claim.unit_rel)
         try:
-            result = run_readlint([self.repo / claim.unit_rel], src_root=self.repo / "src",
-                                  config_root=self.repo / "config",
-                                  units=[claim.target])  # fmt: skip
-        except ReadlintError:
+            base = None if head is None else {str(unit): head.decode("utf-8")}
+            result = run_readlint([unit], src_root=self.repo / "src",
+                                  config_root=self.repo / "config", units=[claim.target],
+                                  base_text=base)  # fmt: skip
+        except (ReadlintError, UnicodeDecodeError):
             return False
         return result.exit_code() == EXIT_OK and claim.unit_rel in result.files_checked
 

@@ -1,6 +1,6 @@
 ---
 name: watcom-readability
-description: Use when working in a ReverseApoc readability session - naming, commenting or documenting an already-matched Watcom C unit in its view, answering readlint findings (RL01 to RL06, placeholder names, header comments, magic literals), writing proposals.jsonl renames or header proposals, or deciding whether to stop and leave notes.
+description: Use when working in a ReverseApoc readability session - naming, commenting or documenting an already-matched Watcom C unit in its view, answering readlint findings (RL01 to RL07, placeholder names, header comments, magic literals, provenance markers), writing proposals.jsonl renames or header proposals, or deciding whether to stop and leave notes.
 ---
 
 # Making one matched unit readable
@@ -58,7 +58,7 @@ A whole view unit after a readability edit (made-up addresses; the output exampl
 
 #define CLOCK_FRAME_WRAP 0x24
 
-extern s32 D_000D1230;
+extern s32 D_000D1230; /* src: GHIDRA 0x000D1230 (confidence: high) */
 void func_00012400(void);
 
 /* func_00012340: advance the game clock one frame
@@ -67,7 +67,7 @@ void func_00012400(void);
  * Evidence: call: the only caller, the frame loop at 0x00011000, calls it once per frame
  * Evidence: call: calls 0x00012400 each time the fraction reaches 0x24 units
  */
-void func_00012340(s32 speed) {
+void func_00012340(s32 speed) { /* src: GHIDRA 0x00012340 (confidence: high) */
     s32 fraction;
     fraction = D_000D1230 + speed * 3; /* lit: speed scale; no string or table names it */
     if (fraction >= CLOCK_FRAME_WRAP) {
@@ -127,6 +127,22 @@ Write the proposals before you run `attempt check`. The check counts an RL01 hit
 
 A callee or global nothing evidences stays a placeholder. List it in notes.md for the owner's allowlist (`config/readlint-allow.csv`, D-30). A reference to a name already on it counts as an allowlisted reference, not a violation.
 
+### Provenance markers (RL07)
+
+Every name that replaces a `func_`, `D_`, `param_` or `local_` placeholder carries one provenance marker: a C89 comment at the end of a line that declares it, `/* src: <TAG> 0x<ADDR> (confidence: <high|medium|low>) */`.
+- `<TAG>` is where the evidence comes from: `GHIDRA` the game's own code in the listing (a `string:`, `table:` or `call:` fact); `OPENAPOC` an OpenApoc domain word, as `vocab:` (never an OpenApoc identifier); `UFOPAEDIA` the in-game UFOpaedia text; `GUESS` only what the code does.
+- `0x<ADDR>` is the original address the evidence refers to, eight upper-case hex digits as on the `Address:` line: the named function's or global's row, or for a local or parameter the function that holds it.
+- The confidence is how sure that evidence is: `high`, `medium` or `low`.
+
+One per kind of evidence: `/* src: GHIDRA 0x00012340 (confidence: high) */`, `/* src: OPENAPOC 0x00012340 (confidence: medium) */`, `/* src: UFOPAEDIA 0x000D1230 (confidence: medium) */`, `/* src: GUESS 0x00012340 (confidence: low) */`.
+
+Where it goes:
+- a local or parameter you rename: on its declaration line (the local's declaration, or the line of the parameter list);
+- a `func_` or `D_` name you propose: the driver renames it after the session and keeps the line, so put the marker on the old name's declaration line in the view (the definition's line, the `extern` or the prototype), as the example unit does;
+- after the code on that line, never above a definition, where it would take the header comment's place (RL02, RL03).
+
+readlint judges renames on the diff: `attempt check` against the unit as the session started, the landing against HEAD. A missing marker fails both, naming the new name (or, for a proposal, the old one). A comment opening `src:` in any other form always fails RL07. A marker on a name you did not rename is fine. Units nobody has passed over yet are not flagged until their next readability session.
+
 ## Constants without changing bytes
 
 Name a literal with a `#define` that copies its exact spelling and suffix:
@@ -157,6 +173,7 @@ readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your 
 | RL04 | a struct or union field whose name, in any case, is `unk`, `unknown`, `field`, `pad`, `padding`, `gap`, `filler` or `undefined`, alone or followed by hex digits or by an underscore and anything: `pad_left`, `field_count`, `gap_width`, `Padding` and even `padded` (pad plus the hex digits d, e, d) all hit | bodies at any depth, and the project headers the unit includes |
 | RL05 | a pointer cast over an offset expression, such as `*(s32 *)(p + 0x10)` | a fix needs a struct type and usually a type change: if the check cannot prove it, note it |
 | RL06 | an integer literal other than 0 and 1 | exempt: `#define` and enum bodies, masks in bitwise context, shift counts 1 to 31, 2, 4 or 8 in arithmetic or `[ ]`, a line with a waiver. Floating literals are no violation |
+| RL07 | a renamed placeholder with no provenance marker on a line declaring it, or a malformed `src:` comment | the diff against the unit before this session (see "Provenance markers"); a malformed marker anywhere |
 
 A name on `config/readlint-allow.csv` is exempt from RL01 where the unit only references it (a use, an `extern`, a prototype), never where the unit defines it.
 

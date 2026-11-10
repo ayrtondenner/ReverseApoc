@@ -2201,11 +2201,23 @@ def _rename(name: str, *, kind: str = "func", address: str = "0x000A3980") -> di
             "evidence": "call: made-up evidence for the test"}  # fmt: skip
 
 
+MARK = "/* src: OPENAPOC 0x000A3980 (confidence: high) */"  # 07.2-07 (D-14)
+
+
+def _mark_definition(view: Path, name: str) -> None:
+    """07.2-07: the provenance marker on the claimed function's definition line."""
+    unit = _view_unit(view)
+    text = unit.read_text(encoding="utf-8")
+    unit.write_bytes(text.replace(f"int {name}(void)\n", f"int {name}(void) {MARK}\n")
+                     .encode("utf-8"))  # fmt: skip
+
+
 def test_pending_rename_does_not_fail_the_verdict(readable: Path, monkeypatch, capsys):
     """F18: names change only through proposals the driver applies after the session, so an
     RL01 hit on a placeholder the session's own valid rename proposal covers is reported as a
     pending rename and does not fail the verdict (the driver lints again at landing)."""
     _readable_unit(readable, FUNC, renamed=False)
+    _mark_definition(readable, FUNC)
     _propose(readable, _rename(NAMED))
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0
@@ -2244,7 +2256,9 @@ def test_a_data_placeholder_rename_is_pending(readable: Path, monkeypatch, capsy
     """F18 for data: an RL01 hit on a D_ placeholder that a valid data rename covers is pending
     (the host does not read the EXE's data objects; the driver checks them at landing)."""
     text = _readable_text(NAMED).replace("return 0;", "return D_00200010;")
-    _view_unit(readable).write_bytes(("extern int D_00200010;\n" + text).encode("utf-8"))
+    marker = MARK.replace("0x000A3980", "0x00200010")
+    _view_unit(readable).write_bytes((f"extern int D_00200010; {marker}\n" + text)
+                                     .encode("utf-8"))  # fmt: skip
     write_symbols_csv(readable / "config" / "ufo2p" / "symbols.csv",
                       [SymbolRow(0x000A3980, f"{NAMED}_", "func")], "UFO2P.EXE")  # fmt: skip
     _propose(readable, _rename("g_ticks", kind="data", address="0x00200010"))
@@ -2252,6 +2266,38 @@ def test_a_data_placeholder_rename_is_pending(readable: Path, monkeypatch, capsy
     assert _run(["attempt", "check"]) == 0
     out = capsys.readouterr().out
     assert "2 pending renames" in out and "D_00200010 -> g_ticks" in out
+
+
+def test_pending_rename_needs_a_marker(readable: Path, monkeypatch, capsys):
+    """07.2-07 (D-15): a func_ rename the session proposes is applied after it, so the marker
+    goes on the old name's declaration line in the view; without it RL07 fails the verdict."""
+    _readable_unit(readable, FUNC, renamed=False)
+    _propose(readable, _rename(NAMED))
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out
+    assert f"src/ufo2p/u_000a34f0.c:{DEFINITION_LINE}: RL07 {FUNC}" in out
+    assert _lines(readable.parent)[0]["readlint_violations"] == 1
+
+
+def test_readability_check_reports_rl07(readable: Path, monkeypatch, capsys):
+    """07.2-07 (D-15): the driver leaves the view unit at launch in <attempt dir>/unit-base.c;
+    a local renamed from its placeholder without a marker is an RL07 violation that fails the
+    readability half; the marker beside its declaration passes it."""
+    base = _readable_text(NAMED).replace(
+        "    return 0;", "    int local_8;\n\n    local_8 = 0;\n    return local_8;")
+    _readable_unit(readable, NAMED, renamed=True)
+    (readable.parent / attempt.UNIT_BASE).write_bytes(base.encode("utf-8"))
+    renamed = base.replace("local_8", "ticks")
+    _view_unit(readable).write_bytes(renamed.encode("utf-8"))
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out
+    assert f"src/ufo2p/u_000a34f0.c:{DEFINITION_LINE + 2}: RL07 ticks" in out
+    marked = renamed.replace("int ticks;", f"int ticks; {MARK}")
+    _view_unit(readable).write_bytes(marked.encode("utf-8"))
+    assert _run(["attempt", "check"]) == 0
+    assert "  readlint: clean" in capsys.readouterr().out
 
 
 def test_unreadable_proposals_count_no_pending_rename(readable: Path, monkeypatch, capsys):

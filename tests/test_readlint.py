@@ -713,3 +713,117 @@ def test_tier_with_nothing_to_check_is_a_tool_error(tmp_path):
     with pytest.raises(ReadlintError, match="nothing to check"):
         run_readlint([src], src_root=src, config_root=config, tier=2)
     assert cli_main(["readlint", "--src", str(src), "--config", str(config), "--tier", "2"]) == 2
+
+
+# ---- 07.2-07 (D-14, D-15): RL07, the name provenance marker ----
+
+MARK = "/* src: OPENAPOC 0x0008A0E0 (confidence: high) */"
+
+
+@pytest.mark.parametrize(("text", "ok"), [
+    (MARK, True),
+    ("/* src: GUESS 0x00010000 (confidence: low) */", True),
+    ("/*src: UFOPAEDIA 0x000C1000 (confidence: medium)*/", True),
+    ("/* src: OPENAPOC 0x0008a0e0 (confidence: high) */", False),  # lower-case hex
+    ("/* src: OPENAPOC 0x008A0E0 (confidence: high) */", False),  # seven digits
+    ("/* src: WIKI 0x0008A0E0 (confidence: high) */", False),  # an unknown tag
+    ("/* src: GHIDRA 0x0008A0E0 (confidence: sure) */", False),
+    ("/* src: GHIDRA 0x0008A0E0 confidence: high) */", False),  # a missing parenthesis
+])  # fmt: skip
+def test_marker_regex(text, ok):
+    assert bool(readlint.MARKER.fullmatch(text)) is ok
+    assert readlint.MARKER_PREFIX.match(text)
+
+
+def test_marker_constants():
+    assert readlint.MARKER_TAGS == ("OPENAPOC", "GHIDRA", "UFOPAEDIA", "GUESS")
+    assert readlint.MARKER_CONFIDENCES == ("high", "medium", "low")
+
+
+def lint_on(tmp_path, text, base=None):
+    """readlint of one matched unit holding `text`, judged against `base` (None: no base)."""
+    src, config, path = write_tree(tmp_path, text)
+    bases = None if base is None else {str(path): base}
+    return run_readlint([path], src_root=src, config_root=config, base_text=bases)
+
+
+def _rl07(result):
+    return hits(result, "RL07")
+
+
+def _names(found):
+    return [(line, message.split(" ", 1)[0]) for line, message in found]
+
+
+PARAM_BASE = ('#include "common.h"\n\n' + GOOD_HEADER
+              + "int tick_count(int param_1)\n{\n    return param_1;\n}\n")  # fmt: skip
+PARAM_LINE = 8  # the line of `int tick_count(...)`
+
+
+def test_rl07_malformed_marker_always_fails(tmp_path):
+    text = CLEAN + "int count; /* src: GHIDRA 0x8A0E0 (confidence: high) */\n"
+    for base in (None, CLEAN):
+        (found,) = _rl07(lint_on(tmp_path, text, base))
+        assert found[0] == 12 and "malformed" in found[1]
+
+
+def test_rl07_flags_an_unmarked_rename(tmp_path):
+    renamed = PARAM_BASE.replace("param_1", "count")
+    assert _names(_rl07(lint_on(tmp_path, renamed, PARAM_BASE))) == [(PARAM_LINE, "count")]
+    marked = renamed.replace("int count)\n", f"int count) {MARK}\n")
+    assert _rl07(lint_on(tmp_path, marked, PARAM_BASE)) == []
+
+
+DATA_FUNC_BASE = ("int D_000C1000;\n\n/* func_0008A0E0: steps the game clock. */\n"
+                  "int func_0008A0E0(void)\n{\n    return D_000C1000;\n}\n")  # fmt: skip
+
+
+def test_rl07_flags_function_and_data_renames(tmp_path):
+    renamed = (DATA_FUNC_BASE.replace("D_000C1000", "frame_wrap")
+               .replace("func_0008A0E0", "clock_tick"))  # fmt: skip
+    found = _rl07(lint_on(tmp_path, renamed, DATA_FUNC_BASE))
+    assert _names(found) == [(1, "frame_wrap"), (4, "clock_tick")]
+    marked = (renamed.replace("int frame_wrap;", f"int frame_wrap; {MARK}")
+              .replace("int clock_tick(void)", f"int clock_tick(void) {MARK}"))  # fmt: skip
+    assert _rl07(lint_on(tmp_path, marked, DATA_FUNC_BASE)) == []
+
+
+def test_rl07_no_base_no_rename_check(tmp_path):
+    """Already-matched units are not flagged until their next readability pass (D-15)."""
+    assert _rl07(lint_on(tmp_path, PARAM_BASE.replace("param_1", "count"))) == []
+
+
+def test_rl07_marker_on_an_unrenamed_name_is_fine(tmp_path):
+    text = CLEAN + f"int g; {MARK}\n"
+    assert _rl07(lint_on(tmp_path, text)) == []
+    assert _rl07(lint_on(tmp_path, text, CLEAN)) == []
+
+
+def test_rl07_a_new_macro_is_no_rename(tmp_path):
+    """A readability pass names a literal with a #define while it renames a parameter: only the
+    parameter needs a marker."""
+    renamed = PARAM_BASE.replace("param_1", "count").replace(
+        '#include "common.h"\n', '#include "common.h"\n#define TICKS_PER_SECOND 18\n')
+    assert _names(_rl07(lint_on(tmp_path, renamed, PARAM_BASE))) == [(PARAM_LINE + 1, "count")]
+
+
+def test_rl07_a_rename_is_judged_per_function(tmp_path):
+    """A parameter renamed in one function makes no name of another function a rename."""
+    base = ("int first(int param_1)\n{\n    return param_1;\n}\n\n"
+            "int second(int ready)\n{\n    return ready;\n}\n")  # fmt: skip
+    renamed = base.replace("param_1", "count").replace("ready", "armed")
+    assert _names(_rl07(lint_on(tmp_path, renamed, base))) == [(1, "count")]
+
+
+def test_unmarked_declarations(tmp_path):
+    """attempt.lint_view's check of the session's rename proposals: each named placeholder
+    declared in the unit needs a marker on one of its declaration lines; a name the unit does
+    not declare needs none."""
+    text = ("extern int D_000C1000;\n\n"
+            f"int func_0008A0E0(void) {MARK}\n{{\n    return D_000C1000;\n}}\n")  # fmt: skip
+    src, config, path = write_tree(tmp_path, text)
+    found = readlint.unmarked_declarations(
+        path, ["D_000C1000", "func_0008A0E0", "func_00001000"], src_root=src,
+        config_root=config)  # fmt: skip
+    assert [(v.line, v.rule, v.message.split(" ", 1)[0]) for v in found] == [
+        (1, "RL07", "D_000C1000")]
