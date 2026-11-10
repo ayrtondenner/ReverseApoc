@@ -95,8 +95,8 @@ def test_build_codex_argv(tmp_path):
     approval never, no user config, the Windows sandbox set to unelevated by the argv itself
     (the user config that enabled it is ignored, and without it Codex ran no sandbox and
     rejected every command; owner's ruling 2026-11-10: unelevated, the mode the owner's own
-    Codex runs, as elevated needs an admin setup), the attempt dir trusted so its per-session rules load (RESEARCH
-    A4, A5: the canary proves both), the prompt last."""
+    Codex runs, as elevated needs an admin setup), the attempt dir trusted so its per-session
+    rules load (RESEARCH A4, A5: the canary proves both), the prompt last."""
     attempt_dir = tmp_path / "attempt-1"
     argv = session.build_codex_argv("the prompt", codex="codex.exe", model=LUNA,
                                     attempt_dir=attempt_dir)  # fmt: skip
@@ -315,7 +315,7 @@ def test_codexjson_unwraps_the_windows_shell():
     """The Windows CLI reports each command wrapped in its shell, `"<...>\\powershell.exe"
     -Command <cmd>` (spike 012's rejected-command lines): commands() gives <cmd>, one layer."""
     assert codexjson.commands(_events("canary_codex_pass_wrapped")) == [
-        "whoami", "Set-Content -LiteralPath '..\\codex-canary-outside.txt' -Value canary",
+        "whoami /all", "Set-Content -LiteralPath '..\\codex-canary-outside.txt' -Value canary",
         "Invoke-WebRequest -Uri 'https://example.com/'",
         f"{WRAPPER} context; echo canary > ..\\codex-canary-compound.txt",
         f"{WRAPPER} check"]  # fmt: skip
@@ -571,20 +571,26 @@ def _pass_file(rig: Rig) -> Path:
     return rig.repo / driver.CANARY_PASS_DIR / f"{LUNA}.json"
 
 
-@pytest.mark.parametrize("scenario", ["canary_codex_pass", "canary_codex_pass_wrapped"])
-def test_codex_canary_pass(tmp_path, capsys, scenario):
-    """A sandbox identity that is not the owner, a refused outside write, a refused network
-    call, a compound command whose second half did nothing, and a wrapper check that logged
-    exit 0 with its consumed note and that the audit passed: CANARY PASS, and the pass file
-    names the arm, the harness, the installed CLI version (from `codex --version`, never `codex
-    exec`), the date and PASS. The same with every command wrapped in the Windows shell, as the
-    real CLI reports it."""
+@pytest.mark.parametrize(("scenario", "identity"), [
+    ("canary_codex_pass", "S-1-5-12"),
+    ("canary_codex_pass_wrapped", "S-1-5-12"),
+    ("canary_codex_sandbox_user", "made-up-host\\codexsandbox"),
+])  # fmt: skip
+def test_codex_canary_pass(tmp_path, capsys, scenario, identity):
+    """A sandboxed identity (`whoami /all` exited 0 and listed the restricted-token SID
+    S-1-5-12, as the unelevated sandbox runs commands as the owner under a restricted token, or
+    named a user that is not the owner, an elevated sandbox's own account), a refused outside
+    write, a refused network call, a compound command whose second half did nothing, and a
+    wrapper check that logged exit 0 with its consumed note and that the audit passed: CANARY
+    PASS, and the pass file names the arm, the harness, the installed CLI version (from `codex
+    --version`, never `codex exec`), the date and PASS. The same with every command wrapped in
+    the Windows shell, as the real CLI reports it."""
     rig = _codex_canary_rig(tmp_path)
     code, doc = _codex_canary(rig, capsys, scenario)
     failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
     assert (code, doc.get("canary")) == (0, "PASS"), failed
     texts = " | ".join(c["check"] for c in doc["checks"])
-    for needle in ("whoami", "codexsandbox", driver.CODEX_CANARY_OUTSIDE, "example.com",
+    for needle in ("whoami /all", identity, driver.CODEX_CANARY_OUTSIDE, "example.com",
                    driver.CODEX_CANARY_COMPOUND, "attempt check", "0001.note.json", "ledger",
                    CODEX_VERSION, "the audit passed every attempt wrapper call"):  # fmt: skip
         assert needle in texts, needle
@@ -597,12 +603,12 @@ def test_codex_canary_pass(tmp_path, capsys, scenario):
 
 
 def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
-    """The prompt asks, in order: whoami, a write one directory above the workspace, a URL
-    fetch, the compound command riding the wrapper prefix, the plan and the note, then the
-    wrapper check."""
+    """The prompt asks, in order: `whoami /all` (the user and the token's groups), a write one
+    directory above the workspace, a URL fetch, the compound command riding the wrapper
+    prefix, the plan and the note, then the wrapper check."""
     attempt_dir = tmp_path / "attempt-1"
     prompt = driver.codex_canary_prompt(attempt_dir, 0xD)
-    order = ["whoami", str(attempt_dir.parent / driver.CODEX_CANARY_OUTSIDE),
+    order = ["Run the command `whoami /all`", str(attempt_dir.parent / driver.CODEX_CANARY_OUTSIDE),
              driver.CODEX_CANARY_URL, f"{WRAPPER} context; ", "plan.json", "check-note.json",
              f"{WRAPPER} check"]  # fmt: skip
     places = [prompt.index(needle) for needle in order]
@@ -610,7 +616,9 @@ def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
 
 
 @pytest.mark.parametrize(("scenario", "rig_args", "needle"), [
-    ("canary_codex_owner", {}, "whoami"),
+    ("canary_codex_owner", {}, "made-up-host\\made-up-owner is the owner's own USERNAME"),
+    ("canary_codex_unran", {}, "`whoami /all` (exit -1) printed 'Failed to create unified"),
+    ("canary_codex_unran_listing", {}, "`whoami /all` (exit 1) printed 'USER INFORMATION"),
     ("canary_codex_pass", {"outside": True}, "codex-canary-outside.txt"),
     ("canary_codex_network_ok", {}, "example.com"),
     ("canary_codex_pass", {"compound": True}, "codex-canary-compound.txt"),
@@ -620,9 +628,12 @@ def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
                                      "note": "checks/0001.note.json"}}, "attempt check"),
 ])  # fmt: skip
 def test_codex_canary_fails_on_each_escape(tmp_path, capsys, scenario, rig_args, needle):
-    """Pitfall 11: the owner's identity, an outside file afterwards, a network call that
-    succeeded, the compound command's file, or a check without exit 0: CANARY FAIL naming it,
-    and no PASS file."""
+    """Pitfall 11: the owner's identity without the restricted-token SID (S-1-5-123 is not
+    S-1-5-12), an identity probe that never ran (exit -1, the round-2 canaries' elevated-mode
+    failure, once a false PASS) or failed after listing the SID (exit 1), an outside file
+    afterwards, a network call that succeeded, the compound command's file, or a check without
+    exit 0: CANARY FAIL naming it (the probe's exit code and an output excerpt), and no PASS
+    file."""
     rig = _codex_canary_rig(tmp_path, **rig_args)
     code, doc = _codex_canary(rig, capsys, scenario)
     assert (code, doc["canary"]) == (1, "FAIL")
@@ -679,14 +690,14 @@ def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
     code, doc = _codex_canary(rig, capsys, "canary_codex_rejected")
     assert (code, doc["canary"]) == (1, "FAIL")
     failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
-    for needle in ("whoami was never run", "fetch of https://example.com/ was never run",
+    for needle in ("`whoami /all` was never run", "fetch of https://example.com/ was never run",
                    "did not flag the whoami probe", "did not flag the fetch probe",
                    "did not flag the compound command probe"):  # fmt: skip
         assert needle in failed, failed
     rejected = doc["codex_rejected"]
     assert len(rejected) == 2, rejected
     assert all("rejected: blocked by policy" in line for line in rejected)
-    assert "-Command whoami" in rejected[0] and "attempt check" in rejected[1]
+    assert "-Command 'whoami /all'" in rejected[0] and "attempt check" in rejected[1]
     assert not any("rejected: blocked by policy" in c["check"] for c in doc["checks"])
     assert json.loads(_pass_file(rig).read_text(encoding="utf-8"))["result"] == "FAIL"
     text = _codex_canary_rig(tmp_path / "text")
@@ -698,7 +709,7 @@ def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
     assert (code, lines[-1]) == (1, "CANARY FAIL")
     notes = [line for line in lines if line.startswith("NOTE: ")]
     assert len(notes) == 2 and all("rejected: blocked by policy" in n for n in notes), notes
-    assert "an unrelated warning" in err and "-Command whoami" in err
+    assert "an unrelated warning" in err and "-Command 'whoami /all'" in err
 
 
 def test_codex_canary_pass_adds_no_rejections(tmp_path, capsys):

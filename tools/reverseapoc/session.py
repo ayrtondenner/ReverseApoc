@@ -151,11 +151,12 @@ def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) 
     network off, the Windows sandbox set in the argv (the ignored user config was all that
     enabled it, and with none Codex ran no sandbox and rejected every command) to unelevated
     (owner's ruling 2026-11-10: the mode the owner's own Codex runs; elevated needs an admin
-    setup, and without it every command failed to start), and `attempt_dir` trusted so the per-session rules the driver generates under
-    it (<attempt dir>/.codex/rules/) load. The approval key (RESEARCH A4) and the trusted
-    project layer under gitignored build/ (A5) are assumptions the Codex canary settles. Never
-    an auto-approval flag, the unrestricted sandbox mode or the flag that skips the rules files
-    (tests/test_codex.py pins the list). The prompt is the last argument."""
+    setup, and without it every command failed to start), and `attempt_dir` trusted so the
+    per-session rules the driver generates under it (<attempt dir>/.codex/rules/) load. The
+    approval key (RESEARCH A4) and the trusted project layer under gitignored build/ (A5) are
+    assumptions the Codex canary settles. Never an auto-approval flag, the unrestricted sandbox
+    mode or the flag that skips the rules files (tests/test_codex.py pins the list). The prompt
+    is the last argument."""
     trust = f"projects.{json.dumps(str(attempt_dir))}.trust_level=\"trusted\""
     return [codex, "exec", "--json", "--model", model, "--sandbox", "workspace-write",
             "--cd", str(attempt_dir), "--skip-git-repo-check", "--ephemeral",
