@@ -650,6 +650,50 @@ def test_agyjson_knows_the_real_manage_task_status_poll():
     assert agyjson.commands(unknown) == [] and agyjson.denials(unknown) == []
 
 
+TIMER_OUTPUT = ("Timer cancelled early: its early-termination condition (made-up/task-10) was "
+                "met by a message from made-up/task-10.")  # fmt: skip
+
+
+def _timer(index: int, *, state: str = "DONE", **info) -> dict:
+    """A schedule step in agy 1.5.6's real shape (spike 012 round 6, the Claude 4.6 arms'
+    canaries): tool_info {name, parameters: {DurationSeconds, Prompt}} and, once the timer
+    ends, output; `info` replaces or adds tool_info keys."""
+    shape = {"name": "schedule",
+             "parameters": {"DurationSeconds": 15, "Prompt": "Check if attempt check finished"}}
+    return _step(index, "schedule", state=state, **{**shape, **info})  # fmt: skip
+
+
+def test_agyjson_knows_the_real_schedule_timer():
+    """Spike 012 round 6: Claude Sonnet 4.6 and Opus 4.6 through agy wait on a backgrounded
+    `attempt check` with `schedule`, a timer that hands the model its own Prompt back after
+    DurationSeconds (or early, when the task it waits on reports). It writes no file, runs no
+    command and stops nothing, so that exact shape, with or without its output, is a known
+    step that ran, in no command, read or write list and never a denial. Anything else stays
+    unknown (fail closed): a parameter added or missing, a non-integer, boolean or out-of-range
+    DurationSeconds (1 to 3600 seconds), a non-string Prompt, another tool_info key, a
+    tool_info name that is not its tool's, a subagent's step, an `error`."""
+    timers = [_timer(1, state="ACTIVE"), _timer(2), _timer(3, output=TIMER_OUTPUT)]
+    assert agyjson.unknown_steps(timers) == []
+    assert agyjson.commands(timers) == [] and agyjson.denials(timers) == []
+    assert agyjson.read_targets(timers) == [] and agyjson.write_targets(timers) == []
+    prompt = "x"
+    unknown = [_timer(10, parameters={"DurationSeconds": 15}),
+               _timer(11, parameters={"DurationSeconds": 15, "Prompt": prompt, "Path": "C:/x"}),
+               _timer(12, parameters={"DurationSeconds": "15", "Prompt": prompt}),
+               _timer(13, parameters={"DurationSeconds": True, "Prompt": prompt}),
+               _timer(14, parameters={"DurationSeconds": 0, "Prompt": prompt}),
+               _timer(15, parameters={"DurationSeconds": 3601, "Prompt": prompt}),
+               _timer(16, parameters={"DurationSeconds": 15, "Prompt": ["x"]}),
+               _timer(17, name="run_command"), _timer(18, Cwd="C:\\x"),
+               _timer(19, subagent={"name": "made-up"}),
+               _timer(20, state="ERROR", error={"type": "TOOL_ERROR", "message": "x"})]  # fmt: skip
+    found = agyjson.unknown_steps(unknown)
+    assert len(found) == len(unknown), found
+    for index, text in zip(range(10, 10 + len(unknown)), found, strict=True):
+        assert f"step {index}: tool 'schedule'" in text, (index, text)
+    assert agyjson.commands(unknown) == [] and agyjson.denials(unknown) == []
+
+
 def test_an_unknown_agy_tool_stops_the_night(tmp_path, capsys, monkeypatch):
     """WR-02 at night: a session whose stream holds a tool step the audit does not know (here
     a URL fetch that names no command and no path) stops the night at the guardrail."""

@@ -227,6 +227,12 @@ _TASK_TOOLS = frozenset({"manage_task"})
 _TASK_ACTION = "Action"
 _TASK_ID = "TaskId"
 _TASK_STATUS = "status"
+# spike 012 round 6 (the Claude 4.6 arms through agy 1.5.6): a timer the model sets to wait on a
+# backgrounded command; agy hands the model its own Prompt back after DurationSeconds, or early
+# when the task it waits on reports. No file, no command, no task stopped: only that shape.
+_TIMER_TOOLS = frozenset({"schedule"})
+_TIMER_PARAMETERS = frozenset({"DurationSeconds", "Prompt"})
+_TIMER_MAX_S = 3600
 _DENIED_STATE = "DENIED"  # a step's own last state when the settings soft-denied it
 _ERROR_STATE = "ERROR"  # agy 1.5.5's last state for a soft-denied step (spike 012)
 _TOOL_STEP = "TOOL"
@@ -302,6 +308,19 @@ def _real_task(name: str, info: Mapping) -> bool:
             and isinstance(parameters[_TASK_ID], str))  # fmt: skip
 
 
+def _real_timer(name: str, info: Mapping) -> bool:
+    """agy 1.5.6's schedule timer and nothing more: tool_info names the tool, holds only its
+    name, parameters and output, and its parameters only an integer DurationSeconds from 1 to
+    _TIMER_MAX_S and a string Prompt."""
+    parameters = info.get(_PARAMETERS)
+    shaped = isinstance(parameters, Mapping) and set(parameters) == _TIMER_PARAMETERS
+    if info.get(_NAME) != name or not set(info) <= _COMMAND_INFO or not shaped:
+        return False
+    seconds = parameters["DurationSeconds"]
+    return (isinstance(seconds, int) and not isinstance(seconds, bool)
+            and 1 <= seconds <= _TIMER_MAX_S and isinstance(parameters["Prompt"], str))  # fmt: skip
+
+
 def commands(events: Sequence[dict]) -> list[str]:
     """The CommandLine of every run_command step that ran in agy 1.5.5's shape (see the module
     docstring); a command step of any other shape is an unknown step, never a command run."""
@@ -343,6 +362,8 @@ def _known(step: Mapping) -> bool:
         return _real_command(name, info)
     if name in _TASK_TOOLS:
         return _real_task(name, info)
+    if name in _TIMER_TOOLS:
+        return _real_timer(name, info)
     return (name in _READ_TOOLS | _WRITE_TOOLS and _command_line(info) is None
             and _path(info) is not None)  # fmt: skip
 
