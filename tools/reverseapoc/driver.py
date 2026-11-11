@@ -1505,10 +1505,41 @@ def write_agy_settings(claim: _Claim) -> None:
     write_atomic(path, agy_settings_bytes(claim))
 
 
-def read_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path) -> list[str]:
+# Spike 012 round 5 (owner ruling 2026-11-11): agy keeps the output of a session's backgrounded
+# commands and long steps under its own conversation folder and lets the model read it without
+# asking the settings; only these two file forms, in that session's folder, are its own output.
+AGY_BRAIN = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+AGY_OUTPUTS = ".system_generated"
+_AGY_OUTPUT = re.compile(r"tasks/task-\d+\.log|steps/\d+/output\.txt")
+
+
+def agy_own_outputs(events: Sequence[dict]) -> Path | None:
+    """The session's own agy output folder, AGY_BRAIN/<its conversation id>/AGY_OUTPUTS, or
+    None when its init event names no conversation in UUID form."""
+    found = agyjson.conversation_id(events)
+    return AGY_BRAIN / found / AGY_OUTPUTS if found is not None else None
+
+
+def _own_agy_output(raw: str, own: Path | None) -> bool:
+    """Whether `raw` is exactly one of the session's own output files in `own`: an absolute
+    path, no `..` part, AGY_OUTPUT's form below `own`, and resolving to itself (no link)."""
+    if own is None or not os.path.isabs(raw) or ".." in re.split(r"[\\/]", raw):
+        return False
+    path = os.path.normcase(os.path.normpath(raw))
+    base = os.path.normcase(os.path.normpath(str(own)))
+    if not path.startswith(base + os.sep):
+        return False
+    rel = path[len(base) + 1:].replace(os.sep, "/")
+    return (_AGY_OUTPUT.fullmatch(rel) is not None
+            and os.path.normcase(os.path.realpath(raw)) == path)  # fmt: skip
+
+
+def read_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path,
+                own_outputs: Path | None = None) -> list[str]:  # fmt: skip
     """07.2-15 (D-10): why each path an agy tool step read is a stray: it or any of its
     resolved forms names orig/ or third_party/ in any spelling, or it lies outside the checkout
-    (relative paths are agy's cwd, the attempt dir)."""
+    (relative paths are agy's cwd, the attempt dir) and is not one of the session's own agy
+    output files in `own_outputs` (spike 012 round 5, agy_own_outputs)."""
     roots = _roots(repo, None)
     out = []
     for raw in targets:
@@ -1519,7 +1550,7 @@ def read_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path) -> lis
             out.append(f"{raw}: a read naming {named}/ (D-10)")
         elif shape is not None:
             out.append(f"{raw}: a read with {shape}")
-        elif rels is None:
+        elif rels is None and not _own_agy_output(raw, own_outputs):
             out.append(f"{raw}: a read outside the checkout")
     return out
 
@@ -4024,7 +4055,7 @@ class _Night:
             writes = agyjson.write_targets(events)
             reasons += agyjson.unknown_steps(events)  # 07.2 review WR-02: fail closed
             reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
-                                   repo=self.repo)  # fmt: skip
+                                   repo=self.repo, own_outputs=agy_own_outputs(events))  # fmt: skip
             if _read(claim.agy_settings) != agy_settings_bytes(claim):
                 shown = claim.agy_settings.relative_to(self.repo).as_posix()
                 reasons.append(f"{shown}: changed since the launch (the driver's settings file)")

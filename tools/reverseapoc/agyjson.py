@@ -122,6 +122,18 @@ def init_event(events: Sequence[dict]) -> dict | None:
     return next((e for e in _events(events) if e.get("type") == _INIT), None)
 
 
+_CONVERSATION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def conversation_id(events: Sequence[dict]) -> str | None:
+    """Spike 012 round 5: the session's own conversation id, the top-level `conversation_id`
+    of its first `init` line ({"event": "init", "conversation_id": ..., "init": {...}}), in
+    UUID form only; anything else is None (the audit then accepts no agy output folder)."""
+    first = next((e for e in events if e.get(_KIND) == _INIT), None)
+    value = first.get("conversation_id") if first is not None else None
+    return value if isinstance(value, str) and _CONVERSATION_ID.fullmatch(value) else None
+
+
 def _norm(path: str) -> str:
     return os.path.normcase(os.path.realpath(path))
 

@@ -445,7 +445,15 @@ retired for consumer plans, so agy is the route.
   (the task's status and its log's path). A status poll reads agy's own task list, writes no
   file, runs no command and stops nothing, so that exact shape is known, in no command, read
   or write list and never a denial. Any other action (`kill` stops a task; `list`), parameter
-  or key, an `error` included, makes it unknown. A step
+  or key, an `error` included, makes it unknown. agy keeps that log, and the output of a long
+  step, under the session's own conversation folder,
+  `~/.gemini/antigravity-cli/brain/<conversation id>/.system_generated/`, and lets the model
+  read it without asking the settings (spike 012 round 5: Gemini read `tasks/task-20.log` and
+  `steps/8/output.txt`, and the audit stopped the drive). By the owner's ruling (2026-11-11) a
+  read there is not a stray when it is exactly `tasks/task-<n>.log` or `steps/<n>/output.txt`
+  in the folder of the conversation id the session's own `init` line names (UUID form only),
+  absolute, with no `..` part, resolving to itself; any other read outside the checkout still
+  is. A step
   agy soft-denied never ran, so it is a hook block, not a stray: it ends `DENIED`, or `ERROR`
   with exactly agy's refusal. That is a known tool in its known shape (its error aside), no
   subagent, error type `TOOL_ERROR`, and the whole message in round 3's format: `permission

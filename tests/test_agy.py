@@ -1463,6 +1463,66 @@ def test_dot_dot_and_short_name_segments_are_strays(tmp_path):
     assert [s.split(": a write")[0] for s in writes] == bad, writes
 
 
+_CONVERSATION = "061fc4c3-3096-4cbd-808a-510b72fee051"
+
+
+def test_agy_conversation_id_comes_from_the_init_event():
+    """Spike 012 round 5: the session's own conversation id, from its first init event only,
+    and only in UUID form (anything else is None, so no output folder is accepted)."""
+    init = {"event": "init", "conversation_id": _CONVERSATION, "init": {}}
+    assert agyjson.conversation_id([init]) == _CONVERSATION
+    for odd in ("../x", "", None, 7, _CONVERSATION + "/x", _CONVERSATION.upper() + "\\"):
+        assert agyjson.conversation_id([{**init, "conversation_id": odd}]) is None, odd
+    assert agyjson.conversation_id([]) is None
+    later = {"event": "step_update", "conversation_id": _CONVERSATION}
+    assert agyjson.conversation_id([later]) is None
+
+
+def test_agy_reads_of_the_sessions_own_outputs_are_not_strays(tmp_path):
+    """Spike 012 round 5 (owner ruling 2026-11-11): agy hands a long command back and logs its
+    output under ~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/, and lets the
+    model read that folder without asking the settings; Gemini read its own backgrounded
+    `attempt check` logs (tasks/task-20.log) and the paged `attempt context` output
+    (steps/8/output.txt). Those two file forms in the session's own folder are not strays;
+    another conversation's, another name, a `..` spelling, a link, or no folder at all are."""
+    repo = tmp_path / "repo"
+    root = repo / ATTEMPT
+    root.mkdir(parents=True)
+    brain = tmp_path / "home" / ".gemini" / "antigravity-cli" / "brain"
+    own = brain / _CONVERSATION / ".system_generated"
+    for rel in ("tasks/task-20.log", "steps/8/output.txt", "steps/8/other.txt", "tasks/x.log"):
+        (own / rel).parent.mkdir(parents=True, exist_ok=True)
+        (own / rel).write_text("x", encoding="utf-8")
+    other = brain / "11111111-2222-4333-8444-555555555555" / ".system_generated" / "tasks"
+    other.mkdir(parents=True)
+    good = [str(own / "tasks" / "task-20.log"), str(own / "steps" / "8" / "output.txt"),
+            (own / "tasks" / "task-66.log").as_posix()]  # fmt: skip
+    bad = [str(own / "steps" / "8" / "other.txt"), str(own / "tasks" / "x.log"),
+           str(other / "task-20.log"), f"{own}\\tasks\\..\\tasks\\task-20.log",
+           str(own.parent / "task-20.log")]  # fmt: skip
+    reads = driver.read_strays([*good, *bad], attempt_dir=root, repo=repo, own_outputs=own)
+    assert [s.split(": a read")[0] for s in reads] == bad, reads
+    assert len(driver.read_strays(good, attempt_dir=root, repo=repo)) == len(good)
+
+
+def test_agy_own_output_read_through_a_link_is_a_stray(tmp_path):
+    """A link inside the session's own folder that resolves elsewhere is no own output."""
+    from test_driver import _plant_dir_link
+
+    repo = tmp_path / "repo"
+    root = repo / ATTEMPT
+    root.mkdir(parents=True)
+    own = tmp_path / "brain" / _CONVERSATION / ".system_generated"
+    (own / "steps").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "output.txt").write_text("x", encoding="utf-8")
+    _plant_dir_link(own / "steps" / "9", elsewhere)
+    reads = driver.read_strays([str(own / "steps" / "9" / "output.txt")], attempt_dir=root,
+                               repo=repo, own_outputs=own)  # fmt: skip
+    assert len(reads) == 1 and "outside the checkout" in reads[0], reads
+
+
 def _query_envs(runner, argv: list[str]) -> list[dict | None]:
     return [env for call, env in zip(runner.calls, runner.envs, strict=True) if call == argv]
 
