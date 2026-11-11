@@ -551,3 +551,25 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 **Deferred at:** 2026-10-26 during /gsd-verify-work 06 session completion
 **Follow-ups:**
 - [ ] Test 3: on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
+
+### Phase 999.12: Size-routed model cascade for nights (BACKLOG)
+
+**Goal:** Route each function to the cheapest arm likely to match it by size, and escalate to a stronger arm
+only when an attempt fails, so nights spend strong-model quota only where cheap models do not match.
+**Source:** spike 012 (owner, 2026-11-11). Cheap arms (Haiku 5.5, GPT-6 Luna, GLM-5.3) matched the same functions
+under 64 B that the strong ones did, wins thin out at 64-255 B (GPT-6 Astra held the largest, 208 B), and no arm
+matched 256 B and up. FNV routed by size up front (`docs/research/2026-11-09-fnv-decomp.md`); LLM cascades
+(FrugalGPT, RouteLLM, AutoMix) escalate on a rejected answer, and here the scorer is exact (`attempt check`'s byte
+match), so escalation on failure has no false positives.
+**Target:** after spike 012 closes (its write-up gives the per-bucket numbers that calibrate the table).
+**Follow-ups:**
+- [ ] Generalize `session.model_for_pass(pass)` (D-09: Opus for passes 1-2, Fable from pass 3) to an arm per
+  (pass, size bucket), from a routing table in `config/driver/backends.toml` (for example: under 64 B, Haiku or
+  Luna first, then Sonnet or Terra; 64-255 B, Haiku, then Sonnet or Astra, then Opus; 256 B and up, a strong arm
+  first), test-first; the drive's existing three attempts per function are the ladder.
+- [ ] Escalate on PARTIAL or GAVE_UP: the next attempt goes to the next arm in the function's row and, in a normal
+  (not held) night, sees the earlier attempts' notes and best draft.
+- [ ] A paused arm (a Codex 5-hour window, an agy weekly quota, a usage limit) passes the attempt to the next arm in
+  the row instead of holding the function.
+- [ ] Calibrate the table from spike 012's `stats --run 'spike012-*'` per-bucket figures; revisit after a few real
+  nights, since spike 012 has 20 picks and one attempt per arm.
