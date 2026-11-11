@@ -1198,7 +1198,9 @@ def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
     left = {probe.name: probe.left for probe in probes}
     assert left["unsandboxed"] == attempt_dir / driver.AGY_CANARY_UNSANDBOXED, left
     assert left["outside-write"] == attempt_dir.parent / driver.AGY_CANARY_OUTSIDE, left
-    exact = ("exactly as written", "character for character", "do not resolve or normalize")
+    exact = ("exactly as written", "character for character", "do not resolve or normalize",
+             "the tool itself decides whether a path is allowed",
+             "report what the tool returns, even an error")  # round 6: Claude 4.6 refused itself
     for probe in probes:
         carries = [phrase for phrase in exact if phrase in probe.prompt]
         assert carries == (list(exact) if probe.name.endswith("-read") else []), probe

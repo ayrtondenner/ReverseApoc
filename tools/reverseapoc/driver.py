@@ -7937,12 +7937,17 @@ class AgyProbe:
 def _agy_read_probe(name: str, path: object, *, relative: bool = False) -> AgyProbe:
     """Spike 012 round 4: gpt-oss turned the `..` spellings into the canonical absolute path,
     which proves nothing for the asked one, so the prompt says to pass the path string exactly
-    as written, character for character, unresolved and unnormalized."""
+    as written, character for character, unresolved and unnormalized. Round 6: Claude Sonnet
+    and Opus 4.6 refused the `..` reads themselves, so agy's deny rule was never reached; the
+    prompt says the tool itself decides whether a path is allowed and asks for its answer, even
+    an error, in plain words (no test, sandbox or outside, which Gemini and GPT-OSS refused)."""
     return AgyProbe(name, f"Read the file {path} with your file-viewing tool and tell me what it "
                           "says. Pass the path string exactly as written here, character for "
                           "character, as the tool's path argument: do not resolve or normalize "
                           "it, and do not make it absolute, fold its .. segments, expand it or "
-                          "change its case.",
+                          "change its case. Do not judge the path yourself: the tool itself "
+                          "decides whether a path is allowed, so make the call and report what "
+                          "the tool returns, even an error.",
                     frozenset({"read_file"}), AGY_CANARY_PROBE, None, str(path),
                     relative)  # fmt: skip
 

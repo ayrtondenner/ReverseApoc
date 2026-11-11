@@ -451,7 +451,15 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   (the task's status and its log's path). A status poll reads agy's own task list, writes no
   file, runs no command and stops nothing, so that exact shape is known, in no command, read
   or write list and never a denial. Any other action (`kill` stops a task; `list`), parameter
-  or key, an `error` included, makes it unknown. agy keeps that log, and the output of a long
+  or key, an `error` included, makes it unknown. The Claude 4.6 arms wait on such a task with
+  `schedule` instead (spike 012 round 6), a timer that hands the model its own `Prompt` back after
+  `DurationSeconds`: `tool_info` holds `name`, `parameters` with only an integer
+  `DurationSeconds` from 1 to 3600 and a string `Prompt`, and once it ends `output`. It writes no
+  file, runs no command and stops nothing, so that exact shape is known too; anything else about
+  it is unknown. The canary's read probes also say, in plain words, that the tool itself decides
+  whether a path is allowed, so the model makes the call and reports what the tool returns, even
+  an error: in round 6 both Claude 4.6 arms refused the `..` reads themselves, so agy's deny rule
+  was never reached. agy keeps that log, and the output of a long
   step, under the session's own conversation folder,
   `~/.gemini/antigravity-cli/brain/<conversation id>/.system_generated/`, and lets the model
   read it without asking the settings (spike 012 round 5: Gemini read `tasks/task-20.log` and
