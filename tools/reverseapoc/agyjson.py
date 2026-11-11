@@ -32,9 +32,11 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   (fail closed). A result's `denied_actions` never stand for a step; they are hook blocks. The
   driver's audit reads them (D-26).
 - `unknown_steps`: each tool step that ran and is not a known tool (`run_command` in agy
-  1.5.5's shape, `read_file` or `write_file` with a path) in its known shape, a subagent's
-  included: the audit counts each as a stray (WR-02). Only a known step can be a denial, so an
-  unknown one is named whatever state it ends in.
+  1.5.5's shape, `read_file` or `write_file` with a path, or round 4's `manage_task` status
+  poll of a backgrounded command: tool_info {name, parameters: {Action: "status", TaskId},
+  output}, no file or command effect, so in no list and never a denial) in its known shape,
+  a subagent's included: the audit counts each as a stray (WR-02). Only a known step can be a
+  denial, so an unknown one is named whatever state it ends in.
 - `denied_actions`: the result's denied actions as `action(target)` strings.
 - `denials`, `undenied_steps`, `response` (the agy canary's evidence): each tool step agy's
   permission check refused, with its action and target read from its own error message and its
@@ -203,6 +205,16 @@ _COMMAND_INFO = frozenset({_NAME, _PARAMETERS, _OUTPUT})
 _LEGACY_COMMAND = "command"  # RESEARCH's documented tool_info.command, never seen: unknown
 _READ_TOOLS = frozenset({"read_file"})
 _WRITE_TOOLS = frozenset({"write_file"})
+# spike 012 round 4 (gemini-flash's allowed session): agy 1.5.5 backgrounds a command that
+# outlives its time limit, and the model polls that task with manage_task: tool_info {name,
+# parameters: {Action: "status", TaskId}, output} (the output, once DONE, the task's status
+# and its log's path), the same three tool_info keys as run_command. A status poll reads agy's
+# own task list: no file, no command, no task stopped. Only that action is known; `kill` (agy's
+# own skills use it) stops a task and `list` was never seen, so both stay unknown.
+_TASK_TOOLS = frozenset({"manage_task"})
+_TASK_ACTION = "Action"
+_TASK_ID = "TaskId"
+_TASK_STATUS = "status"
 _DENIED_STATE = "DENIED"  # a step's own last state when the settings soft-denied it
 _ERROR_STATE = "ERROR"  # agy 1.5.5's last state for a soft-denied step (spike 012)
 _TOOL_STEP = "TOOL"
@@ -267,6 +279,17 @@ def _real_command(name: str, info: Mapping) -> bool:
             and isinstance(parameters[_COMMAND_LINE], str))  # fmt: skip
 
 
+def _real_task(name: str, info: Mapping) -> bool:
+    """agy 1.5.5's manage_task status poll and nothing more: tool_info names the tool, holds
+    only its name, parameters and output, and its parameters only Action "status" and a
+    string TaskId."""
+    parameters = info.get(_PARAMETERS)
+    return (info.get(_NAME) == name and set(info) <= _COMMAND_INFO
+            and isinstance(parameters, Mapping) and set(parameters) == {_TASK_ACTION, _TASK_ID}
+            and parameters[_TASK_ACTION] == _TASK_STATUS
+            and isinstance(parameters[_TASK_ID], str))  # fmt: skip
+
+
 def commands(events: Sequence[dict]) -> list[str]:
     """The CommandLine of every run_command step that ran in agy 1.5.5's shape (see the module
     docstring); a command step of any other shape is an unknown step, never a command run."""
@@ -306,6 +329,8 @@ def _known(step: Mapping) -> bool:
         return False
     if name in _COMMAND_TOOLS:
         return _real_command(name, info)
+    if name in _TASK_TOOLS:
+        return _real_task(name, info)
     return (name in _READ_TOOLS | _WRITE_TOOLS and _command_line(info) is None
             and _path(info) is not None)  # fmt: skip
 
@@ -397,9 +422,10 @@ def _refused(step: Mapping, tool: str, request: str) -> tuple[str, str] | None:
 
 def _denial(step: Mapping) -> Denial | None:
     """The step as a denial, or None: only a known tool in its known shape (its error aside)
-    can be one (security review: a denial leaves the audit, so this fails closed)."""
+    with a permission kind can be one (security review: a denial leaves the audit, so this
+    fails closed; agy asks no permission for a manage_task status poll, so it always ran)."""
     info = {k: v for k, v in _mapping(step.get("tool_info")).items() if k != _ERROR}
-    if not _known({**step, "tool_info": info}):
+    if not _known({**step, "tool_info": info}) or step["tool_name"] not in _DENIAL_FORMS:
         return None
     index, tool = step.get("step_index"), step["tool_name"]
     index = index if isinstance(index, int) and not isinstance(index, bool) else None
@@ -436,7 +462,8 @@ class Rejection(NamedTuple):
 def _rejection(step: Mapping) -> Rejection | None:
     """The step as agy's exact relative-path rejection (see `rejections`), or None."""
     info = {k: v for k, v in _mapping(step.get("tool_info")).items() if k != _ERROR}
-    if not _known({**step, "tool_info": info}) or step["tool_name"] in _COMMAND_TOOLS:
+    if (not _known({**step, "tool_info": info})
+            or step["tool_name"] not in _READ_TOOLS | _WRITE_TOOLS):  # fmt: skip
         return None
     error = _mapping(_mapping(step.get("tool_info")).get(_ERROR))
     request = _path(info)

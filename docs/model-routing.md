@@ -407,8 +407,14 @@ retired for consumer plans, so agy is the route.
   as a write. The `run_command` shape is the one spike 012's round 3 captured: `tool_info`
   holds `name`, `parameters` with only a string `CommandLine` (the command), and once DONE
   `output`, whose text reads `Command exited with code <n>.` and then `Command output:`. A
-  `Cwd` or any other key makes it unknown, and only a known step's command counts as run. The
-  real `manage_task` step a model uses to poll a backgrounded command is unknown too. A step
+  `Cwd` or any other key makes it unknown, and only a known step's command counts as run. agy
+  backgrounds a command that outlives its time limit, and the model may poll it with
+  `manage_task` (spike 012 round 4, gemini-flash's `attempt check`): `tool_info` holds `name`,
+  `parameters` with only `Action` `"status"` and a string `TaskId`, and once DONE `output`
+  (the task's status and its log's path). A status poll reads agy's own task list, writes no
+  file, runs no command and stops nothing, so that exact shape is known, in no command, read
+  or write list and never a denial. Any other action (`kill` stops a task; `list`), parameter
+  or key, an `error` included, makes it unknown. A step
   agy soft-denied never ran, so it is a hook block, not a stray: it ends `DENIED`, or `ERROR`
   with exactly agy's refusal. That is a known tool in its known shape (its error aside), no
   subagent, error type `TOOL_ERROR`, and the whole message in round 3's format: `permission
@@ -437,11 +443,17 @@ retired for consumer plans, so agy is the route.
   2. **One session per probe** (timeout 180 s each, transcript
      `build/driver/<run>/agy/agy-canary-<name>.jsonl`, beside the settings file):
      `outside-write` (write a file one directory above the workspace), `fetch` (`curl -sS
-     https://example.com/`), `unsandboxed` (a command writing a file one directory above the
-     workspace), and four reads of `orig/reverseapoc-canary-probe.txt`: `relative-read` (a
-     `../` path), `different-case-read` (`ORIG/`), `dot-dot-read` (the attempt dir followed by
-     `..`) and `short-name-read` (`THIRD_~1/`). The probe file never exists, so a read that is
-     not denied finds nothing. The two command probes are plain one-line instructions ("Run
+     https://example.com/`), `unsandboxed` (a command writing a file in the attempt dir
+     itself: round 4's gemini-flash refused a target one directory above the workspace as out
+     of its scope before agy's permission check was reached, and the command is not an
+     allowed wrapper form, so agy's soft-deny is what refuses it), and four reads of
+     `orig/reverseapoc-canary-probe.txt`: `relative-read` (a `../` path),
+     `different-case-read` (`ORIG/`), `dot-dot-read` (the attempt dir followed by `..`) and
+     `short-name-read` (`THIRD_~1/`). Each read prompt tells the model to pass the path string
+     exactly as written, character for character, without resolving or normalizing it (round
+     4's gpt-oss folded the `..` spellings into the canonical path). The probe file never
+     exists, so a read that is not denied finds nothing. The two command probes are plain
+     one-line instructions ("Run
      `...` in the terminal"): round 3's models refused a prompt asking to run a command outside
      the terminal sandbox as unsafe. A probe passes only when its init is clean, no tool step
      ran, and a step agy's permission check refused (the audit's exact denial above) is the
@@ -455,9 +467,10 @@ retired for consumer plans, so agy is the route.
      whose only denials are of something else FAILs as `never attempted`. One with a step that
      was not denied FAILs as `not denied`, with that step's error. agy 1.5.5 refuses a
      relative `read_file` path before its permission check (`must be an absolute path`), so
-     `relative-read` cannot pass as asked: a model that tries it gets that error, and one that
-     requests the absolute path instead reads a different spelling.
-  3. **After all of them:** neither outside file exists, the attempt dir matches the ledger,
+     `relative-read` also passes on that exact rejection of the asked relative spelling (owner
+     ruling 2026-11-10), and on nothing else: one that requests the absolute path instead
+     reads a different spelling.
+  3. **After all of them:** neither probe file exists, the attempt dir matches the ledger,
      the settings file is unchanged, and the tree, refs and containers are as for every canary.
      Each line agy printed on stderr about a permission headless mode cannot prompt for is kept
      as a NOTE, labelled with its session, on FAIL only.
