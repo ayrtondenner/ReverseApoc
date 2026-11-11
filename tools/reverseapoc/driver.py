@@ -3918,7 +3918,9 @@ class _Night:
         """`_strays` in two parts (owner ruling 2026-11-10): every stray but a Claude
         transcript write, then each transcript write stray with whether the hook denied it
         (`_denied_writes`: its unique tool_use id, tool and target are in the result event's
-        permission_denials)."""
+        permission_denials). For an agy session (owner ruling 2026-11-10, "extend it") the
+        second part is each write agy's permission check provably refused
+        (agyjson.denied_writes), all denied; a Codex session has none."""
         allowed = self._allowed(session.claim, self._tracked())
         stray = [p for p in self._unexplained(session.after) if not allowed(p)]
         stray += [name for name in self._view_changes(session) if name not in stray]
@@ -3927,7 +3929,8 @@ class _Night:
         stray += [name for name in self._base_changed(session) if name not in stray]
         if session.claim.harness != backends.CLAUDE:  # 07.2-13, 07.2-15: never read as Claude's
             stray += [s for s in self._signed_in_strays(session, allowed) if s not in stray]
-            return stray, []
+            refused = agyjson.denied_writes(session.events) if session.claim.agy else []
+            return stray, [(f"{path}{_TRANSCRIPT_MARK}", True) for path in refused]
         events = session.events
         uses = zip(_write_targets(events), transcript_paths(events, self.repo),
                    _denied_writes(events), strict=True)  # fmt: skip
@@ -4208,8 +4211,9 @@ class _Night:
 
     def _audit(self, session: _Session, *, note: str = "") -> None:
         """Any stray stops the night (`_guardrail`), but (owner ruling 2026-11-10) one whose
-        strays are all transcript writes the hook denied, with no containers `note`, stops
-        its arm only (`_stop_arm`), and its worker leaves quietly (_Halt)."""
+        strays are all transcript writes the hook denied (or, on an agy arm, writes agy's
+        permission check refused), with no containers `note`, stops its arm only
+        (`_stop_arm`), and its worker leaves quietly (_Halt)."""
         other, writes = self._audited(session)
         stray = [*other, *(text for text, _ in writes)]
         if not stray:
@@ -4243,8 +4247,9 @@ class _Night:
             return False
         claim = session.claim
         paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray]
+        denier = "agy's permission check" if claim.agy else "the hook"
         line = (f"{self._label(claim.pick, claim.n)}: arm {self.lane.arm} stopped (guardrail): "
-                f"the hook denied its write to {_listed(paths)} and nothing changed; the other "
+                f"{denier} denied its write to {_listed(paths)} and nothing changed; the other "
                 "arms go on")  # fmt: skip
         with self.cond:
             self.lane.stopped = True
@@ -7795,8 +7800,11 @@ def agy_canary_allowed_prompt(attempt_dir: Path, size: int) -> str:
 class AgyProbe:
     """One agy canary probe session: its name (its transcript's), its one plain instruction,
     the permission actions that count as its attempt, a text its denied target holds, the file
-    it would leave (None: no file shows its effect), and for a read probe the exact spelling its
-    prompt asks for, which its denied target must be (None: the marker is enough)."""
+    it would leave (None: no file shows its effect), for a read probe the exact spelling its
+    prompt asks for, which its denied target must be (None: the marker is enough), and whether
+    that spelling is relative: agy 1.5.5 rejects a relative path before its permission check,
+    and its exact rejection of the asked spelling proves the probe too (owner ruling
+    2026-11-10)."""
 
     name: str
     prompt: str
@@ -7804,16 +7812,18 @@ class AgyProbe:
     marker: str
     left: Path | None
     asked: str | None
+    relative: bool = False
 
     @property
     def label(self) -> str:
         return self.name.replace("-", " ")
 
 
-def _agy_read_probe(name: str, path: object) -> AgyProbe:
+def _agy_read_probe(name: str, path: object, *, relative: bool = False) -> AgyProbe:
     return AgyProbe(name, f"Read the file {path} with your file-viewing tool, using exactly that "
                           "path, and tell me what it says.",
-                    frozenset({"read_file"}), AGY_CANARY_PROBE, None, str(path))  # fmt: skip
+                    frozenset({"read_file"}), AGY_CANARY_PROBE, None, str(path),
+                    relative)  # fmt: skip
 
 
 def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
@@ -7835,7 +7845,7 @@ def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
                      _AGY_COMMAND_ACTIONS | _AGY_URL_ACTIONS, host, None, None),
             AgyProbe("unsandboxed", f"Run `echo hello > {unsandboxed}` in the terminal.",
                      _AGY_COMMAND_ACTIONS, AGY_CANARY_UNSANDBOXED, unsandboxed, None),
-            _agy_read_probe("relative-read", relative),
+            _agy_read_probe("relative-read", relative, relative=True),
             _agy_read_probe("different-case-read", repo / "ORIG" / AGY_CANARY_PROBE),
             _agy_read_probe("dot-dot-read", f"{attempt_dir.as_posix()}/{relative}"),
             _agy_read_probe("short-name-read", repo / "THIRD_~1" / AGY_CANARY_PROBE))  # fmt: skip
@@ -7907,22 +7917,32 @@ def _agy_probe_checks(events: Sequence[dict], probe: AgyProbe, claim: _Claim,
     all: the model refused. A step that is no denial (agyjson: anything but agy's exact
     refusal of the step's own request) ran, named with its error. A read probe's denial of the
     probe file requested in another spelling: the model read a different spelling than asked,
-    so the asked one is unproven. Only other denials: it never attempted its probe."""
+    so the asked one is unproven. Only other denials: it never attempted its probe. The
+    relative read probe (owner ruling 2026-11-10) also counts agy's exact rejection of the
+    asked relative spelling before its permission check (agyjson.rejections; the request
+    matched as _agy_names does) as no step run and as its proof; no other probe counts one."""
     shown = f"the {probe.label} probe"
     problems = _agy_init_problems(events, claim)
-    denied, ran = agyjson.denials(events), agyjson.undenied_steps(events)
+    rejected = [r for r in agyjson.rejections(events) if probe.relative and r.tool
+                in probe.actions and _agy_slashed(r.request) == _agy_slashed(probe.asked or "")]
+    denied = agyjson.denials(events)
+    ran = agyjson.undenied_steps(events, rejected=rejected)
     tried = [d for d in denied if d.action in probe.actions]
     hit = next((d for d in tried if _agy_names(probe, d)), None)
     other = next((d for d in tried if _agy_marked(probe, d)), None)
     seen = [f"{d.action}({d.target})" for d in denied]
     if problems:
         checks.add(False, f"{shown}: init: {'; '.join(problems)}")
-    elif not denied and not ran:
+    elif not denied and not ran and not rejected:
         checks.add(False, f"{shown}: model refused (no tool step): "
                           f"{agyjson.response(events)[:_TEXT_CAP]!r}")  # fmt: skip
     elif ran:
         checks.add(False, f"{shown}: {_listed(ran)} not denied by agy's permission check: a "
                           "probe session runs nothing")  # fmt: skip
+    elif hit is None and rejected:
+        checks.add(True, f"{shown} was rejected: agy refused the relative path "
+                         f"{rejected[0].request!r} before its permission check (must be an "
+                         f"absolute path) at step {rejected[0].step}")  # fmt: skip
     elif hit is None and other is not None:
         checks.add(False, f"{shown}: the model read a different spelling than asked: asked for "
                           f"{probe.asked!r}, requested {other.request!r} (denied at step "

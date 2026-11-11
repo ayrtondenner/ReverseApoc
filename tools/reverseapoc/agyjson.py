@@ -49,6 +49,13 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   step's tool, the quoted and bare targets agree, and the target is the step's own request (a
   command as written; a path as agy canonicalizes it, round 3: slashes forward and `..`
   folded, case kept).
+- `rejections` (owner ruling 2026-11-10, the relative read probe's evidence): each path step
+  agy 1.5.5 rejected for its relative path before its permission check (round 3: ERROR,
+  TOOL_ERROR, the whole message `declaring permissions: failed to parse path: <request> must
+  be an absolute path: path is not absolute`, the request as written), in the same exact,
+  fail-closed way as a denial. A rejection is no denial: the step stays in the reads, writes
+  and `undenied_steps` (unless its caller names it in `rejected`), so the night audit judges
+  it as run.
 - `failure`: the result's status and error when the status is not SUCCESS, else None.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is STOP when it says authentication is required, LIMIT when it says a quota or rate
@@ -411,16 +418,65 @@ def denials(events: Sequence[dict]) -> list[Denial]:
     return [found for step in _steps(events) if (found := _denial(step)) is not None]
 
 
+# spike 012 round 3 (gemini's relative read): agy 1.5.5's whole tool_info.error.message for a
+# path it rejects as relative before its permission check, the path as the step requested it
+_NOT_ABSOLUTE = ("declaring permissions: failed to parse path: {path} must be an absolute "
+                 "path: path is not absolute")  # fmt: skip
+
+
+class Rejection(NamedTuple):
+    """One path step agy 1.5.5 rejected for its relative path before its permission check:
+    its index, its tool and its own request (the path the model asked for)."""
+
+    step: int | None
+    tool: str
+    request: str
+
+
+def _rejection(step: Mapping) -> Rejection | None:
+    """The step as agy's exact relative-path rejection (see `rejections`), or None."""
+    info = {k: v for k, v in _mapping(step.get("tool_info")).items() if k != _ERROR}
+    if not _known({**step, "tool_info": info}) or step["tool_name"] in _COMMAND_TOOLS:
+        return None
+    error = _mapping(_mapping(step.get("tool_info")).get(_ERROR))
+    request = _path(info)
+    if (step.get("state") != _ERROR_STATE or error.get(_TYPE) != _TOOL_ERROR
+            or error.get(_MESSAGE) != _NOT_ABSOLUTE.format(path=request)):  # fmt: skip
+        return None
+    index = step.get("step_index")
+    index = index if isinstance(index, int) and not isinstance(index, bool) else None
+    return Rejection(index, step["tool_name"], request)
+
+
+def rejections(events: Sequence[dict]) -> list[Rejection]:
+    """Every path step agy 1.5.5 rejected for its relative path before its permission check,
+    in order (owner ruling 2026-11-10, the relative read probe's evidence): a known path tool in
+    its known shape (its error aside), no subagent, ending ERROR with error type TOOL_ERROR and
+    exactly round 3's message naming the step's own request as written. No denial: the audit
+    still judges it as run (fail closed)."""
+    return [found for step in _steps(events) if (found := _rejection(step)) is not None]
+
+
+def denied_writes(events: Sequence[dict]) -> list[str]:
+    """The request (the path the model asked for) of every write step agy's permission check
+    refused (`denials`: a write_file step, its write action, its own target), in order: the
+    night audit's denied writes (owner ruling 2026-11-10, "extend it")."""
+    return [d.request for d in denials(events)
+            if d.tool in _WRITE_TOOLS and d.action == d.tool and d.request is not None]
+
+
 def _undenied(step: Mapping) -> str:
     message = _mapping(_mapping(step.get("tool_info")).get(_ERROR)).get(_MESSAGE)
     why = f": {message.splitlines()[0]}" if isinstance(message, str) and message else ""
     return f"step {step.get('step_index')!r}: {step.get('tool_name')} ({step.get('state')}{why})"
 
 
-def undenied_steps(events: Sequence[dict]) -> list[str]:
+def undenied_steps(events: Sequence[dict], *,
+                   rejected: Sequence[Rejection] = ()) -> list[str]:  # fmt: skip
     """`step <index>: <tool> (<state>[: <error message's first line>])` for every tool step
-    that is not a denial: it ran."""
-    return [_undenied(step) for step in _steps(events) if _denial(step) is None]
+    that is not a denial, nor a rejection the caller counts (`rejected`): it ran."""
+    return [_undenied(step) for step in _steps(events)
+            if _denial(step) is None and _rejection(step) not in rejected]  # fmt: skip
 
 
 def response(events: Sequence[dict]) -> str:

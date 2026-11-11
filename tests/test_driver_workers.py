@@ -1774,6 +1774,73 @@ def test_a_finished_hold_run_resumes_to_nothing(tmp_path):
     assert len(night.launched) == before
 
 
+GEMINI = "gemini-flash"  # an agy arm (07.2-15)
+AGY_DENIED_PATH = "C:\\made-up\\tools\\x.py"  # soft_denied_write's write, agy refused it
+
+
+@dataclass
+class AgyArmNight(ArmNight):
+    """ArmNight with agy arms: each agy session is tests/fakeagy.py through the real argv
+    builder (test_agy.fake_agy_argv), replaying the next of `agy_scenarios`, then
+    gemini_success (a clean wrapper session)."""
+
+    agy_scenarios: list[str] = field(default_factory=list)
+
+    def _agy_argv(self, prompt: str, **values) -> list[str]:
+        from test_agy import fake_agy_argv
+
+        with self.lock:
+            self.prompts.append(prompt)
+            scenario = self.agy_scenarios.pop(0) if self.agy_scenarios else "gemini_success"
+        self.local.current = Sess(write=None)
+        self.local.scenario = scenario
+        return fake_agy_argv(prompt, **values)
+
+    def _session(self, argv, *, env, **values):
+        scenario, self.local.scenario = getattr(self.local, "scenario", None), None
+        env = {**env, "FAKEAGY_SCENARIO": scenario} if scenario else env
+        return super()._session(argv, env=env, **values)
+
+    def deps(self, **over) -> driver.Deps:
+        return super().deps(**{"agy_argv": self._agy_argv, **over})
+
+
+def test_an_agy_soft_denied_write_stops_its_arm_only(tmp_path):
+    """Owner ruling 2026-11-10 ("extend it"): the arm-only stop covers agy arms. An agy
+    session's write that agy's permission check provably refused (agyjson.denials: its exact
+    refusal of the step's own request) counts as a denied write in the same decision as a
+    Claude hook-denied one: with nothing else stray and nothing changed after the reset, the
+    attempt is GAVE_UP guardrail, only that arm stops (it launches nothing more), the Claude
+    arm attempts every pick, the night ENDS, and the console line names the arm, the attempt
+    and the refused path."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=["soft_denied_write"])
+    lines: list[str] = []
+    report = night.run(config={"arms": ((HAIKU, 1), (GEMINI, 1)), "hold": True},
+                       say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(GEMINI)) == 1
+    assert _runs_launched(night, _arm_run(HAIKU)) == 3
+    (stopped,) = [r for r in night.kinds("attempt") if r["run"] == _arm_run(GEMINI)]
+    assert (stopped["outcome"], stopped["abort_reason"]) == ("GAVE_UP", "guardrail")
+    said = [line for line in lines if "stopped" in line and GEMINI in line]
+    assert len(said) == 1 and AGY_DENIED_PATH in said[0], lines
+    assert stopped["function"] in said[0] and "agy's permission check denied" in said[0], said
+    for record in night.records():
+        driver.validate_record(record)
+
+
+@pytest.mark.parametrize("scenario", ["stray_write", "soft_denied_write_beside_ran"])
+def test_an_agy_write_that_ran_stops_every_arm(tmp_path, scenario):
+    """A write an agy session ran (no denial), even beside a write agy refused, stops the
+    whole multi-arm drive at the guardrail as before."""
+    night = AgyArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
+                        agy_scenarios=[scenario])  # fmt: skip
+    report = night.run(config={"arms": ((HAIKU, 1), (GEMINI, 1)), "hold": True})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert "tools/x.py" in report.detail.replace("\\", "/")
+
+
 @pytest.mark.parametrize(
     "spec",
     [Sess("undenied_write", write=None),
