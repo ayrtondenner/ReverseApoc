@@ -20,7 +20,9 @@ anything unknown fails closed (STOP), and only a known transient condition is no
   low" or "Not logged in"; and, last, a `success` error result that no known signal explains
   (no phrase, no 429/5xx status, no LIMIT event), such as "Invalid API key" or an expired OAuth
   token (fix round 2 R1).
-- LIMIT: api_retry `rate_limit`; a `rejected` rate_limit_event without errorCode; a result with
+- LIMIT: api_retry `rate_limit`, unless the CLI's retry recovered: the session has a result
+  and each one is clean or an `error_max_turns`/`error_max_budget_usd` cap with no
+  `api_error_status` (spike012); a `rejected` rate_limit_event without errorCode; a result with
   `api_error_status` 429; error text "hit your ... limit".
 - TRANSIENT: an error result with a 5xx `api_error_status` (529 overloaded included); or no
   result event and no wall-clock timeout (api_retry `overloaded` or `server_error` with no
@@ -36,7 +38,9 @@ error (fail closed, fix round 2 M1). An `is_error: false` result that still carr
 
 Precedence when one stream carries several signals: STOP over LIMIT over TRANSIENT over
 ATTEMPT_DONE. A run with a credit problem must end even if a limit was also hit, and a limit is
-not an attempt even if a result followed it. TRANSIENT competes with ATTEMPT_DONE only through
+not an attempt even if a result followed it; a `rate_limit` retry the CLI recovered from (a
+short 429, as OpenRouter gives, then only clean results) is no limit at all, so that session is
+counted and gated. TRANSIENT competes with ATTEMPT_DONE only through
 a 5xx error result (which beats it: the server, not the agent, ended the session); a session
 with no result is TRANSIENT by definition. An api_retry `overloaded`/`server_error` followed by
 a clean result is ATTEMPT_DONE, since the session recovered. The unexplained-error STOP is
@@ -115,7 +119,8 @@ _TRANSIENT_RETRY_ERRORS = frozenset({"overloaded", "server_error"})
 _KNOWN_RETRY_ERRORS = _STOP_RETRY_ERRORS | _LIMIT_RETRY_ERRORS | _TRANSIENT_RETRY_ERRORS
 _HTTP_SERVER_ERRORS = range(500, 600)  # 5xx, 529 (overloaded) included
 _SUCCESS = "success"
-_ERROR_SUBTYPES = frozenset({"error_max_turns", "error_max_budget_usd", "error_during_execution"})
+_CAP_SUBTYPES = frozenset({"error_max_turns", "error_max_budget_usd"})
+_ERROR_SUBTYPES = _CAP_SUBTYPES | {"error_during_execution"}
 _KNOWN_SUBTYPES = _ERROR_SUBTYPES | {_SUCCESS}
 _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
@@ -292,9 +297,23 @@ def _is_stop(events: Sequence[dict], results: Sequence[dict], texts: Sequence[st
     return any(_STOP_TEXT.search(text) for text in texts)
 
 
-def _is_limit(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
-    if _retry_errors(events) & _LIMIT_RETRY_ERRORS:
+def _ended_on_its_own(result: Mapping) -> bool:
+    """A clean result, or a turn or budget cap with no API error status: the session ran on to
+    its own end. error_during_execution is left out, since it may be the retry giving up."""
+    if not _is_error_result(result):
         return True
+    return result.get("subtype") in _CAP_SUBTYPES and result.get("api_error_status") is None
+
+
+def _recovered(results: Sequence[dict]) -> bool:
+    """Whether the session ended with a result and every result shows it ran on to its own end
+    after the CLI's retries (spike012)."""
+    return bool(results) and all(_ended_on_its_own(result) for result in results)
+
+
+def _is_limit(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
+    if _retry_errors(events) & _LIMIT_RETRY_ERRORS and not _recovered(results):
+        return True  # a rate_limit retry the session recovered from is not a usage limit
     if any(info.get("status") == _REJECTED and not info.get("errorCode")
            for info in _rate_limits(events)):  # fmt: skip
         return True

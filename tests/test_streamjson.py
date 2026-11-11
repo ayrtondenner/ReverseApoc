@@ -103,13 +103,59 @@ def test_classify_precedence_stop_over_limit_over_transient_over_done():
     )
     server_down = _events("overloaded_result")[-1]  # an is_error result with status 529
     assert classify((limit, auth, done), 1, False) is Disposition.STOP
-    assert classify((limit, done), 0, False) is Disposition.LIMIT
     assert classify((limit,), None, True) is Disposition.LIMIT
     assert classify((limit, server_down), 1, False) is Disposition.LIMIT
     assert classify((overloaded,), 1, False) is Disposition.TRANSIENT
     assert classify((overloaded, server_down), 1, False) is Disposition.TRANSIENT
     # A retried overload that recovered: the session went on and produced a clean result.
     assert classify((overloaded, done), 0, False) is Disposition.ATTEMPT_DONE
+
+
+# spike012 (2026-11-11): OpenRouter answers 429 for a few seconds, Claude Code retries and the
+# session goes on. Counted as LIMIT, such a session (some with an exit-0 check) was set aside
+# uncounted and never gated, and its pick was redone.
+
+
+def test_classify_recovered_rate_limit_retry_is_an_attempt():
+    limit, done = _events("rate_limit")[1], _events("success")[-1]
+    assert classify((limit, done), 0, False) is Disposition.ATTEMPT_DONE
+    assert classify((limit, limit, done), 0, False) is Disposition.ATTEMPT_DONE
+
+
+@pytest.mark.parametrize("name", ["max_turns", "max_budget"])
+def test_classify_recovered_rate_limit_retry_then_a_cap_is_an_attempt(name):
+    """The session recovered and then ended on its own cap (GLM-5.3 hit its $5 budget, Muse its
+    40 turns), as it would have without the retry."""
+    limit = _events("rate_limit")[1]
+    assert classify((limit, _events(name)[-1]), 1, False) is Disposition.ATTEMPT_DONE
+
+
+def test_classify_rate_limit_retry_then_an_execution_error_stays_a_limit():
+    """error_during_execution may be the retry giving up, so it does not prove a recovery."""
+    limit = _events("rate_limit")[1]
+    assert classify((limit, _events("during_execution")[-1]), 1, False) is Disposition.LIMIT
+
+
+@pytest.mark.parametrize(
+    "ending",
+    [
+        # the retries ran out: the CLI ended on the 429
+        {"type": "result", "subtype": "success", "is_error": True, "api_error_status": 429},
+        {"type": "result", "subtype": "success", "is_error": True, "result": "x"},
+        {"type": "result", "subtype": "error_max_turns", "is_error": True, "api_error_status": 429},
+    ],
+)
+def test_classify_rate_limit_retry_without_a_clean_result_stays_a_limit(ending):
+    limit = _events("rate_limit")[1]
+    assert classify((limit, ending), 1, False) is Disposition.LIMIT
+    assert classify((limit, ending, _events("success")[-1]), 0, False) is Disposition.LIMIT
+
+
+def test_classify_other_limit_signals_still_win_over_a_clean_result():
+    done = _events("success")[-1]
+    rejected = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}}
+    assert classify((rejected, done), 0, False) is Disposition.LIMIT
+    assert classify((_events("rate_limit")[1], rejected, done), 0, False) is Disposition.LIMIT
 
 
 # Fix round 1 I3 (orchestrator ruling): an unknown error signal stops the run; only a known
