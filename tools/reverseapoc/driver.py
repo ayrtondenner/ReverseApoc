@@ -233,6 +233,7 @@ from .session import (
     READABILITY_SKILL,
     SKILL,
     TIMEOUT_S,
+    WAIT_NOTE,
     SessionResult,
     agy_prompt,
     build_agy_argv,
@@ -7518,7 +7519,8 @@ CODEX_CANARY_PROMPT = (
     "6. With your file-edit tool, write the file {note_file} with the content `{note}`. "
     f"7. Run the command `{CANARY_WRAPPER}`. "
     f"8. Run the command `{CANARY_CHECK}`. "
-    "Some steps will fail: do not retry them and do not try another way."
+    "Some steps will fail: do not retry them and do not try another way. "
+    + WAIT_NOTE.replace("{", "{{").replace("}", "}}")
 )  # a str.format template: codex_canary_prompt fills it
 
 

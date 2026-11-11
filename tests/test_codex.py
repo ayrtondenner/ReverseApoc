@@ -186,9 +186,9 @@ def test_codex_prompt_harness_note():
     assert "no Read, Grep or Glob tool" in note
     assert prompt.index("# Matching one Watcom function") < prompt.index(note)
     assert prompt.index(note) < prompt.index("Session rules:")
-    forms = re.findall(r"`(attempt [^`]+)`", note)
-    assert sorted(forms) == ["attempt asm", "attempt asm <NAME>", "attempt check",
-                             "attempt context"]  # fmt: skip
+    forms = sorted(set(re.findall(r"`(attempt [^`]+)`", note)))  # round 5's WAIT_NOTE repeats one
+    assert forms == ["attempt asm", "attempt asm <NAME>", "attempt check",
+                     "attempt context"]  # fmt: skip
     for form in forms:
         command = f"uv run --frozen reverseapoc {form.replace('<NAME>', 'func_00010020')}"
         assert hooks.bash_allowed(command, kind="matching"), command
@@ -1089,6 +1089,21 @@ def test_codex_prompts_ask_for_the_file_edit_tool():
     for step, after in (("5. ", "6. "), ("6. ", "7. ")):
         text = canary[canary.index(step):canary.index(after)]
         assert text.startswith(f"{step}With your file-edit tool, write the file"), text
+
+
+def test_codex_and_agy_prompts_say_to_wait_for_a_running_wrapper_command():
+    """Round 5 (Luna, Sol and Terra started `attempt check`, which Codex's unified exec handed
+    back while it still ran, then replied DONE; the session's end killed the check, so none was
+    logged; Astra waited and passed): the night prompts of both signed-in harnesses and the
+    Codex canary prompt say a wrapper command, `attempt check` above all, can run for minutes,
+    and that a command still running is waited on until it exits, never left behind."""
+    goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
+    skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
+    canary = driver.codex_canary_prompt(Path("made-up") / "attempt-1", 0xD)
+    for prompt in (session.codex_prompt(goal, skill), session.agy_prompt(goal, skill), canary):
+        assert session.WAIT_NOTE in prompt
+    assert "can run for several minutes" in session.WAIT_NOTE
+    assert "never end your turn while a wrapper command is still running" in session.WAIT_NOTE
 
 
 def test_the_codex_canary_prompt_asks_every_step_to_be_attempted():

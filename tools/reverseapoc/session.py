@@ -199,6 +199,13 @@ def _skill_body(skill_text: str) -> str:
 # Canary round 3: Sol wrote its files with `Set-Content`, a command the audit flags, which stops
 # the whole night; a file-edit tool's writes (Codex's apply_patch, reported as file_change
 # items) are what the audit checks against the session's write allowlist.
+# Spike 012 round 5: Codex's unified exec (and agy's background tasks) hand a long command back
+# while it still runs; Luna, Sol and Terra then replied DONE and the session's end killed their
+# `attempt check`. Said in both signed-in harnesses' prompts and in the Codex canary's.
+WAIT_NOTE = ("A wrapper command, `attempt check` above all, can run for several minutes. If "
+             "your shell tool hands a command back while it is still running, keep waiting on "
+             "it (poll it) until it exits and you have its output before you do anything else; "
+             "never end your turn while a wrapper command is still running.")
 _HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so where the skill "
                  "says to look around with them, read through the wrapper instead: "
                  "`attempt context` prints the context pack, `attempt asm` and "
@@ -206,7 +213,7 @@ _HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so 
                  "and the paths of its evidence. Create and edit files only with your file-edit "
                  "tool, never with a shell command or redirection: the audit checks that "
                  "tool's edits, and a command that writes a file is a command other than the "
-                 "wrapper.")  # fmt: skip
+                 "wrapper. " + WAIT_NOTE)  # fmt: skip
 # agy's settings (driver.agy_settings) also allow read_file inside the attempt dir, nowhere else
 _AGY_READS = (" Your read_file tool may also read files inside this attempt's directory (your "
               "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
