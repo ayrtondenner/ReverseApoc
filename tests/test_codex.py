@@ -115,7 +115,7 @@ def test_build_codex_argv(tmp_path):
     attempt_dir = tmp_path / "attempt-1"
     argv = session.build_codex_argv("the prompt", codex="codex.exe", model=LUNA,
                                     attempt_dir=attempt_dir)  # fmt: skip
-    trust = f"projects.{json.dumps(str(attempt_dir))}.trust_level=\"trusted\""
+    trust = f"projects={{{json.dumps(str(attempt_dir))}={{trust_level=\"trusted\"}}}}"
     assert argv == ["codex.exe", "exec", "--json", "--model", LUNA, "--sandbox",
                     "workspace-write", "--cd", str(attempt_dir), "--skip-git-repo-check",
                     "--ephemeral", "--ignore-user-config", "-c", 'approval_policy="never"', "-c",
@@ -123,6 +123,22 @@ def test_build_codex_argv(tmp_path):
                     'windows.sandbox="unelevated"', "-c", trust, "the prompt"]  # fmt: skip
     for banned in ("--full-auto", "danger-full-access", "--ignore-rules"):
         assert banned not in argv
+
+
+def test_build_codex_argv_trusts_a_path_with_a_dot(tmp_path):
+    """Spike 012 round 5: Codex 0.167 splits a `-c` key on every dot, even inside its quotes,
+    so `projects."<...>\\spike012-gpt-6.1-sol\\...".trust_level` was ignored (two `error`
+    items, and the per-session rules never loaded) for the Sol and Terra arms, whose run dirs
+    hold a dot. The trust goes in as an inline table under the plain key `projects` instead,
+    which a real Codex 0.167 accepted for such a path with no warning (2026-11-11)."""
+    attempt_dir = tmp_path / "spike012-gpt-6.1-sol" / "attempt-1"
+    argv = session.build_codex_argv("the prompt", codex="codex.exe", model=LUNA,
+                                    attempt_dir=attempt_dir)  # fmt: skip
+    [trust] = [value for flag, value in zip(argv, argv[1:], strict=False) if flag == "-c"
+               and value.startswith("projects")]  # fmt: skip
+    key, _, table = trust.partition("=")
+    assert key == "projects"
+    assert table == "{" + json.dumps(str(attempt_dir)) + '={trust_level="trusted"}}'
 
 
 def test_codexjson_usage():

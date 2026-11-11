@@ -3,7 +3,7 @@
 `python tests/fakecodex.py exec --json --model M --sandbox workspace-write --cd DIR
 --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
 -c sandbox_workspace_write.network_access=false -c windows.sandbox="unelevated"
--c projects."DIR".trust_level="trusted" PROMPT`
+-c projects={"DIR"={trust_level="trusted"}} PROMPT`
 takes exactly that argv, in that order (session.build_codex_argv after the executable), and:
 
 1. checks the shape: every flag above in its place, DIR twice the same, a non-empty PROMPT
@@ -60,7 +60,7 @@ def _problem(argv: list[str]) -> str | None:
     for index, token in _FIXED.items():
         if argv[index] != token:
             return f"argument {index} is {argv[index]!r}, expected {token!r}"
-    trust = f"projects.{json.dumps(argv[_DIR])}.trust_level=\"trusted\""
+    trust = f"projects={{{json.dumps(argv[_DIR])}={{trust_level=\"trusted\"}}}}"
     if argv[_TRUST] != trust:
         return f"the trust entry {argv[_TRUST]!r} is not {trust!r}"
     if not argv[3] or not argv[_PROMPT]:

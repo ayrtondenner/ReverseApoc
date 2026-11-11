@@ -219,7 +219,11 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
   -c sandbox_workspace_write.network_access=false -c windows.sandbox="unelevated"
-  -c projects."<attempt dir>".trust_level="trusted" <prompt>`. The Windows sandbox is set in
+  -c projects={"<attempt dir>"={trust_level="trusted"}} <prompt>`. The trust is an inline
+  table because Codex 0.167 splits a `-c` key on every dot, quotes or not: the dotted-key form
+  was ignored, with two `error` items, for the Sol and Terra arms, whose run dirs hold a dot
+  (spike 012 round 5); their sessions' per-session rules never loaded, and the audit stopped
+  the drive on the unknown items. The Windows sandbox is set in
   the argv because `--ignore-user-config` drops the user config that enabled it: with none,
   Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). It is
   unelevated by the owner's ruling (2026-11-10), the mode the owner's own Codex runs: elevated

@@ -156,8 +156,10 @@ def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) 
     approval key (RESEARCH A4) and the trusted project layer under gitignored build/ (A5) are
     assumptions the Codex canary settles. Never an auto-approval flag, the unrestricted sandbox
     mode or the flag that skips the rules files (tests/test_codex.py pins the list). The prompt
-    is the last argument."""
-    trust = f"projects.{json.dumps(str(attempt_dir))}.trust_level=\"trusted\""
+    is the last argument. Spike 012 round 5: the trust is an inline table under the plain key
+    `projects`, since Codex 0.167 splits a `-c` key on every dot, quotes or not, and ignored
+    the dotted-key form for an attempt dir whose run holds a dot (spike012-gpt-6.1-sol)."""
+    trust = f"projects={{{json.dumps(str(attempt_dir))}={{trust_level=\"trusted\"}}}}"
     return [codex, "exec", "--json", "--model", model, "--sandbox", "workspace-write",
             "--cd", str(attempt_dir), "--skip-git-repo-check", "--ephemeral",
             "--ignore-user-config", "-c", 'approval_policy="never"',
