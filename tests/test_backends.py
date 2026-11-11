@@ -459,7 +459,9 @@ def test_session_env_marks_egress_sessions():
 # ---- 07.2-13 (D-12, D-13, D-26): the Codex arms ----
 
 CODEX_ARMS = {"gpt-6-luna": "GPT-6 Luna <noreply@openai.com>",
-              "gpt-6.1-sol": "GPT-6.1 Sol <noreply@openai.com>"}  # fmt: skip
+              "gpt-6.1-sol": "GPT-6.1 Sol <noreply@openai.com>",
+              "gpt-6.1-terra": "GPT-6.1 Terra <noreply@openai.com>",
+              "gpt-6-astra": "GPT-6 Astra <noreply@openai.com>"}  # fmt: skip
 
 
 def test_codex_arms_load():
@@ -472,7 +474,9 @@ def test_codex_arms_load():
 
     arms = _arms()
     prices = {"gpt-6-luna": Price(0.10, 0.50, 0.01, 0.10),
-              "gpt-6.1-sol": Price(2.00, 10.00, 0.10, 2.00)}  # fmt: skip
+              "gpt-6.1-sol": Price(2.00, 10.00, 0.10, 2.00),
+              "gpt-6.1-terra": Price(1.00, 5.00, 0.05, 1.00),
+              "gpt-6-astra": Price(10.00, 50.00, 1.00, 10.00)}  # fmt: skip
     for name, credit in CODEX_ARMS.items():
         arm = arms[name]
         assert (arm.harness, arm.backend, arm.model) == ("codex", "openai", name)
@@ -482,8 +486,8 @@ def test_codex_arms_load():
         assert arm.billing == backends.SUBSCRIPTION
 
 
-LIST_PRICED = ("gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss",
-               "gemini-3.8-flash-openrouter")  # fmt: skip
+LIST_PRICED = ("gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gemini-flash",
+               "gpt-oss", "gemini-3.8-flash-openrouter")  # fmt: skip
 
 
 def _price_comment(text: str, name: str) -> str:
@@ -597,7 +601,7 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
 
 # ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
 
-SUBSCRIBED = (*CLAUDE_ARMS, "gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss")
+SUBSCRIBED = (*CLAUDE_ARMS, *CODEX_ARMS, "gemini-flash", "gpt-oss")
 METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "gpt-oss-20b", "muse-spark-open",
                 "gemini-3.8-flash-openrouter", "qwen-hosted")  # fmt: skip
 

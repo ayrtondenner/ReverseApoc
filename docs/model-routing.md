@@ -211,7 +211,10 @@ Plan 07.2-13 added `gpt-6-luna` and `gpt-6.1-sol`: GPT-6 Luna and GPT-6.1 Sol th
 Codex CLI (0.167.0, installed and signed in by the owner) on the owner's ChatGPT Plus login,
 third and fourth in spike 012's order (D-18). This is the one scoped runtime exception in
 CLAUDE.md: Codex runs only as `reverseapoc drive` arms, launched and audited by the driver.
-The model ids are assumptions to confirm at setup.
+The model ids are assumptions to confirm at setup. On 2026-11-11 the owner added
+`gpt-6.1-terra` (GPT-6.1 Terra) and `gpt-6-astra` (GPT-6 Astra), both in the owner's
+`codex debug models` catalog; Terra answered a one-word `codex exec` that day. They run like
+Luna and Sol, one worker each, priced from OpenRouter's models list for the comparison only.
 
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"

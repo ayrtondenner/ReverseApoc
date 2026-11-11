@@ -99,6 +99,48 @@ output = 10.00
 cache_read = 0.10
 cache_creation = 2.00
 
+# GPT-6.1 Terra and GPT-6 Astra through the same Codex CLI on the owner's ChatGPT Plus sign-in
+# (spike 012, owner 2026-11-11). Both are in the owner's `codex debug models` catalog
+# (codex-cli 0.167.0); Terra answered a one-word `codex exec` on 2026-11-11. The owner asked for
+# "GPT-6 Terra": the catalog lists only gpt-6.1-terra. Their Plus message limits are unmeasured.
+[arms."gpt-6.1-terra"]
+harness = "codex"
+backend = "openai"
+model = "gpt-6.1-terra"
+sends_disassembly = true
+accepted_init = []
+coauthor = "GPT-6.1 Terra <noreply@openai.com>"
+max_workers = 1
+
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: OpenRouter's models list, which agrees with the
+# price trackers for Luna and Sol, read 2026-11-10. cache_creation is priced as input, this
+# file's rule for an unrecorded cache class (it may overstate, never understate).
+[arms."gpt-6.1-terra".prices]
+input = 1.00
+output = 5.00
+cache_read = 0.05
+cache_creation = 1.00
+
+[arms."gpt-6-astra"]
+harness = "codex"
+backend = "openai"
+model = "gpt-6-astra"
+sends_disassembly = true
+accepted_init = []
+coauthor = "GPT-6 Astra <noreply@openai.com>"
+max_workers = 1
+
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: OpenRouter's models list, which agrees with the
+# price trackers for Luna and Sol, read 2026-11-10. cache_creation is priced as input, this
+# file's rule for an unrecorded cache class (it may overstate, never understate).
+[arms."gpt-6-astra".prices]
+input = 10.00
+output = 50.00
+cache_read = 1.00
+cache_creation = 10.00
+
 # Gemini 3.8 Flash and GPT-OSS 120B through the Antigravity CLI (agy) on the owner's Google AI
 # Plus sign-in (07.2-15; D-21, D-24, D-25, D-25a: Gemini is fifth in the run order). No base_url
 # and no key_env: agy signs in with its own login, and the driver strips every Google key and
