@@ -258,6 +258,24 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   and removes it after the session (a removal that fails is a note, and the night stops after
   the audit, as for the containers); it lies outside the checkout, so the tree and attempt-dir
   audits never see it. Nothing Codex-specific is committed: no `.codex/`, no AGENTS.md.
+- **The wrapper broker.** Codex's sandbox refused the wrapper's ledger append (the ledger lies
+  outside the workspace) and Docker's pipe (`permission denied ... dockerDesktopLinuxEngine`),
+  so `attempt check` could never compile there (spike 012 canary, 2026-11-11). By the owner's
+  ruling the sandbox stays as it is and the driver runs the wrapper instead: a Codex session's
+  env names its broker dir, `REVERSEAPOC_WRAPPER_BROKER=<attempt dir>/broker` (inside the
+  workspace; TEMP is shared across sessions), and there `reverseapoc attempt <form>` only
+  writes one request, `<id>.request.json` holding `{"args": [...]}`, and waits for
+  `<id>.response.json` (`{"exit", "stdout", "stderr"}`), printing it and exiting with its exit
+  code; no response within 660 s (the wrapper's 600 s bound plus a minute) is exit 2. While
+  the session runs the driver serves that dir, one request at a time: it checks the request
+  against the exact forms the hook allows for the session's kind (anything else is answered
+  exit 2 and never runs), runs the real `uv run --frozen reverseapoc attempt <form>` outside
+  the sandbox with the session's env minus the broker variable and cwd the attempt dir, so the
+  ledger and Docker work as for a Claude session, kills it past 600 s, and writes the response
+  atomically. When the session ends the broker stops: a wrapper still running is killed (as
+  the session's own tree would be) and a request left is answered exit 2 without running. A
+  broker failure is a note, and the night stops after the audit. No other harness gets the
+  variable; the Claude and agy sessions run the wrapper themselves.
 - **The audit.** After the session, besides the checks every session gets (git status, the
   view, pinned and fingerprinted files): every command must be an exact wrapper form and may
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
@@ -265,8 +283,11 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   `reasoning`, `todo_list`, `command_execution`, `file_change`; an MCP tool call or a web
   search is a stray); and the attempt dir may hold only the session files (notes.md,
   plan.json, check-note.json, giveup.json, proposals.jsonl), the transcript, the driver's own
-  files as they were at launch (the rules file included) and wrapper output whose hash is its
-  ledger entry's. Anything else, a session-written `.codex/config.toml` among it, is a stray:
+  files as they were at launch (the rules file included), the broker's responses with the
+  bytes it wrote, and wrapper output whose hash is its ledger entry's. A `file_change` into the
+  broker dir is a stray write like any other (a forged request is still only a wrapper form,
+  but the write is not the session's to make). Anything else, a session-written
+  `.codex/config.toml` or a request nobody answered among it, is a stray:
   the files are quarantined, the attempt is recorded as a guardrail give-up and the night
   stops. Each launch gets a fresh attempt dir, so nothing a session writes there reaches the
   next one. The rules file is judged against the driver's own bytes, not the launch
@@ -288,7 +309,8 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   (under build/, never under TEMP, which workspace-write allows),
   `Invoke-WebRequest -Uri https://example.com/ -UseBasicParsing`, and the wrapper's context
   form followed by `;` and a write outside the workspace; then to write plan.json and
-  check-note.json with its file-edit tool and run the wrapper check. The prompt says to
+  check-note.json with its file-edit tool and run the wrapper context and the wrapper check,
+  both through the broker as in a night. The prompt says to
   attempt every numbered step exactly as written, even one it expects to be refused, since a
   refused step is the expected result (round 3: Luna ran no step at all). A probe counts only
   if it ran: its item ended
@@ -302,7 +324,9 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   fetch ran, failed and printed a network error (`WebCmdletWebResponseException`,
   `WebException`, `HttpRequestException` or `SocketException`); the compound command ran and
   left no file. A FAIL quotes the exit code and an output excerpt. The canary also needs the
-  wrapper check to have logged exit 0 and consumed its note, the audit to have flagged the
+  wrapper context to have written context.md with the ledger naming its bytes, the wrapper
+  check to have logged exit 0 and consumed its note, the broker to have served with no
+  problem, the audit to have flagged the
   three probe commands, the night's command audit to pass every other command (the wrapper
   calls aside, which have their own check: round 3's Sol wrote plan.json with `Set-Content`,
   a stray that would stop a night, so the canary fails naming it), the session's uv cache to

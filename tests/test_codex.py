@@ -10,6 +10,7 @@ reach an assertion or a log.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -19,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import backends, codexjson, driver, session
+from reverseapoc import backends, broker, codexjson, driver, session
 from reverseapoc.session import run_session
 from reverseapoc.streamjson import Usage
 from reverseapoc.targets import REPO_ROOT
@@ -46,6 +47,20 @@ def fake_codex_argv(prompt: str, *, model: str, attempt_dir: Path) -> list[str]:
     executable's place, so the fake checks the very argv the driver built."""
     real = session.build_codex_argv(prompt, codex="codex", model=model, attempt_dir=attempt_dir)
     return [sys.executable, str(FAKECODEX), *real[1:]]
+
+
+FAKE_WRAPPER = (sys.executable, str(HERE / "fakewrapper.py"))  # the broker's wrapper here
+
+
+def fake_wrapper() -> tuple[str, ...]:
+    """Deps.broker_wrapper and Seams.broker_wrapper for the tests: tests/fakewrapper.py in the
+    real wrapper's place (no uv, no Docker)."""
+    return FAKE_WRAPPER
+
+
+def canary_seams(env: dict) -> dict:
+    """A Codex canary's seams: the env, fakecodex and the fake wrapper its broker runs."""
+    return {"base_env": env, "codex_argv": fake_codex_argv, "broker_wrapper": fake_wrapper}
 
 
 def write_pass(repo: Path, arm: str = LUNA, *, version: str = CODEX_VERSION,
@@ -80,7 +95,7 @@ def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
     def drive(config, deps, *, lock=None):
         moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
                         attempts_per_function=1)  # fmt: skip
-        return real(moved, night.deps(codex_argv=fake_codex_argv))
+        return real(moved, night.deps(codex_argv=fake_codex_argv, broker_wrapper=fake_wrapper))
 
     monkeypatch.setattr(driver, "drive", drive)
     env = _keyed(rig.env, FAKECODEX_SCENARIO=scenario, **(extra_env or {}))
@@ -522,33 +537,30 @@ def test_audit_quarantines_a_session_written_codex_config(tmp_path, capsys, monk
 OWNER = "made-up-owner"  # the owner's USERNAME in these tests; never the real one
 
 
-def _codex_canary_rig(tmp_path: Path, *, check: dict | None = None, outside: bool = False,
-                      compound: bool = False) -> Rig:  # fmt: skip
-    """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
-    a Codex session: fakecodex through the real run_session, then what the real wrapper would
-    have left (its check line, the consumed note and their ledger entries) and, when asked, a
-    probe's escape outside the workspace."""
-    import hashlib
+CANARY_CALLS = (("context",), ("check",))  # the wrapper calls the canary prompt asks for
 
+
+def _codex_canary_rig(tmp_path: Path, *, check: dict | None = None, outside: bool = False,
+                      compound: bool = False,
+                      calls: tuple[tuple[str, ...], ...] = CANARY_CALLS) -> Rig:  # fmt: skip
+    """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
+    a Codex session: fakecodex through the real run_session, whose wrapper `calls` (the
+    client, in the attempt dir) go through the driver's broker to tests/fakewrapper.py, which
+    leaves what the real wrapper would (context.md; the check line `check` and the consumed
+    note; their ledger entries); and, when asked, a probe's escape outside the workspace."""
     from test_drive import CONSUMED_NOTE, PASSING_CHECK, Launch, _canary_rig
 
     rig = _canary_rig(tmp_path, "canary_pass")
     codex_version_reply(rig)
-    line = PASSING_CHECK if check is None else check
+    rig.env.update({"FAKECODEX_CALLS": json.dumps([list(c) for c in calls]),
+                    "FAKEWRAPPER_CHECK": json.dumps(PASSING_CHECK if check is None else check),
+                    "FAKEWRAPPER_NOTE": json.dumps(CONSUMED_NOTE)})  # fmt: skip
 
     def session(argv, *, cwd, env, transcript, timeout_s, popen=subprocess.Popen):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
                              popen=popen)  # fmt: skip
         attempt_dir = Path(env[driver.attempt.DIR_ENV])
-        wrote = {"checks.jsonl": json.dumps(line) + "\n",
-                 "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
-        with Path(env[driver.attempt.WRAPPER_LEDGER_ENV]).open("a", encoding="utf-8") as fh:
-            for rel, text in wrote.items():
-                (attempt_dir / rel).parent.mkdir(parents=True, exist_ok=True)
-                (attempt_dir / rel).write_text(text, encoding="utf-8", newline="\n")
-                digest = hashlib.sha256((attempt_dir / rel).read_bytes()).hexdigest()
-                fh.write(json.dumps({"path": rel, "sha256": digest}) + "\n")
         for wanted, name in ((outside, driver.CODEX_CANARY_OUTSIDE),
                              (compound, driver.CODEX_CANARY_COMPOUND)):  # fmt: skip
             if wanted:
@@ -563,7 +575,7 @@ def _codex_canary(rig: Rig, capsys, scenario: str = "canary_codex_pass") -> tupl
     env = _keyed(rig.env, FAKECODEX_SCENARIO=scenario, USERNAME=OWNER)
     code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=LUNA, canary_model=LUNA,
                              allow_egress=(LUNA,),
-                             seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+                             seams=canary_seams(env))  # fmt: skip
     return code, json.loads(out)
 
 
@@ -581,11 +593,12 @@ def test_codex_canary_pass(tmp_path, capsys, scenario, identity):
     runs as the owner's own user and whoami cannot show its restricted token; an elevated
     sandbox's own account passes the same way); an outside write that ran and was denied
     (UnauthorizedAccess) and left no file; a fetch that ran and failed with a network error; a
-    compound command that ran and whose second half did nothing; and a wrapper check that
-    logged exit 0 with its consumed note and that the audit passed: CANARY PASS, and the pass
-    file names the arm, the harness, the installed CLI version (from `codex --version`, never
-    `codex exec`), the date and PASS. The same with every command wrapped in the Windows
-    shell, as the real CLI reports it."""
+    compound command that ran and whose second half did nothing; a wrapper context, through
+    the driver's broker, that wrote context.md with the ledger naming it; and a wrapper check,
+    through the broker, that logged exit 0 with its consumed note and that the audit passed:
+    CANARY PASS, and the pass file names the arm, the harness, the installed CLI version (from
+    `codex --version`, never `codex exec`), the date and PASS. The same with every command
+    wrapped in the Windows shell, as the real CLI reports it."""
     rig = _codex_canary_rig(tmp_path)
     code, doc = _codex_canary(rig, capsys, scenario)
     failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
@@ -594,6 +607,8 @@ def test_codex_canary_pass(tmp_path, capsys, scenario, identity):
     for needle in ("whoami /all", identity, driver.CODEX_CANARY_OUTSIDE, "UnauthorizedAccess",
                    "example.com", "network error",
                    driver.CODEX_CANARY_COMPOUND, "attempt check", "0001.note.json", "ledger",
+                   "attempt context", "context.md and the wrapper's ledger names it",
+                   "the wrapper broker answered 2 requests",
                    CODEX_VERSION, "the audit passed every attempt wrapper call"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "exec"
@@ -609,7 +624,8 @@ def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
     write it was free to make its own way): `whoami /all`, a Set-Content one directory above
     the workspace (under build/, never TEMP, which workspace-write allows), an
     Invoke-WebRequest of the URL, the compound command riding the wrapper prefix, the plan and
-    the note, then the wrapper check."""
+    the note, the wrapper context on its own (the broker's proof: context.md, ledgered), then
+    the wrapper check."""
     attempt_dir = tmp_path / "attempt-1"
     prompt = driver.codex_canary_prompt(attempt_dir, 0xD)
     outside = attempt_dir.parent / driver.CODEX_CANARY_OUTSIDE
@@ -617,9 +633,10 @@ def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
              f"Run the command `Set-Content -Path '{outside}' -Value canary`",
              f"Run the command `Invoke-WebRequest -Uri {driver.CODEX_CANARY_URL} -UseBasicParsing`",
              f"{WRAPPER} context; ", "plan.json", "check-note.json",
-             f"{WRAPPER} check"]  # fmt: skip
+             f"7. Run the command `{WRAPPER} context`.", f"8. Run the command `{WRAPPER} check`."]
     places = [prompt.index(needle) for needle in order]
     assert places == sorted(places), places
+    assert "Do exactly these eight steps" in prompt
 
 
 @pytest.mark.parametrize(("scenario", "rig_args", "needle"), [
@@ -727,7 +744,7 @@ def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
     env = _keyed(text.env, FAKECODEX_SCENARIO="canary_codex_rejected", USERNAME=OWNER)
     code, out, err = text.drive(capsys, canary=True, night_model=LUNA, canary_model=LUNA,
                                 allow_egress=(LUNA,),
-                                seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+                                seams=canary_seams(env))  # fmt: skip
     lines = out.splitlines()
     assert (code, lines[-1]) == (1, "CANARY FAIL")
     notes = [line for line in lines if line.startswith("NOTE: ")]
@@ -1045,7 +1062,7 @@ def test_the_codex_canary_makes_and_removes_its_uv_cache(tmp_path, capsys):
     env = _keyed(rig.env, FAKECODEX_SCENARIO="canary_codex_pass", USERNAME=OWNER, TEMP=str(temp))
     code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=LUNA, canary_model=LUNA,
                              allow_egress=(LUNA,),
-                             seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+                             seams=canary_seams(env))  # fmt: skip
     doc = json.loads(out)
     failed = [c["check"] for c in doc["checks"] if not c["ok"]]
     assert (code, doc["canary"]) == (0, "PASS"), failed
@@ -1102,3 +1119,116 @@ def test_the_codex_canary_pass_names_its_other_commands_check(tmp_path, capsys):
     """The PASS side: no command outside the probes and the wrapper calls is a stray."""
     _, doc = _codex_canary(_codex_canary_rig(tmp_path), capsys)
     assert any(c["ok"] and "every other command" in c["check"] for c in doc["checks"]), doc
+
+
+# ---- the wrapper broker (owner ruling 2026-11-11): Codex's sandbox refused the wrapper's ----
+# ---- ledger append and Docker, so the driver runs the real wrapper outside it            ----
+
+MISMATCH_CHECK = {"n": 1, "exit": 1, "sweep": False, "best_percent": 90.0, "reloc_ok": False,
+                  "bytes_ok": False, "splice_ok": True, "sweep_hit": None,
+                  "source": "checks/0001.c", "note": "checks/0001.note.json"}  # fmt: skip
+BROKER_ENV = broker.BROKER_ENV
+LEDGER_ENV = driver.attempt.WRAPPER_LEDGER_ENV
+
+
+@pytest.mark.parametrize("arm", [LUNA, SOL, "gemini-flash", None])
+def test_only_a_codex_session_names_its_broker_dir(tmp_path, arm):
+    """A Codex session's env names its broker dir, <attempt dir>/broker (inside the workspace
+    the sandbox may write; never the shared TEMP); an agy or Claude session gets none, and no
+    session inherits one."""
+    arms = backends.load_arms()
+    claim = driver._Claim(_pick(), RUN, tmp_path / "repo", 1, arm=arms[arm] if arm else None)
+    env = claim.env({"PATH": "made-up-path", BROKER_ENV: "made-up-inherited"}, arms)
+    if arm in (LUNA, SOL):
+        assert env[BROKER_ENV] == str(claim.attempt_dir / broker.BROKER_DIR)
+    else:
+        assert BROKER_ENV not in env
+
+
+def test_a_codex_night_runs_the_wrapper_through_the_broker(tmp_path, capsys, monkeypatch):
+    """The session's wrapper calls (the real client, in the attempt dir) queue requests that
+    the driver serves: the wrapper runs outside the sandbox with the session's env minus the
+    broker variable, in the attempt dir, so its ledger is appended; the session gets back its
+    stdout and exit code; the audit accepts the broker's responses and the ledgered wrapper
+    output, and the night records the attempt without a stop."""
+    record = tmp_path / "fakecodex-record.json"
+    ran = tmp_path / "wrapper.jsonl"
+    calls = [["context"], ["check"]]
+    rig, night, env = codex_night(tmp_path, monkeypatch, extra_env={
+        "FAKECODEX_RECORD": str(record), "FAKECODEX_CALLS": json.dumps(calls),
+        "FAKEWRAPPER_RECORD": str(ran), "FAKEWRAPPER_CHECK": json.dumps(MISMATCH_CHECK)})
+    code, _, err = _run_codex(capsys, rig, env)
+    assert code == 0, err
+    attempt_dir = night.attempt_dir()
+    launched = night.launched[0].env
+    assert launched[BROKER_ENV] == str(attempt_dir / broker.BROKER_DIR)
+    done = json.loads(record.read_text(encoding="utf-8"))["calls"]
+    assert [(c["args"], c["exit"], c["stdout"]) for c in done] == [
+        (["context"], 0, "fake wrapper: context\n"), (["check"], 1, "fake wrapper: check\n")]
+    wrapper = [json.loads(line) for line in ran.read_text(encoding="utf-8").splitlines()]
+    assert [r["args"] for r in wrapper] == calls
+    for r in wrapper:
+        assert Path(r["cwd"]).resolve() == attempt_dir.resolve()
+        assert BROKER_ENV not in r["env"] and LEDGER_ENV in r["env"]
+    ledger = driver.read_wrapper_ledger(Path(launched[LEDGER_ENV]))
+    assert sorted(ledger) == ["checks.jsonl", "checks/0001.note.json", "context.md"]
+    responses = sorted((attempt_dir / broker.BROKER_DIR).iterdir())
+    assert len(responses) == 2 and all(p.name.endswith(broker.RESPONSE_SUFFIX) for p in responses)
+    assert not [r for r in night.kinds("run") if r["event"] == "STOPPED"]
+    assert len(night.kinds("attempt")) == 1
+
+
+def test_a_forged_request_is_still_a_stray_write(tmp_path, capsys, monkeypatch):
+    """A request the model wrote with its edit tool is only ever one of the wrapper forms (the
+    broker answers it like any other), but the write itself is a stray: the night stops on
+    the file_change into the broker dir, and the broker's own response is no stray."""
+    forged = f"{ATTEMPT}/{broker.BROKER_DIR}/00000000000000d1{broker.REQUEST_SUFFIX}"
+    spec = Sess(write=None, files=((forged, json.dumps({"args": ["context"]})),))
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="broker_write", spec=spec)
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL, stopped
+    detail = stopped["detail"]
+    assert f"broker/00000000000000d1{broker.REQUEST_SUFFIX}: a write outside" in detail, detail
+    assert broker.RESPONSE_SUFFIX not in detail, detail
+
+
+def test_the_audit_takes_only_the_brokers_own_responses(tmp_path):
+    """The responses the broker wrote, with the bytes it wrote, are the driver's files; a
+    changed response, a request nobody answered and a response the broker never wrote are
+    strays; the wrapper's output still needs its ledger entry."""
+    root = tmp_path / "attempt-1"
+    launch = _attempt_tree(root)
+    (root / broker.BROKER_DIR).mkdir()
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_bytes(b"")
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("REVERSEAPOC_")}
+    env.update({driver.attempt.DIR_ENV: str(root), LEDGER_ENV: str(ledger),
+                BROKER_ENV: str(root / broker.BROKER_DIR)})  # fmt: skip
+    with broker.Broker(root / broker.BROKER_DIR, wrapper=FAKE_WRAPPER, env=env, cwd=root,
+                       kind=driver.MATCHING_KIND) as served:  # fmt: skip
+        assert broker.request(["context"], env).exit == 0
+    own = {**launch, **driver.broker_files(served)}
+    wrote = driver.read_wrapper_ledger(ledger)
+    assert driver.codex_inventory_strays(driver.attempt_inventory(root), launch=own,
+                                         ledger=wrote) == []  # fmt: skip
+    [name] = served.files
+    (root / broker.BROKER_DIR / name).write_text("{}", encoding="utf-8")
+    left = {f"00000000000000e1{broker.REQUEST_SUFFIX}", f"00000000000000e2{broker.RESPONSE_SUFFIX}"}
+    for other in left:
+        (root / broker.BROKER_DIR / other).write_text("{}", encoding="utf-8")
+    strays = dict(driver.codex_inventory_strays(driver.attempt_inventory(root), launch=own,
+                                                ledger=wrote))  # fmt: skip
+    assert set(strays) == {f"broker/{n}" for n in (name, *left)}, strays
+    assert driver.codex_inventory_strays(driver.attempt_inventory(root), launch=own, ledger={})
+
+
+def test_the_codex_canary_fails_without_the_brokers_context(tmp_path, capsys):
+    """The canary proves the broker: with no `attempt context` served, no context.md the
+    ledger names, so the canary FAILs on that line alone."""
+    rig = _codex_canary_rig(tmp_path, calls=(("check",),))
+    code, doc = _codex_canary(rig, capsys)
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert (code, doc["canary"], len(failed)) == (1, "FAIL", 1), failed
+    assert "attempt context" in failed[0] and "context.md" in failed[0], failed

@@ -147,7 +147,6 @@ import json
 import os
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import tarfile
@@ -156,7 +155,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -166,6 +165,7 @@ from . import (
     agyjson,
     attempt,
     backends,
+    broker,
     callgraph,
     codexjson,
     contextpack,
@@ -177,6 +177,7 @@ from . import (
 from .callgraph import CallGraph
 from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
+from .fileio import is_link as _is_link
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -489,11 +490,20 @@ class Deps:
     # settings, timeout_s): session.build_agy_argv with the `agy` on PATH.
     agy_argv: Callable[..., Sequence[str]] = (
         lambda prompt, **values: build_agy_argv(prompt, agy=_which(AGY_EXE), **values))
+    # Owner ruling 2026-11-11: the argv prefix of the real wrapper a Codex session's broker
+    # runs outside the sandbox (real_wrapper).
+    broker_wrapper: Callable[[], Sequence[str]] = lambda: real_wrapper()
 
 
 def _which(name: str) -> str:
     """The executable `name` resolves to on PATH, as default_seams resolves claude."""
     return shutil.which(name) or name
+
+
+def real_wrapper() -> tuple[str, ...]:
+    """The attempt wrapper as a session runs it, hooks.ATTEMPT_PREFIX, with its `uv` resolved
+    on PATH: what a Codex session's broker runs for each request (owner ruling 2026-11-11)."""
+    return (_which(hooks.ATTEMPT_PREFIX[0]), *hooks.ATTEMPT_PREFIX[1:])
 
 
 @dataclass(frozen=True)
@@ -1207,18 +1217,6 @@ def _walk(
         yield here, filenames
 
 
-def _is_link(path: Path) -> bool:
-    """A symlink, a junction or any other reparse point (never followed)."""
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return False
-    reparse = getattr(st, "st_file_attributes", 0) & getattr(
-        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
-    )
-    return stat.S_ISLNK(st.st_mode) or bool(reparse) or os.path.isjunction(path)
-
-
 def extract_head(git: Callable[..., subprocess.CompletedProcess], dest: Path) -> str:
     """D-24 (07-13; shared with the readability queue, 07-38 fix round 1): HEAD's tracked
     src/, include/ and config/ (those HEAD has) into the existing directory `dest` through
@@ -1324,10 +1322,12 @@ def transcript_paths(events: Sequence[dict], repo: Path) -> list[list[str] | Non
 # denies by default, so the driver's audit carries what the hooks give a Claude session: every
 # command must be an exact wrapper form and name neither orig/ nor third_party/ (D-10), every
 # file_change must pass the session's write allowlist, and the attempt dir may hold afterwards
-# only the session files, the driver's own files as they were at launch and wrapper output
-# whose sha256 is the wrapper's ledger's last entry for it. This is detection after the fact,
-# not prevention: a read of orig/ is caught, quarantined and stops the night, but what the
-# session sent before it ended has left (docs/model-routing.md "Codex arms").
+# only the session files, the driver's own files as they were at launch, the responses its
+# wrapper broker wrote (owner ruling 2026-11-11: the wrapper runs outside Codex's sandbox,
+# broker.py) and wrapper output whose sha256 is the wrapper's ledger's last entry for it.
+# This is detection after the fact, not prevention: a read of orig/ is caught, quarantined and
+# stops the night, but what the session sent before it ended has left (docs/model-routing.md
+# "Codex arms").
 
 CODEX_RULES = ".codex/rules/attempt.rules"  # under <attempt dir>, in gitignored build/
 CODEX_RULES_TEXT = (f"prefix_rule(pattern=[{', '.join(json.dumps(p) for p in hooks.ATTEMPT_PREFIX)}"
@@ -1402,6 +1402,34 @@ def drop_uv_cache(path: Path) -> str:
     except OSError as exc:
         return f"uv cache {path} not removed: {type(exc).__name__}: {exc}"
     return ""
+
+
+def codex_broker(claim: _Claim, env: Mapping[str, str],
+                 wrapper: Callable[[], Sequence[str]]) -> broker.Broker | None:  # fmt: skip
+    """Owner ruling 2026-11-11: a Codex session's wrapper broker, not yet serving (None for any
+    other harness): its broker dir, the real wrapper (`wrapper()`, Deps.broker_wrapper), the
+    session's env `env` (the broker drops its own variable), the attempt dir as the wrapper's
+    cwd and the session's kind, whose forms alone it runs."""
+    if not claim.codex:
+        return None
+    return broker.Broker(claim.broker_dir, wrapper=wrapper(), env=env, cwd=claim.attempt_dir,
+                         kind=claim.session)  # fmt: skip
+
+
+def broker_files(served: broker.Broker | None) -> dict[str, str]:
+    """The responses a broker wrote, attempt-dir-relative, with the sha256 of the bytes it
+    wrote: the driver's own files, which the attempt-dir audit takes as it takes the launch
+    inventory (anything else in the broker dir is a stray)."""
+    if served is None:
+        return {}
+    return {f"{broker.BROKER_DIR}/{name}": digest for name, digest in served.files.items()}
+
+
+def broker_note(served: broker.Broker | None) -> str:
+    """What went wrong in a broker (its problems), else ""."""
+    if served is None or not served.problems:
+        return ""
+    return f"wrapper broker: {'; '.join(served.problems)}"
 
 
 AGY_DIR = "agy"  # 07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json
@@ -2297,6 +2325,13 @@ class _Claim:
         return self._per_session(LEDGER_DIR, ".jsonl")
 
     @property
+    def broker_dir(self) -> Path:
+        """Owner ruling 2026-11-11: <attempt dir>/broker, a Codex session's wrapper broker dir,
+        inside its workspace (the sandbox writes its requests there; TEMP is shared across
+        sessions)."""
+        return self.attempt_dir / broker.BROKER_DIR
+
+    @property
     def agy_settings(self) -> Path:
         """07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json, the
         agy session's permission settings, outside its workspace (the attempt dir)."""
@@ -2322,15 +2357,19 @@ class _Claim:
         CR-01: its commands run in its writable attempt dir, so uv is pinned to the checkout
         (UV_PROJECT) and finds no config there (UV_NO_CONFIG): a pyproject.toml, uv.lock or
         uv.toml the session planted never becomes what `uv run --frozen reverseapoc` runs.
-        Canary round 3: a Codex session's uv uses its own cache (UV_CACHE_DIR, uv_cache)."""
+        Canary round 3: a Codex session's uv uses its own cache (UV_CACHE_DIR, uv_cache). Owner
+        ruling 2026-11-11: a Codex session also names its broker dir (broker.BROKER_ENV), so its
+        wrapper queues each request for the driver; no other session gets or inherits one."""
         own = backends.session_env(self.arm_in(arms), base, arms)
         own.pop(attempt.WRAPPER_LEDGER_ENV, None)
+        own.pop(broker.BROKER_ENV, None)
         if self.signed_in:
             own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
             own[UV_PROJECT_ENV] = str(self.repo)
             own[UV_NO_CONFIG_ENV] = "1"
         if self.codex:
             own[UV_CACHE_ENV] = str(self.uv_cache(base))
+            own[broker.BROKER_ENV] = str(self.broker_dir)
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
@@ -3785,20 +3824,27 @@ class _Night:
             fresh_uv_cache(claim.uv_cache(base))
         start = self.deps.clock()
         result = None
+        served: broker.Broker | None = None
         try:
             argv = self._argv(claim, prompt, skill)
-            # 07.2-15 (D-21): agy's workspace is its cwd, so an agy session runs in its attempt
-            # dir; every other session runs in the checkout (F11)
-            result = self.deps.session(argv, cwd=claim.attempt_dir if claim.agy else self.repo,
-                                       env=claim.env(base, self.arms),
-                                       transcript=claim.attempt_dir / TRANSCRIPT,
-                                       timeout_s=self.config.wall_clock_s,
-                                       on_start=self._on_start, on_end=self._on_end)  # fmt: skip
+            env = claim.env(base, self.arms)
+            # owner ruling 2026-11-11: a Codex session's wrapper calls run through the driver's
+            # broker, served while the session runs and stopped when it ends
+            served = codex_broker(claim, env, self.deps.broker_wrapper)
+            with served or nullcontext():
+                # 07.2-15 (D-21): agy's workspace is its cwd, so an agy session runs in its
+                # attempt dir; every other session runs in the checkout (F11)
+                result = self.deps.session(argv, cwd=claim.attempt_dir if claim.agy else self.repo,
+                                           env=env, transcript=claim.attempt_dir / TRANSCRIPT,
+                                           timeout_s=self.config.wall_clock_s,
+                                           on_start=self._on_start,
+                                           on_end=self._on_end)  # fmt: skip
         except BaseException as exc:
             # Third pass: contain what the session left before the stop. Minor 8: an interrupt
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
-            note = self._clean_up(claim, base)
+            note = self._clean_up(claim, base, served)
+            launch_files = {**launch_files, **broker_files(served)}
             with self.gate_lock:
                 session = self._measure(claim, None, pack, 0.0, before, scaffolded,
                                         unit_before, view_head, view_hashes,
@@ -3813,7 +3859,8 @@ class _Night:
                 raise
             why = f"the session raised {type(exc).__name__}: {exc}{contained}"
             raise _Stop(ERROR, why) from exc
-        note = self._clean_up(claim, base)
+        note = self._clean_up(claim, base, served)
+        launch_files = {**launch_files, **broker_files(served)}  # the broker's responses
         seconds = self.deps.clock() - start
         # 07-21: the audit runs under the gate lock, so it never meets another worker's landing
         # half done (its unit in src/, its gate writing status.csv): git can see only HEAD and
@@ -3873,12 +3920,15 @@ class _Night:
         return self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
                               max_turns=self.config.max_turns, **skill)  # fmt: skip
 
-    def _clean_up(self, claim: _Claim, base: Mapping[str, str]) -> str:
+    def _clean_up(self, claim: _Claim, base: Mapping[str, str],
+                  served: broker.Broker | None = None) -> str:  # fmt: skip
         """After a session: its containers (_remove_containers) and, canary round 3, a Codex
-        session's uv cache (drop_uv_cache) are removed; what failed is the note."""
+        session's uv cache (drop_uv_cache) are removed; what failed is the note, and so is
+        what went wrong in the session's wrapper broker (`served`, owner ruling 2026-11-11)."""
         notes = [self._remove_containers(claim)]
         if claim.codex:
             notes.append(drop_uv_cache(claim.uv_cache(base)))
+        notes.append(broker_note(served))
         return "; ".join(note for note in notes if note)
 
     def _remove_containers(self, claim: _Claim) -> str:
@@ -3941,7 +3991,8 @@ class _Night:
     def _guard_launch(self, claim: _Claim) -> dict[str, str]:
         """07.2-13 (D-13, D-26): before a Codex session, in its fresh attempt dir, the rules file
         that allows only the wrapper, and an empty wrapper ledger outside the workspace (a
-        relaunch's earlier entries never vouch for this session's files). Returns the attempt
+        relaunch's earlier entries never vouch for this session's files), and (owner ruling
+        2026-11-11) the empty broker dir its wrapper queues requests in. Returns the attempt
         dir's inventory at launch, which the audit compares against. 07.2-15 (D-24): an agy
         session gets its settings file under build/driver/<run>/agy/ instead of the rules file,
         outside its workspace, and the same empty ledger."""
@@ -3952,6 +4003,7 @@ class _Night:
             problem = codex_rules_problem(claim.attempt_dir)  # 07.2 review WR-05
             if problem is not None:
                 raise DriverError(f"{claim.target}: no Codex session launches: {problem}")
+            claim.broker_dir.mkdir()  # owner ruling 2026-11-11: empty, the driver's
         claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(claim.wrapper_ledger, b"")
         return attempt_inventory(claim.attempt_dir)
@@ -6254,6 +6306,8 @@ class Seams:
     # arm's session (Deps.agy_argv).
     agy: str = AGY_EXE
     agy_argv: Callable[..., Sequence[str]] = Deps.agy_argv
+    # Owner ruling 2026-11-11: the real wrapper a Codex session's broker runs (Deps's).
+    broker_wrapper: Callable[[], Sequence[str]] = Deps.broker_wrapper
 
 
 def stamp(now: datetime) -> str:
@@ -6623,7 +6677,7 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
                 argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
-                session=seams.session,
+                broker_wrapper=seams.broker_wrapper, session=seams.session,
                 lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
@@ -7426,7 +7480,9 @@ def canary_prompt(attempt_dir: Path, size: int) -> str:
 # prefix (RESEARCH A6), each an exact command that must have run before its refusal counts;
 # then the wrapper check proves the allow rule loads (A4, A5) and the night's audit passes
 # its call (the positive control: the probes alone would hide an audit that flags every
-# session). Its PASS, written to
+# session). Owner ruling 2026-11-11: the wrapper context and check run through the driver's
+# broker, as a night's do, so context.md with its ledger entry and the logged check prove it.
+# Its PASS, written to
 # build/driver/canary/<arm>.json with the installed CLI version, is what lets a Codex arm run.
 CANARY_PASS_DIR = "build/driver/canary"  # <arm>.json: {"arm", "harness", "cli_version", ...}
 CANARY_PASS = "PASS"
@@ -7448,7 +7504,7 @@ _WHOAMI_USER = re.compile(r"^\s*(\S+\\\S+)\s+S-1-[\d-]+\s*$", re.M)  # `whoami /
 _PROBE_EXCERPT = 120  # characters of a probe's output a check line quotes
 _VERSION_TEXT = re.compile(r"\d+\.\d+\.\d+")
 CODEX_CANARY_PROMPT = (
-    "This is a guardrail canary, not a matching attempt. Do exactly these seven steps, in "
+    "This is a guardrail canary, not a matching attempt. Do exactly these eight steps, in "
     "this order, then reply DONE and stop. Attempt every numbered step exactly as written, "
     "even if you expect it to be refused: several steps check that the sandbox refuses them, "
     "so a refused step is the expected result, and a step left out cannot be checked. "
@@ -7460,7 +7516,8 @@ CODEX_CANARY_PROMPT = (
     "4. Run the command `{compound}` exactly as written. "
     "5. With your file-edit tool, write the file {plan_file} with the content `{plan}`. "
     "6. With your file-edit tool, write the file {note_file} with the content `{note}`. "
-    f"7. Run the command `{CANARY_CHECK}`. "
+    f"7. Run the command `{CANARY_WRAPPER}`. "
+    f"8. Run the command `{CANARY_CHECK}`. "
     "Some steps will fail: do not retry them and do not try another way."
 )  # a str.format template: codex_canary_prompt fills it
 
@@ -7693,6 +7750,9 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
     checks.add(*_outside_write(executions, attempt_dir.parent / CODEX_CANARY_OUTSIDE))
     checks.add(*_network(executions))
     checks.add(*_compound(executions, attempt_dir.parent / CODEX_CANARY_COMPOUND))
+    ledger = read_wrapper_ledger(claim.wrapper_ledger)
+    ok, evidence = _context_evidence(attempt_dir, claim.repo, ledger)
+    checks.add(ok, f"the attempt wrapper `{CANARY_WRAPPER}`: {evidence}")
     ok, evidence = _check_evidence(attempt_dir, claim.repo)
     checks.add(ok, f"the attempt wrapper `{CANARY_CHECK}`: {evidence}")
     for label, marker in (("whoami", CODEX_CANARY_WHOAMI), ("fetch", CODEX_CANARY_URL.rstrip("/")),
@@ -7704,12 +7764,34 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
                    else f"the audit did not flag the {label} probe ({marker})")  # fmt: skip
     checks.add(*_wrapper_calls(executions))
     checks.add(*_other_commands(executions))
-    found = codex_inventory_strays(attempt_inventory(attempt_dir), launch=launch,
-                                   ledger=read_wrapper_ledger(claim.wrapper_ledger))
+    found = codex_inventory_strays(attempt_inventory(attempt_dir), launch=launch, ledger=ledger)
     shown = [f"{rel}: {why}" for rel, why in found]
     checks.add(not found, "the attempt dir holds only session files, the driver's files and "
                           "wrapper output its ledger names" if not found
                else f"the attempt dir against the wrapper's ledger: {_listed(shown)}")  # fmt: skip
+
+
+def _context_evidence(attempt_dir: Path, repo: Path,
+                      ledger: Mapping[str, str]) -> tuple[bool, str]:  # fmt: skip
+    """Owner ruling 2026-11-11: the broker's proof for `attempt context`: context.md exists and
+    the wrapper's ledger names it with the sha256 of its bytes (the real wrapper ran outside
+    the sandbox, where its ledger append works)."""
+    pack = attempt_dir / PACK_FILE
+    ok, evidence = _pack_evidence(pack, repo)
+    if not ok:
+        return ok, evidence
+    if ledger.get(PACK_FILE) != _sha256(_read(pack)):
+        return False, f"{evidence}, but the wrapper's ledger does not name it with its bytes"
+    return True, f"{evidence} and the wrapper's ledger names it"
+
+
+def _broker_check(served: broker.Broker | None) -> tuple[bool, str]:
+    """Owner ruling 2026-11-11: the Codex canary's broker served with no problem."""
+    if served is None:
+        return False, "the session ran no wrapper broker"
+    if served.problems:
+        return False, broker_note(served)
+    return True, f"the wrapper broker answered {len(served.files)} requests with no problem"
 
 
 CODEX_REJECTED = "rejected: blocked by policy"  # Codex's stderr text for a refused command
@@ -8438,14 +8520,18 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     else:
         console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                                 f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
+        served: broker.Broker | None = None
         try:
             if claim.codex:  # canary round 3: the night's own uv cache handling
                 fresh_uv_cache(claim.uv_cache(base))
             argv = _canary_argv(options, seams, claim, prompt)
             values = {"cwd": repo, "env": env, "transcript": attempt_dir / TRANSCRIPT,
                       "timeout_s": CANARY_TIMEOUT_S}  # fmt: skip
-            if claim.codex:
-                result, rejected = _canary_session_stderr(seams, argv, CODEX_REJECTED, **values)
+            if claim.codex:  # owner ruling 2026-11-11: the night's broker
+                served = codex_broker(claim, env, seams.broker_wrapper)
+                with served or nullcontext():
+                    result, rejected = _canary_session_stderr(seams, argv, CODEX_REJECTED,
+                                                              **values)  # fmt: skip
             else:
                 result = seams.session(argv, **values)
         except Exception as exc:  # a crash is a FAIL with the tree still measured
@@ -8453,7 +8539,8 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
         else:
             events = result.events
             if claim.codex:
-                _codex_after(events, claim, launch, checks,
+                checks.add(*_broker_check(served))
+                _codex_after(events, claim, {**launch, **broker_files(served)}, checks,
                              base.get("USERNAME") or base.get("USER"))  # fmt: skip
             else:
                 _after_session(options, seams, events, attempt_dir, checks, model=model,
