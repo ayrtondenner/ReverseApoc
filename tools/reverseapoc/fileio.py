@@ -5,13 +5,29 @@ tables) goes through `write_atomic`. The target is either replaced whole by os.r
 it was, never half-written, and a link at the target is replaced rather than written through.
 Nothing is fsynced, so this is not a durability guarantee across a power loss, and a process
 killed mid-write can leave its `.<name>.<hex>.tmp` file next to the target.
+
+`is_link` is the package's one test for a link of any kind (the driver's audit and the wrapper
+broker share it).
 """
 
 from __future__ import annotations
 
 import os
 import secrets
+import stat
 from pathlib import Path
+
+
+def is_link(path: Path) -> bool:
+    """A symlink, a junction or any other reparse point (never followed)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    reparse = getattr(st, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+    )
+    return stat.S_ISLNK(st.st_mode) or bool(reparse) or os.path.isjunction(path)
 
 
 def write_atomic(path: Path, data: bytes) -> None:

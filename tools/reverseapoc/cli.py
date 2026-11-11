@@ -22,6 +22,7 @@ from . import (
     attempt,
     backends,
     batch,
+    broker,
     causes,
     classify,
     compare_objects,
@@ -1547,13 +1548,21 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
     is valid, 2 otherwise. The
     arguments after `attempt` must be one of hooks.forms_for(kind) exactly (ruling F27), the
     session kind read as the hook reads it (D-26: no matching-only verb in a readability
-    session; Claim.from_env then validates the kind itself)."""
+    session; Claim.from_env then validates the kind itself). Owner ruling 2026-11-11: in a
+    Codex session (REVERSEAPOC_WRAPPER_BROKER set) the form is queued for the driver's broker,
+    which runs the real wrapper outside Codex's sandbox, and its reply is printed and returned
+    (broker.request)."""
     raw = args.raw_argv
     rest = raw[raw.index("attempt") + 1 :]
     kind = os.environ.get(attempt.SESSION_KIND_ENV, attempt.SESSION_KINDS[0])
     try:
         if not attempt.form_allowed(rest, kind):
             raise AttemptError(f"accepts only: {attempt.forms_text(kind)}")
+        if os.environ.get(broker.BROKER_ENV):
+            reply = broker.request(rest, os.environ)
+            sys.stdout.write(reply.stdout)
+            sys.stderr.write(reply.stderr)
+            return reply.exit
         if args.attempt_command == "check":
             return attempt.cmd_check(sweep=args.sweep)
         if args.attempt_command == "asm":
