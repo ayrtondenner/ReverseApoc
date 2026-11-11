@@ -28,7 +28,9 @@ anything unknown fails closed (STOP), and only a known transient condition is no
   result event and no wall-clock timeout (api_retry `overloaded` or `server_error` with no
   result, a non-zero exit with no result, or no events at all).
 - ATTEMPT_DONE: a clean `success` result, an `error_max_turns`, `error_max_budget_usd` or
-  `error_during_execution` result (the subtype explains the error), or a wall-clock timeout. It
+  `error_during_execution` result (the subtype explains the error), an error result that is
+  exactly the CLI's "response exceeded the N output token maximum" message with no API status
+  (the model overran its reply, spike012), or a wall-clock timeout. It
   is counted, and the outcome comes from the driver's gate, never from the result (T-06-39).
 
 An error result is any result but `is_error: false`: a missing or non-boolean flag counts as an
@@ -124,6 +126,11 @@ _ERROR_SUBTYPES = _CAP_SUBTYPES | {"error_during_execution"}
 _KNOWN_SUBTYPES = _ERROR_SUBTYPES | {_SUCCESS}
 _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
+# The CLI's whole message when one reply overran CLAUDE_CODE_MAX_OUTPUT_TOKENS (spike012)
+_OUTPUT_CAP_TEXT = re.compile(
+    r"API Error: Claude's response exceeded the \d+ output token maximum\. To configure this "
+    r"behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable\."
+)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
 _TARGET_FIELDS = ("file_path", "notebook_path", "command", "path")
 _ASSISTANT = "assistant"
@@ -267,11 +274,25 @@ def _unknown_subtype(results: Sequence[dict]) -> bool:
     )
 
 
+def _output_overrun(result: Mapping) -> bool:
+    """Whether the result is the CLI's own end of a reply that overran its output cap: no API
+    status and exactly the CLI's message (spike012, owner 2026-11-11). The model's own failure,
+    like a turn cap, so the session is counted."""
+    text = result.get("result")
+    return (result.get("api_error_status") is None and isinstance(text, str)
+            and _OUTPUT_CAP_TEXT.fullmatch(text) is not None)  # fmt: skip
+
+
 def _unexplained_error(results: Sequence[dict]) -> bool:
     """An error result whose subtype is `success`: nothing but a known signal (a STOP or LIMIT
     phrase, status 429 or 5xx, a LIMIT event) explains it, and classify asks this only after
-    every such signal failed to match (fix round 2 R1). The error subtypes explain themselves."""
-    return any(result.get("subtype") == _SUCCESS and _is_error_result(result) for result in results)
+    every such signal failed to match (fix round 2 R1). The error subtypes explain themselves,
+    and so does an output overrun."""
+    return any(
+        result.get("subtype") == _SUCCESS and _is_error_result(result)
+        and not _output_overrun(result)
+        for result in results
+    )  # fmt: skip
 
 
 def _is_server_error(status: object) -> bool:

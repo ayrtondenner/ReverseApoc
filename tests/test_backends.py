@@ -182,6 +182,10 @@ def test_session_env_hosted():
     assert env["ANTHROPIC_API_KEY"] == ""
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
     assert [env[pin] for pin in PINS] == [DEEPSEEK_MODEL] * 3
+    # spike012 (owner, 2026-11-11): a hosted model's reply may run past Claude Code's default
+    # 32000-token output cap; every OpenRouter provider in use allows at least 117964.
+    assert backends.HOSTED_MAX_OUTPUT_TOKENS == 64_000
+    assert env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "64000"
     assert ROUTER_KEY not in env and "OTHER_API_KEY" not in env
     assert FAKE_ZAI not in env.values()
     assert env["PATH"] == "made-up"
@@ -416,6 +420,8 @@ def test_session_env_local():
     assert env["ANTHROPIC_AUTH_TOKEN"] == backends.LOOPBACK_TOKEN
     assert env["ANTHROPIC_API_KEY"] == "" and "OPENROUTER_API_KEY" not in env
     assert [env[pin] for pin in PINS] == ["qwen3.6-35b-a3b"] * 3
+    # a 64K-context llama-server cannot take the hosted arms' raised output cap
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in env
 
 
 @pytest.mark.parametrize("url", ["https://llm.example.invalid/anthropic",

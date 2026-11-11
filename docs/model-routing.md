@@ -179,7 +179,12 @@ total parameters), which is not the Antigravity `gpt-oss` arm (GPT-OSS 120B).
   reaches only a session on the Claude login. A hosted
   arm's session then gets its `ANTHROPIC_BASE_URL`, its own key as `ANTHROPIC_AUTH_TOKEN`, an
   empty `ANTHROPIC_API_KEY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, the three
-  `ANTHROPIC_DEFAULT_*_MODEL` pins set to its model, and `REVERSEAPOC_EGRESS=1`. Under it the
+  `ANTHROPIC_DEFAULT_*_MODEL` pins set to its model, and `REVERSEAPOC_EGRESS=1`. A metered
+  (hosted, non-loopback) arm also gets `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000`, twice Claude
+  Code's default, since a GLM-5.3 reply ran past 32000 in spike012; every OpenRouter provider in
+  use allows at least 117964, and a local llama-server keeps the default. A session that still
+  overruns ends with the CLI's "response exceeded the N output token maximum" error, which is
+  counted as an attempt like a turn cap, not a reason to stop the night. Under it the
   hook denies any Read, Glob or Grep that can reach `orig/` or `third_party/`, of this
   checkout or of a worktree in it: by any path form, by a wildcard that fits either name, by
   a `**` or a slash-free Glob pattern from the top level, and any Grep from the top level. A

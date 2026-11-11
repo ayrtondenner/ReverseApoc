@@ -84,6 +84,11 @@ BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
 API_KEY_ENV = "ANTHROPIC_API_KEY"
 NONESSENTIAL_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+# spike012 (owner, 2026-11-11): a metered arm's reply may run past Claude Code's default 32000
+# output tokens, which ended a GLM-5.3 session; every OpenRouter provider in use allows at least
+# 117964 (OpenRouter models list, 2026-11-10). A local llama-server's 64K context cannot.
+MAX_OUTPUT_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+HOSTED_MAX_OUTPUT_TOKENS = 64_000
 MODEL_PINS = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_HAIKU_MODEL")  # fmt: skip
 INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped from every session
@@ -348,6 +353,8 @@ def session_env(arm: Arm, base_env: Mapping[str, str],
     env.update({BASE_URL_ENV: arm.base_url, AUTH_TOKEN_ENV: _token(arm, base_env),
                 API_KEY_ENV: "", NONESSENTIAL_ENV: "1"})  # fmt: skip
     env.update(dict.fromkeys(MODEL_PINS, arm.model))
+    if arm.billing == METERED:
+        env[MAX_OUTPUT_ENV] = str(HOSTED_MAX_OUTPUT_TOKENS)
     return env
 
 

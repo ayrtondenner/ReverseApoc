@@ -130,6 +130,37 @@ def test_classify_recovered_rate_limit_retry_then_a_cap_is_an_attempt(name):
     assert classify((limit, _events(name)[-1]), 1, False) is Disposition.ATTEMPT_DONE
 
 
+_OUTPUT_CAP = (
+    "API Error: Claude's response exceeded the 32000 output token maximum. To configure this "
+    "behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable."
+)  # the CLI's own text, spike012 GLM-5.3 tacp 0x0009BD70
+
+
+def _output_cap_result(text: str = _OUTPUT_CAP, **extra) -> dict:
+    return {"type": "result", "subtype": "success", "is_error": True, "result": text, **extra}
+
+
+def test_classify_an_output_token_overrun_is_an_attempt():
+    """The model overran its own reply: the session's own failure, like a turn cap, so it is
+    counted and gated, never an unexplained error that stops the night (owner, 2026-11-11)."""
+    assert classify((_output_cap_result(),), 1, False) is Disposition.ATTEMPT_DONE
+    other = _OUTPUT_CAP.replace("32000", "64000")
+    assert classify((_output_cap_result(other),), 1, False) is Disposition.ATTEMPT_DONE
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _output_cap_result("Invalid API key"),  # still unexplained
+        _output_cap_result("x " + _OUTPUT_CAP),  # the text must be the CLI's whole message
+        _output_cap_result(_OUTPUT_CAP.replace("32000", "many")),
+        _output_cap_result(api_error_status=401),  # a status other than 429/5xx stops
+    ],
+)
+def test_classify_only_the_exact_output_cap_text_is_explained(result):
+    assert classify((result,), 1, False) is Disposition.STOP
+
+
 def test_classify_rate_limit_retry_then_an_execution_error_stays_a_limit():
     """error_during_execution may be the retry giving up, so it does not prove a recovery."""
     limit = _events("rate_limit")[1]
