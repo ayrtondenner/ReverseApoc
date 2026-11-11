@@ -372,7 +372,13 @@ Plan 07.2-15 added `gemini-flash` (model `gemini-3.8-flash-medium`) and `gpt-oss
 `gpt-oss-120b-medium`): Gemini 3.8 Flash and GPT-OSS 120B through the Antigravity CLI (`agy`)
 on the owner's Google AI Plus sign-in. Gemini is fifth in spike 012's order (D-18, D-21). This
 is the same scoped runtime exception as Codex (CLAUDE.md). Gemini CLI's Google sign-in was
-retired for consumer plans, so agy is the route.
+retired for consumer plans, so agy is the route. On 2026-11-11 the owner added
+`agy-sonnet-4-6` (`claude-sonnet-4-6`) and `agy-opus-4-6` (`claude-opus-4-6-thinking`): Claude
+Sonnet 4.6 and Opus 4.6 through the same agy sign-in. They draw on agy's "Claude and GPT
+models" weekly group (`/usage` in an interactive agy), which is separate from Gemini's group
+and from the owner's Claude subscription, so a night can run Claude through the subscription,
+Claude and Gemini through agy, and GPT through Codex side by side. Each is capped at 7 sessions
+(spike 012's picks under 64 B), since agy charges quota by token cost.
 
 - **Install and sign in (owner).** Install agy 1.1.8 or later (`--output-format stream-json`
   arrived in 1.1.8; the owner has 1.5.3), sign in with the AI Plus account, and run

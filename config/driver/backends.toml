@@ -199,6 +199,47 @@ output = 0.18
 cache_read = 0.04
 cache_creation = 0.04
 
+# Claude Sonnet 4.6 and Claude Opus 4.6 (Thinking) through agy (spike 012, owner 2026-11-11), the
+# exact slugs the owner's `agy models` lists. They draw on agy's "Claude and GPT models" weekly
+# group, which is separate from Gemini's and from the owner's Claude subscription (the Claude
+# Code arms above). Like the other agy arms: subscription, one worker, the pack goes to Google
+# (--allow-egress), and each needs its own canary PASS on the installed CLI. max_sessions is 7,
+# the spike's 7 picks under 64 B: quota is charged by token cost, and one Gemini Flash session
+# took 22% of its group's week, so Opus 4.6 may run out sooner. Prices are Anthropic's API list
+# prices (claude-api skill, cached 2026-10-06; cache reads 0.1x input), for the comparison
+# only; cache_creation is priced as input, this file's rule for an unrecorded cache class.
+[arms."agy-sonnet-4-6"]
+harness = "agy"
+backend = "google"
+model = "claude-sonnet-4-6"
+sends_disassembly = true
+accepted_init = ["claude-sonnet-4-6"]
+coauthor = "Claude Sonnet 4.6 <noreply@anthropic.com>"
+max_workers = 1
+max_sessions = 7
+
+[arms."agy-sonnet-4-6".prices]
+input = 3.00
+output = 15.00
+cache_read = 0.30
+cache_creation = 3.00
+
+[arms."agy-opus-4-6"]
+harness = "agy"
+backend = "google"
+model = "claude-opus-4-6-thinking"
+sends_disassembly = true
+accepted_init = ["claude-opus-4-6-thinking"]
+coauthor = "Claude Opus 4.6 <noreply@anthropic.com>"
+max_workers = 1
+max_sessions = 7
+
+[arms."agy-opus-4-6".prices]
+input = 5.00
+output = 25.00
+cache_read = 0.50
+cache_creation = 5.00
+
 # The OpenRouter arms below: the owner runs DeepSeek and GLM only through OpenRouter (ruling of
 # 2026-11-10: no direct DeepSeek or z.ai arm), so DEEPSEEK_API_KEY and ZAI_API_KEY are named by
 # no arm and the driver strips them from every session (backends.RETIRED_KEY_ENVS). Their ids

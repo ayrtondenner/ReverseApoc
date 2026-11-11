@@ -133,13 +133,41 @@ def test_agy_arms_load():
         assert arm.billing == backends.SUBSCRIPTION
 
 
+AGY_CLAUDE = {  # spike 012 (owner, 2026-11-11): Claude 4.6 through agy's own weekly group
+    "agy-sonnet-4-6": ("claude-sonnet-4-6", "Claude Sonnet 4.6 <noreply@anthropic.com>",
+                       (3.00, 15.00, 0.30, 3.00)),
+    "agy-opus-4-6": ("claude-opus-4-6-thinking", "Claude Opus 4.6 <noreply@anthropic.com>",
+                     (5.00, 25.00, 0.50, 5.00)),
+}  # fmt: skip
+
+
+def test_agy_claude_arms_load():
+    """Spike 012 (owner, 2026-11-11): Claude Sonnet 4.6 and Opus 4.6 (Thinking) through agy on
+    the owner's AI Plus sign-in, in agy's "Claude and GPT models" weekly group (separate from
+    Gemini's and from the owner's Claude subscription): the exact slugs `agy models` lists, a
+    subscription arm, one worker, at most 7 sessions (the 7 picks under 64 B), sending the pack
+    to Google, priced at Anthropic's list prices for the comparison only."""
+    from reverseapoc.streamjson import Price
+
+    arms = backends.load_arms()
+    for name, (model, credit, price) in AGY_CLAUDE.items():
+        arm = arms[name]
+        assert (arm.harness, arm.backend, arm.model) == ("agy", "google", model), name
+        assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, (model,))
+        assert arm.prices == Price(*price) and arm.coauthor == credit
+        assert arm.max_workers == 1 and arm.max_sessions == 7 and arm.egress
+        assert arm.billing == backends.SUBSCRIPTION
+
+
 def test_each_agy_arm_builds_a_valid_argv(tmp_path):
     """RULINGS "Plan 15, Antigravity arms": each entry builds an argv the fake agy accepts, with
     its exact model id."""
     import fakeagy
 
     arms = backends.load_arms()
-    for name, model in ((GEMINI, GEMINI_MODEL), (GPT_OSS, GPT_OSS_MODEL)):
+    pairs = ((GEMINI, GEMINI_MODEL), (GPT_OSS, GPT_OSS_MODEL),
+             *((name, spec[0]) for name, spec in AGY_CLAUDE.items()))  # fmt: skip
+    for name, model in pairs:
         argv = session.build_agy_argv("p", agy="agy", model=arms[name].model,
                                       attempt_dir=tmp_path, settings=tmp_path / "s.json",
                                       timeout_s=session.TIMEOUT_S)  # fmt: skip

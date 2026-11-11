@@ -601,7 +601,8 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
 
 # ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
 
-SUBSCRIBED = (*CLAUDE_ARMS, *CODEX_ARMS, "gemini-flash", "gpt-oss")
+SUBSCRIBED = (*CLAUDE_ARMS, *CODEX_ARMS, "gemini-flash", "gpt-oss", "agy-sonnet-4-6",
+              "agy-opus-4-6")  # fmt: skip
 METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "gpt-oss-20b", "muse-spark-open",
                 "gemini-3.8-flash-openrouter", "qwen-hosted")  # fmt: skip
 
