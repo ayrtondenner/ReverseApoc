@@ -60,7 +60,8 @@ _ERROR_MESSAGE = re.compile(r"\b(E\d{3,4})\b:?\s*(.*)")  # an error code and its
 _QUOTED = re.compile(r"'([^']+)'")
 _UNDECLARED = "E1011"  # "Symbol 'X' has not been declared"
 _MEMBER_OR_SUBSCRIPT = re.compile(r"member|subscript", re.IGNORECASE)
-_HEX_ADDRESS = re.compile(r"\b0x[0-9A-Fa-f]+")  # a 0x address or offset, either case
+# A 0x address or offset (either case), or a bare digit-holding hex run right after "at".
+_HEX_ADDRESS = re.compile(r"\b0x[0-9A-Fa-f]+|(?<=\bat )(?=[0-9A-Fa-f]*\d)[0-9A-Fa-f]+\b")
 FEW_BUILD_FAILURES_PERCENT = Decimal(1)  # under it, format() says so (RESEARCH Q5 caveat)
 
 
