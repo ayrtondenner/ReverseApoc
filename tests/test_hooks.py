@@ -1608,7 +1608,8 @@ ORDINARY = [
              "cp ../../../.planning/quick/q/x.py .planning/quick/q/x.py"),
     ("Bash", "cat ../../../tools/reverseapoc/hooks.py"),
     ("PowerShell", "& ./x.ps1"), ("PowerShell", "& ./x.ps1 > build/log.txt"),
-    ("PowerShell", "uv run python x.py"), ("PowerShell", "uv run pytest -q tests\\test_hooks.py"),
+    ("PowerShell", "uv run python x.py"),
+    ("PowerShell", "uv run pytest -q " + ("tests\\" if WINDOWS else "tests/") + "test_hooks.py"),
     ("PowerShell", f"$env:REVERSEAPOC_WATCOM_DIR = '{RELATIVE_WATCOM}'; "
                    "uv run pytest -q tests/test_hooks.py"),
     ("PowerShell", 'git add tools/reverseapoc/hooks.py; git commit -m "fix hooks.py"'),
@@ -1674,6 +1675,7 @@ READ_ONLY_DENIED = [
     "EDITOR=./y git commit x.py", "UV_PYTHON=./y uv run python x.py",
     "NODE_OPTIONS=--require=./y node x.mjs", "PYTHONPATH=y uv run pytest tests/test_hooks.py",
     "PYTEST_ADDOPTS=-py uv run pytest tests/test_hooks.py", "BASH_ENV=./y bash x.sh",
+    "SHELLOPTS=xtrace bash x.sh", "BASHOPTS=extdebug bash x.sh", "PS4=x bash x.sh",
 ]  # fmt: skip
 
 
