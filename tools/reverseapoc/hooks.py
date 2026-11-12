@@ -1363,11 +1363,8 @@ def _indirect(tool: str, name: str, trigger: str) -> str:
             "worktree root, in a call of its own")  # fmt: skip
 
 
-_WORD_STARTS = frozenset(" \t\r\n;&|()<>")
-
-
 def _bare_quoting(tool: str, text: str) -> str:
-    """261112-fdw: the first `$'` (an ANSI-C quote) or word-initial `#` (a comment) outside
+    """261112-fdw: the first `$'` (an ANSI-C quote) or `#` (it may start a comment) outside
     quotes, which the word reader does not follow, or ''. An escaped character is skipped."""
     escape = "\\" if tool == "Bash" else "`"
     quote, index = "", 0
@@ -1380,7 +1377,7 @@ def _bare_quoting(tool: str, text: str) -> str:
             quote = "" if char == quote else quote
         elif text.startswith("$'", index):
             return "$'"
-        elif char == "#" and (index == 0 or text[index - 1] in _WORD_STARTS):
+        elif char == "#":
             return "#"
         elif char in "'\"":
             quote = char
@@ -1390,7 +1387,7 @@ def _bare_quoting(tool: str, text: str) -> str:
 
 def _quoting(tool: str, name: str, trigger: str) -> str:
     return (f"a {tool} command from the harness worktree {name} names a script and also holds "
-            f"{trigger!r} outside quotes (an ANSI-C quote or a comment), so the hook cannot tell "
+            f"{trigger!r} outside quotes (an ANSI-C quote, or a `#` that may start a comment), so the hook cannot tell "
             "which file runs (261109-gzy, 261112-fdw); run the script by a plain path from the "
             "worktree root, in a call of its own")  # fmt: skip
 
@@ -1427,8 +1424,8 @@ def _worktree_command(payload: Mapping) -> Decision:
     trigger = _INDIRECTION.search(command)
     if trigger is not None:
         return _deny(_indirect(tool, name, trigger.group()))
-    quoting = _bare_quoting(tool, text)
-    reason = (_scripts_denial(words, cwd, tool, pairs)
+    quoting = next(filter(None, (_bare_quoting(tool, part) for part in [text, *contents])), "")
+    reason =(_scripts_denial(words, cwd, tool, pairs)
               or (_quoting(tool, name, quoting) if quoting else "")
               or _allowlist_denial(tool, text, cwd, name))  # fmt: skip
     judged = (_allowlist_denial(tool, content, cwd, name, nested=True) for content in contents)
