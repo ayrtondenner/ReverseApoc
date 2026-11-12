@@ -23,12 +23,14 @@ Offsets count from esp after the prologue. What the probe measured, the same in 
 M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
 pr_tie_three, and its three arrays take other offsets. Local.array carries the shapes that leave
-M2 or M4 in a frame of one size: three or more multi-element arrays alone (pr_arr_char4_x3), an
-array of 2 bytes beside plain locals unless it is the only one and declared first (line A of quick
-261112-fdx; pr_arr_two_one_small, pr_arr_one_two_small leave), and two arrays beside a later
-block unless they are declared first and a plain local follows them in the top block (line B;
-pr_arr_two_block, pr_arr_int_two_block leave). No standard sort reproduces these orders and a
-table by count would not hold either, so the model refuses them, and some frames it refuses hold.
+M2 or M4 in a frame of one size: three or more multi-element arrays unless they are declared
+first and a plain local follows them in one block (line C of quick 261112-fdx; alone they leave,
+pr_arr_char4_x3, as after an int, pr_arr_int_three), an array of 2 bytes beside plain locals
+unless it is the only one and declared first (line A; pr_arr_two_one_small, pr_arr_one_two_small
+leave), and two arrays beside a later block unless they are declared first and a plain local
+follows them in the top block (line B; pr_arr_two_block, pr_arr_int_two_block leave). No
+standard sort reproduces these orders and a table by count would not hold either, so the model
+refuses them, and some frames it refuses hold.
 07.2-14 measured past the 07.1 sweep and moved nothing: a `char[4]` beside a `short[2]` keeps M2
 (pr_arr_c4_s2), two `char[4]` beside a `short[2]` leave it (pr_arr_c4x2_s2), a `char[4]` and an
 `int` beside a `char[2]` hold though refused (pr_arr_c4_c2_int), and three `int[1]` keep M2
@@ -63,7 +65,8 @@ class Local:
 
 def order_is_known(locals_: Sequence[Local]) -> bool:
     """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
-    and no more than _MEASURED_ARRAYS of them are arrays. Only size 4 keeps its order across
+    and no more than _MEASURED_ARRAYS of them are arrays, or more that _arrays_then_ints admits
+    at size 4 (line C). Only size 4 keeps its order across
     blocks: with at most one array, or with two that _two_arrays_then_ints admits (line B).
     Under size 4 the locals sit in one block and are all arrays or none, or one array is declared
     first (line A: pr_line_a_c2_h to pr_line_a_c2_h11 and pr_arr_one_three_small, from 1 to 11
@@ -79,7 +82,7 @@ def order_is_known(locals_: Sequence[Local]) -> bool:
     arrays = sum(local.array for local in locals_)
     one_block = len({local.scope for local in locals_}) == 1
     if arrays > _MEASURED_ARRAYS:
-        return False
+        return sizes == {_BLOCK_ORDERED_SIZE} and one_block and _arrays_then_ints(locals_, arrays)
     if sizes == {_BLOCK_ORDERED_SIZE}:
         return one_block or arrays < 2 or _two_arrays_then_ints(locals_)
     leading = arrays == _LEADING_SMALL_ARRAYS and locals_[0].array
@@ -99,6 +102,15 @@ def _two_arrays_then_ints(locals_: Sequence[Local]) -> bool:
     in_top = [local for local in rest if local.scope == _TOP_SCOPE]
     arrays_lead = first.array and second.array and first.scope == second.scope == _TOP_SCOPE
     return arrays_lead and bool(in_top) and not any(local.array for local in rest)
+
+
+def _arrays_then_ints(locals_: Sequence[Local], arrays: int) -> bool:
+    """Line C, for a frame of 4-byte locals in one block with more than _MEASURED_ARRAYS arrays:
+    the arrays are the first declared, and a plain local follows them. Measured in both cells as
+    `char[4]` (pr_arr_three_int, pr_line_c_c4x3_i2, _c4x4_i and _c4x3_i_late) and two `char[4]`
+    then a `short[2]` (pr_line_c_c4x2_s2_i), beside `int`: 3 or 4 arrays, then 1 or 2 ints.
+    Arrays alone leave (pr_arr_char4_x3), and so does an int before them (pr_arr_int_three)."""
+    return arrays < len(locals_) and all(local.array for local in locals_[:arrays])
 
 
 def _padded(size: int) -> int:
