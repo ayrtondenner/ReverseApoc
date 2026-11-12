@@ -86,7 +86,17 @@ int func_000A6670(void)
     return r_eax;
 }
 
-INCLUDE_ASM(func_000A66A0);
+int func_000A65D0(int, int);
+extern char D_00284CEE[];
+extern char D_000E6CC0[];
+
+void func_000A66A0(void)
+{
+    func_000A65D0(4, 2);
+    *(short *)((D_00284CEE)) = 1;
+    *(short *)((D_000E6CC0)) = 1;
+}
+
 INCLUDE_ASM(func_000A66D0);
 INCLUDE_ASM(func_000A6740);
 INCLUDE_ASM(func_000A67B0);
