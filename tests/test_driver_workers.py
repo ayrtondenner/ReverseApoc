@@ -2601,3 +2601,28 @@ def test_a_cascade_limit_launch_counts_against_its_arm_cap(tmp_path):
     skips = _skip_lines(lines)
     assert len(skips) == len(picks) - 1 and all(f"{GEMINI} (capped)" in s for s in skips), lines
     _validated(night)
+
+
+def _cap_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if "has launched its cap" in line]
+
+
+def test_a_cascade_night_ends_once_every_arm_is_capped(tmp_path):
+    """WR-03: row (HAIKU, SONNET), each capped at 1, over four picks. p0 runs on HAIKU and p1
+    on SONNET (HAIKU capped); then every cascade arm has launched its cap, so the night ENDS
+    ARMS_CAPPED at once: p2 and p3 are never dispatched, no cap line is printed, and the
+    normal end of run follows (a valid ENDED run record, the attempt log commit)."""
+    picks = tuple(_wpick(i) for i in range(4))
+    night = ArmNight(tmp_path, picks=picks)
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU, SONNET),
+                               "arm_caps": ((HAIKU, 1), (SONNET, 1))},
+                       say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.ARMS_CAPPED), report.detail
+    assert [(r["function"], r["model_requested"]) for r in night.kinds("attempt")] == [
+        (picks[0].name, HAIKU), (picks[1].name, SONNET)]  # fmt: skip
+    assert _cap_lines(lines) == [], lines
+    assert [(r["event"], r["reason"]) for r in night.kinds("run")][-1] == (
+        "ENDED", driver.ARMS_CAPPED)  # fmt: skip
+    assert night.commits()[-1] == driver.LOG_SUBJECT
+    _validated(night)
