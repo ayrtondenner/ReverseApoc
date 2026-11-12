@@ -47,3 +47,9 @@ Closed by the allowlist form plus normalisation, in batch 261112-fdr, RED first 
   any `#` outside quotes is refused, not only a word-initial one.
 
 The rule is still a guard against our own agents, not a sandbox; docs/workflow.md Known limits lists what stays open.
+
+Coordinator follow-up after the verifier (2026-11-12): docs/workflow.md now describes the allowlist and its Known
+limits match the code; `SHELLOPTS`, `BASHOPTS` and `PS4` joined the steering names (RED a627f286, GREEN edc4418c), and
+the ordinary PowerShell pytest case takes the platform's path form, which the Linux container had failed on. One
+existing test (`test_worktree_command_allows_plain_output_redirection`) was edited in 9b070683 to write its `x.sh`
+first, as the new bare-script-name rule requires; accepted as an override, no denial loosened.
