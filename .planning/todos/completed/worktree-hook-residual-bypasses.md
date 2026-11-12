@@ -32,3 +32,16 @@ container mount.
 
 **What closes this:** either the allowlist form of item 2 plus normalisation (items 1 and 3), or an OS-level sandbox
 for worktree agents, with tests.
+
+## Result (quick 261112-fdw, 2026-11-12)
+
+Closed by the allowlist form plus normalisation, in batch 261112-fdr, RED first each time:
+
+- `f078276c` RED and `9b070683` GREEN: the worktree allowlist replaces the keyword denylist (item 2).
+- `3168bdea` RED and `2d5f8322` GREEN: substitutions are judged, PowerShell escapes and quotes are decoded, and a
+  .ps1 run ends the call (items 1 and 3).
+- `5ea6d907` RED (review finding 1, test strings written by the owner) and `f2c4347e` GREEN: a script-naming call
+  holding `$'` or a word-initial `#` outside quotes is refused, and so is a PowerShell call with a `$(` after a direct
+  script run.
+
+The rule is still a guard against our own agents, not a sandbox; docs/workflow.md Known limits lists what stays open.
