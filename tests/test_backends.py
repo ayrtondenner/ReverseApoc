@@ -664,3 +664,39 @@ def test_token_cost_is_exact():
     tokens = {"input": 1_000_000, "output": 100_000, "cache_read": 2_000_000, "cache_creation": 0}
     cost = backends.token_cost(tokens, Price(0.10, 0.50, 0.01, 0.20))
     assert cost == Decimal("0.17") and isinstance(cost, Decimal)
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade's [routing] table ----
+
+HAIKU = "claude-haiku-5-5"
+TERRA = "gpt-6.1-terra"
+GEMINI = "gemini-flash"
+
+
+def test_committed_routing_table():
+    """The owner's default rows, in bucket order, keyed by stats' own labels; every arm is an
+    [arms."..."] entry, and load_arms still loads the file that now holds [routing]."""
+    rows = backends.load_routing()
+    assert [(row.label, row.buckets, row.arms) for row in rows] == [
+        ("[0, 64)", (0,), (HAIKU, TERRA)),
+        ("[64, 256)", (1,), (HAIKU, TERRA, GEMINI)),
+        ("[256, inf)", (2, 3), (TERRA,)),
+    ]
+    arms = _arms()
+    assert {arm for row in rows for arm in row.arms} <= set(arms)
+    assert backends.routing_arms(rows) == (HAIKU, TERRA, GEMINI)
+
+
+def test_routing_rows_use_the_stats_buckets():
+    """route_for goes through stats.size_bucket, and each one-bucket row's key is stats' own
+    label of that bucket: no new threshold."""
+    from reverseapoc import stats
+
+    rows = backends.load_routing()
+    for size, label in ((0, "[0, 64)"), (63, "[0, 64)"), (64, "[64, 256)"), (255, "[64, 256)"),
+                        (256, "[256, inf)"), (1023, "[256, inf)"), (1024, "[256, inf)"),
+                        (4096, "[256, inf)")):  # fmt: skip
+        assert backends.route_for(rows, size).label == label, size
+    for row in rows:
+        if len(row.buckets) == 1:
+            assert row.label == stats._bucket_label(row.buckets[0])

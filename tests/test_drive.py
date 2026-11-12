@@ -2339,3 +2339,59 @@ def test_multi_arm_keeps_the_codex_audit(tmp_path, capsys, monkeypatch):
     assert stopped["reason"] == driver.GUARDRAIL and "type notes.md" in stopped["detail"]
     assert len(night.launched) == 1
     assert night.kinds("attempt")[0]["run"] == f"{RUN}-{LUNA}"
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade through run_drive ----
+
+SONNET = "claude-sonnet-5-5"
+TERRA = "gpt-6.1-terra"
+
+
+def _cascade_night(tmp_path: Path, monkeypatch, picks) -> tuple[Rig, Night, list]:
+    """`drive` on a Rig whose night (run_drive's own DriveConfig) runs in test_driver_workers'
+    ArmNight, with D-07's three attempts per function kept."""
+    from test_driver_workers import ArmNight
+
+    rig = Rig(tmp_path / "rig")
+    night = ArmNight(tmp_path / "night", picks=picks)
+    real, seen = driver.drive, []
+
+    def drive(config, deps, *, lock=None):
+        seen.append(config)
+        return real(replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240)),
+                    night.deps())  # fmt: skip
+
+    monkeypatch.setattr(driver, "drive", drive)
+    return rig, night, seen
+
+
+def test_cascade_reaches_the_night_end_to_end(tmp_path, capsys, monkeypatch):
+    """999.12a tracer: DriveOptions.routing reaches the night's DriveConfig, and one function's
+    attempts climb its row (HAIKU, SONNET, SONNET) under `<run>-<arm>`."""
+    from test_driver_workers import _every, _wpick
+
+    rows = _every(HAIKU, SONNET)
+    rig, night, seen = _cascade_night(tmp_path, monkeypatch, (_wpick(0),))
+    code, _, err = rig.drive(capsys, json=True, routing=rows, workers=1)
+    assert code == 0, err
+    assert seen[0].routing == rows and seen[0].attempts_per_function == 3
+    assert [(r["attempt"], r["model_requested"], r["run"]) for r in night.kinds("attempt")] == [
+        (1, HAIKU, f"{RUN}-{HAIKU}"), (2, SONNET, f"{RUN}-{SONNET}"),
+        (3, SONNET, f"{RUN}-{SONNET}")]  # fmt: skip
+
+
+@pytest.mark.parametrize(("allow", "words"), [
+    ((), f"--allow-egress {TERRA}"),
+    ((TERRA, GEMINI), f"--canary --night-model {TERRA}"),
+    ((DEEPSEEK,), DEEPSEEK),
+], ids=["no-egress", "no-canary", "stray-egress"])  # fmt: skip
+def test_cascade_arms_pass_every_per_arm_gate(tmp_path, capsys, allow, words):
+    """T-261112-fds-01, -02: each cascade arm that sends the pack off the machine needs its own
+    --allow-egress, an --allow-egress naming no cascade arm is refused, and each Codex or agy
+    arm needs its canary PASS: exit 2 before any session."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             routing=driver.backends.load_routing(), allow_egress=allow)
+    assert code == 2
+    assert words in _refusal(out)["detail"]
+    _no_session_ran(rig)

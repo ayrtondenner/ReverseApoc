@@ -1862,3 +1862,84 @@ def test_any_other_stray_still_stops_every_arm(tmp_path, spec):
     report = night.run(config={"arms": TWO_ARMS, "hold": True})
     assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
     assert DENIED_PATH in report.detail
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade ----
+
+ROW_LABELS = (("[0, 64)", (0,)), ("[64, 256)", (1,)), ("[256, inf)", (2, 3)))
+
+
+def _rows(*arms: tuple[str, ...]) -> tuple[driver.backends.Route, ...]:
+    """Routing rows for the three committed keys, the n-th row's arms `arms[n]`."""
+    return tuple(driver.backends.Route(label, buckets, tuple(row))
+                 for (label, buckets), row in zip(ROW_LABELS, arms, strict=True))  # fmt: skip
+
+
+def _every(*arms: str) -> tuple[driver.backends.Route, ...]:
+    """Every row the same ladder."""
+    return _rows(arms, arms, arms)
+
+
+def _sized(i: int, size: int) -> Pick:
+    start = START + 0x10000 * i
+    return Pick(EXE, start, f"func_{start:08X}", _unit(i), size, 100 + i)
+
+
+def _climb(night: Night) -> list[tuple]:
+    return [(r["attempt"], r["model_requested"], r["run"]) for r in night.kinds("attempt")]
+
+
+def test_cascade_climbs_the_row(tmp_path):
+    """999.12a: one function's three attempts climb its row (HAIKU, SONNET): HAIKU, then SONNET,
+    then SONNET (the row's last arm takes every later attempt), each under `<run>-<arm>` in its
+    own attempt directory; the night's run records keep the base run id and count each arm."""
+    pick = _wpick(0)
+    night = ArmNight(tmp_path, picks=(pick,))
+    lines: list[str] = []
+    report = night.run(config={"routing": _every(HAIKU, SONNET)}, say=lines.append)
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _climb(night) == [(1, HAIKU, _arm_run(HAIKU)), (2, SONNET, _arm_run(SONNET)),
+                             (3, SONNET, _arm_run(SONNET))]  # fmt: skip
+    for n, arm in ((1, HAIKU), (2, SONNET), (3, SONNET)):
+        assert (_driver_dir(night) / _arm_run(arm) / EXE / pick.name / f"attempt-{n}").is_dir()
+    assert list(_driver_dir(night).rglob("*-uncounted-*")) == []
+    run_records = night.kinds("run")
+    assert [r["run"] for r in run_records] == [RUN, RUN]
+    totals = run_records[-1]["totals"]
+    assert {name: share["sessions"] for name, share in totals["by_model"].items()} == {
+        HAIKU: 1, SONNET: 2}  # fmt: skip
+    assert any(f"attempt 1/3 ({HAIKU})" in line for line in lines), lines
+    assert any(f"attempt 2/3 ({SONNET})" in line for line in lines), lines
+
+
+def test_cascade_routes_by_size(tmp_path):
+    """999.12a: each pick's attempt runs on its own size bucket's row."""
+    picks = (_sized(0, 20), _sized(1, 100), _sized(2, 300))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"routing": _rows((HAIKU,), (SONNET,), (driver.OPUS_MODEL,)),
+                               "attempts_per_function": 1})  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    got = {r["function"]: (r["model_requested"], r["run"]) for r in night.kinds("attempt")}
+    assert got == {picks[0].name: (HAIKU, _arm_run(HAIKU)),
+                   picks[1].name: (SONNET, _arm_run(SONNET)),
+                   picks[2].name: (driver.OPUS_MODEL, _arm_run(driver.OPUS_MODEL))}  # fmt: skip
+
+
+@pytest.mark.parametrize(("config", "expected"), [
+    ({}, {(driver.OPUS_MODEL, RUN)}),
+    ({"fable_trial": True}, {(driver.FABLE_MODEL, RUN)}),
+    ({"night_model": HAIKU}, {(HAIKU, RUN)}),
+    ({"arms": TWO_ARMS, "hold": True}, {(HAIKU, _arm_run(HAIKU)), (SONNET, _arm_run(SONNET))}),
+], ids=["d09", "fable-trial", "night-model", "arms-hold"])  # fmt: skip
+def test_a_night_without_routing_picks_its_arm_as_before(tmp_path, config, expected):
+    """RULINGS fds invariant: on every night without --cascade each attempt's arm is the
+    lane's (or D-09's on the default night), under the run id it had before; the one-lane
+    nights' console labels carry no arm suffix."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
+    lines: list[str] = []
+    report = night.run(config=config, say=lines.append)
+    assert report.event == "ENDED", report.detail
+    assert {(r["model_requested"], r["run"]) for r in night.kinds("attempt")} == expected
+    if "arms" not in config:
+        started = [line for line in lines if line.endswith(": started")]
+        assert started and not any("(" in line for line in started), started
