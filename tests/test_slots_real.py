@@ -51,6 +51,11 @@ def _shorts(names: str, first: int) -> tuple[Marked, ...]:
     return tuple(Marked(name, 2, first + n) for n, name in enumerate(names))
 
 
+def _ints(names: str, first: int, scope: int = 0) -> tuple[Marked, ...]:
+    """Plain 4-byte locals, their markers counted up from `first` as the `pr_line_` frames do."""
+    return tuple(Marked(name, 4, first + n, scope) for n, name in enumerate(names))
+
+
 DOUBLE = Marked("d", 8, 0x40040000, at=HIGH_DWORD)  # 2.5
 SAME_SIZE = (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 4, 0x33), Marked("d", 4, 0x44))
 MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBLE)
@@ -130,6 +135,13 @@ SHAPES = {
     "pr_line_a_c2_mixed": (*_arrays(2, 0x7B), *_shorts("bcde", 0x18E)),
     "pr_line_a_c2_h3_late": (*_arrays(2, 0x7C), *_shorts("bcd", 0x192)),
     "pr_line_a_c2_h3_split": (*_arrays(2, 0x7D), *_shorts("bcd", 0x195)),
+    # The known side past the sweep (quick 261112-fdx): frames the model already calls known.
+    "pr_line_k_c4_s2_i": (*_arrays(4, 0x7E, 0x198), Marked("c", 4, 0x199)),
+    "pr_line_k_c4x2_i10": (*_arrays(4, 0x7F, 0x80), *_ints("cdefghijkl", 0x19A)),
+    "pr_line_k_i_c4_i2_c4_i": (Marked("a", 4, 0x1A4), Marked("b", 4, 0x81, array=True),
+                               *_ints("cd", 0x1A5), Marked("e", 4, 0x82, array=True),
+                               Marked("f", 4, 0x1A7)),  # fmt: skip
+    "pr_line_k_c4x2_i_late": (*_arrays(4, 0x83, 0x84), Marked("c", 4, 0x1A8)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -181,6 +193,24 @@ REFUSED_HOLDING = {
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
     "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
     "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
+    # Line B (quick 261112-fdx): two 4-byte arrays first, then ints, beside later blocks of ints.
+    "pr_line_b_c4x2_i_blk": (*_arrays(4, 0x85, 0x86), Marked("c", 4, 0x1A9),
+                             Marked("d", 4, 0x1AA, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i3_blk": (*_arrays(4, 0x87, 0x88), *_ints("cde", 0x1AB),
+                              Marked("f", 4, 0x1AE, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk5": (*_arrays(4, 0x89, 0x8A), Marked("c", 4, 0x1AF),
+                              *_ints("defgh", 0x1B0, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk_blk": (*_arrays(4, 0x8B, 0x8C), Marked("c", 4, 0x1B5),
+                                 Marked("d", 4, 0x1B6, 1), Marked("e", 4, 0x1B7, 2)),  # fmt: skip
+    "pr_line_b_c4_s2_i_blk": (*_arrays(4, 0x8D, 0x1B8), Marked("c", 4, 0x1B9),
+                              Marked("d", 4, 0x1BA, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk_late": (*_arrays(4, 0x8E, 0x8F), Marked("c", 4, 0x1BB),
+                                  Marked("d", 4, 0x1BC, 1)),  # fmt: skip
+    # Line C (quick 261112-fdx): three or more 4-byte arrays first, then ints, in one block.
+    "pr_line_c_c4x2_s2_i": (*_arrays(4, 0x90, 0x91, 0x1BD), Marked("d", 4, 0x1BE)),
+    "pr_line_c_c4x3_i2": (*_arrays(4, 0x92, 0x93, 0x94), *_ints("de", 0x1BF)),
+    "pr_line_c_c4x4_i": (*_arrays(4, 0x95, 0x96, 0x97, 0x98), Marked("e", 4, 0x1C1)),
+    "pr_line_c_c4x3_i_late": (*_arrays(4, 0x99, 0x9A, 0x9B), Marked("d", 4, 0x1C2)),
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {

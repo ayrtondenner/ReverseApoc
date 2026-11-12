@@ -1427,6 +1427,264 @@ void pr_line_a_c2_h3_split(void)
     pr_take(&b, &c, &d);
 }
 
+void pr_line_k_c4_s2_i(void)
+{
+    char a[4];
+    short b[2];
+    int c;
+
+    a[0] = 0x7e;
+    b[0] = 0x198;
+    c = 0x199;
+    pr_take(a, b, &c);
+}
+
+void pr_line_k_c4x2_i10(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+    int d;
+    int e;
+    int f;
+    int g;
+    int h;
+    int i;
+    int j;
+    int k;
+    int l;
+
+    a[0] = 0x7f;
+    b[0] = 0x80;
+    c = 0x19a;
+    d = 0x19b;
+    e = 0x19c;
+    f = 0x19d;
+    g = 0x19e;
+    h = 0x19f;
+    i = 0x1a0;
+    j = 0x1a1;
+    k = 0x1a2;
+    l = 0x1a3;
+    pr_take(a, b, &c, &d, &e, &f, &g, &h, &i, &j, &k, &l);
+}
+
+void pr_line_k_i_c4_i2_c4_i(void)
+{
+    int a;
+    char b[4];
+    int c;
+    int d;
+    char e[4];
+    int f;
+
+    a = 0x1a4;
+    b[0] = 0x81;
+    c = 0x1a5;
+    d = 0x1a6;
+    e[0] = 0x82;
+    f = 0x1a7;
+    pr_take(&a, b, &c, &d, e, &f);
+}
+
+void pr_line_k_c4x2_i_late(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    c = 0x1a8;
+    b[0] = 0x84;
+    a[0] = 0x83;
+    pr_take(&c, b, a);
+}
+
+void pr_line_b_c4x2_i_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x85;
+    b[0] = 0x86;
+    c = 0x1a9;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1aa;
+        pr_take(&d);
+    }
+}
+
+void pr_line_b_c4x2_i3_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+    int d;
+    int e;
+
+    a[0] = 0x87;
+    b[0] = 0x88;
+    c = 0x1ab;
+    d = 0x1ac;
+    e = 0x1ad;
+    pr_take(a, b, &c, &d, &e);
+    if (x) {
+        int f;
+
+        f = 0x1ae;
+        pr_take(&f);
+    }
+}
+
+void pr_line_b_c4x2_i_blk5(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x89;
+    b[0] = 0x8a;
+    c = 0x1af;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+        int e;
+        int f;
+        int g;
+        int h;
+
+        d = 0x1b0;
+        e = 0x1b1;
+        f = 0x1b2;
+        g = 0x1b3;
+        h = 0x1b4;
+        pr_take(&d, &e, &f, &g, &h);
+    }
+}
+
+void pr_line_b_c4x2_i_blk_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x8b;
+    b[0] = 0x8c;
+    c = 0x1b5;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1b6;
+        pr_take(&d);
+    }
+    if (x > 1) {
+        int e;
+
+        e = 0x1b7;
+        pr_take(&e);
+    }
+}
+
+void pr_line_b_c4_s2_i_blk(int x)
+{
+    char a[4];
+    short b[2];
+    int c;
+
+    a[0] = 0x8d;
+    b[0] = 0x1b8;
+    c = 0x1b9;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1ba;
+        pr_take(&d);
+    }
+}
+
+void pr_line_b_c4x2_i_blk_late(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    c = 0x1bb;
+    b[0] = 0x8f;
+    a[0] = 0x8e;
+    pr_take(&c, b, a);
+    if (x) {
+        int d;
+
+        d = 0x1bc;
+        pr_take(&d);
+    }
+}
+
+void pr_line_c_c4x2_s2_i(void)
+{
+    char a[4];
+    char b[4];
+    short c[2];
+    int d;
+
+    a[0] = 0x90;
+    b[0] = 0x91;
+    c[0] = 0x1bd;
+    d = 0x1be;
+    pr_take(a, b, c, &d);
+}
+
+void pr_line_c_c4x3_i2(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    int d;
+    int e;
+
+    a[0] = 0x92;
+    b[0] = 0x93;
+    c[0] = 0x94;
+    d = 0x1bf;
+    e = 0x1c0;
+    pr_take(a, b, c, &d, &e);
+}
+
+void pr_line_c_c4x4_i(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    char d[4];
+    int e;
+
+    a[0] = 0x95;
+    b[0] = 0x96;
+    c[0] = 0x97;
+    d[0] = 0x98;
+    e = 0x1c1;
+    pr_take(a, b, c, d, &e);
+}
+
+void pr_line_c_c4x3_i_late(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    int d;
+
+    d = 0x1c2;
+    c[0] = 0x9b;
+    b[0] = 0x9a;
+    a[0] = 0x99;
+    pr_take(&d, c, b, a);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {
