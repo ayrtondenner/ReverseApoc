@@ -1387,9 +1387,9 @@ def _bare_quoting(tool: str, text: str) -> str:
 
 def _quoting(tool: str, name: str, trigger: str) -> str:
     return (f"a {tool} command from the harness worktree {name} names a script and also holds "
-            f"{trigger!r} outside quotes (an ANSI-C quote, or a `#` that may start a comment), so the hook cannot tell "
-            "which file runs (261109-gzy, 261112-fdw); run the script by a plain path from the "
-            "worktree root, in a call of its own")  # fmt: skip
+            f"{trigger!r} outside quotes (an ANSI-C quote, or a `#` that may start a comment), so "
+            "the hook cannot tell which file runs (261109-gzy, 261112-fdw); run the script by a "
+            "plain path from the worktree root, in a call of its own")  # fmt: skip
 
 
 def _worktree_command(payload: Mapping) -> Decision:
