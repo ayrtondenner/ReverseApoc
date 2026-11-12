@@ -1992,8 +1992,10 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    help="the size-routed cascade (backlog 999.12a): each function's attempts "
                    "climb the arms of its size bucket's row in config/driver/backends.toml "
                    "[routing], in this one drive, each arm under run id <run>-ARM with its own "
-                   "pause, max_workers, caps, canary and --allow-egress; a function whose arm "
-                   "is paused or full goes back to the queue (docs/model-routing.md); refused "
+                   "pause, max_workers, caps, canary and --allow-egress; a paused or capped "
+                   "arm passes the attempt to the row's next arm; a busy arm, or a row with no "
+                   "arm free, sends the function back to the queue at its attempt "
+                   "(docs/model-routing.md); refused "
                    "with --hold, --arm, --night-model, --fable-trial, --canary, --land-held and "
                    "--session readability")  # fmt: skip
     p.add_argument("--arm-cap", type=_arm_cap, action="append", default=None, metavar="NAME=N",

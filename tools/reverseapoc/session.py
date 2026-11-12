@@ -106,9 +106,30 @@ def model_for_pass(pass_number: int, *, row: Sequence[str] = (), attempt: int = 
         raise ValueError(f"pass number {pass_number} is below 1")
     if not row:
         return OPUS_MODEL if pass_number <= ESCALATE_AFTER_PASSES else FABLE_MODEL
+    return row[_rung(pass_number, row, attempt, attempts)]
+
+
+def _rung(pass_number: int, row: Sequence[str], attempt: int, attempts: int) -> int:
+    """The index in a non-empty `row` of attempt `attempt` of pass `pass_number` (quick
+    261112-fds's ladder); ValueError for an attempt outside 1..attempts."""
     if not 1 <= attempt <= attempts:
         raise ValueError(f"attempt {attempt} is outside 1..{attempts}")
-    return row[min((pass_number - 1) * attempts + attempt - 1, len(row) - 1)]
+    return min((pass_number - 1) * attempts + attempt - 1, len(row) - 1)
+
+
+def arms_for_attempt(pass_number: int, *, row: Sequence[str], attempt: int,
+                     attempts: int) -> tuple[str, ...]:  # fmt: skip
+    """Quick 261112-fdt (backlog 999.12b): the arms a cascade attempt tries, in order: the row
+    rotated to start at model_for_pass's rung (row[r:], then row[:r]), each arm once. It is the
+    row's own order, and it wraps to the row's start instead of holding the function while an
+    arm of the row is free (RULINGS fdt). Its first arm is always model_for_pass's. ValueError
+    as model_for_pass, and for an empty row."""
+    if pass_number < 1:
+        raise ValueError(f"pass number {pass_number} is below 1")
+    if not row:
+        raise ValueError("a cascade row names no arm")
+    r = _rung(pass_number, row, attempt, attempts)
+    return tuple(dict.fromkeys((*row[r:], *row[:r])))
 
 
 def build_argv(

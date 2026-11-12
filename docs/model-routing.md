@@ -792,8 +792,9 @@ Without `--run` there is none: the JSON field `comparison` is null and the text 
 Quick 261112-fds (backlog 999.12a) routes each function by its size, cheapest arm first, in one
 drive: `reverseapoc drive --cascade`. Spike 012 showed that under 64 B the cheap arms match what
 the strong ones do, and that quota binds before dollars ([model-comparison.md](model-comparison.md),
-"Routing conclusion"). The escalation hand-off of backlog 999.12b (quick 261112-fdt) builds on
-this.
+"Routing conclusion"). Quick 261112-fdt (backlog 999.12b) adds the escalation hand-off: a
+paused or capped arm passes the attempt to the row's next arm, and a usage limit mid-attempt
+hands the same attempt on.
 
 - **The table.** `config/driver/backends.toml` holds a top-level `[routing]` table beside the
   arms. Only `drive --cascade` reads it (`backends.load_routing`). Each key is a size range in
@@ -824,17 +825,34 @@ this.
   night keeps one drive lock, one audit under the gate lock and one commit queue.
 - **Caps.** Each arm launches at most `--arm-cap NAME=N` sessions tonight, else its
   `max_sessions`, else only `--max-sessions` caps it. An `--arm-cap` above the arm's
-  `max_sessions` is refused. Under this change alone (261112-fds), an attempt whose arm has
-  reached its cap ends the function's pass for tonight (`arm capped`, one console line): the
-  function is not offered again tonight, gets no difficult-list entry, and comes back next
-  night. The hand-off to the row's next arm comes with backlog 999.12b (quick 261112-fdt).
-- **A paused or full arm.** A function whose next attempt's arm is paused, or has all its
-  `max_workers` slots busy, takes no worker. It goes back to the queue at that attempt number,
-  and the other arms' work keeps the workers. A LIMIT starts its arm's pause and is recorded,
-  and no worker sleeps the backoff: the first launch after the backoff has passed on the clock
-  is the probe (D-07's 60, 120, 240 s, then 300 s polls). Waiting picks keep the drive open
-  while the pause holds, as a paused one-arm night does. Backlog 999.12b turns the wait into a
-  skip to the row's next arm.
+  `max_sessions` is refused. A capped arm is skipped for the attempt (see "The skip").
+- **The skip.** An attempt runs on the first arm of its row that can launch now. It tries the
+  row from the attempt's rung, then the later arms, then the row's start. An arm that is capped
+  or paused is skipped for that attempt only, so the next attempt's rung is still the ladder's.
+  With the row Haiku, Sonnet, Opus and Sonnet capped at 1, function F runs Haiku, Sonnet, Opus,
+  and the next function runs Haiku, Opus, Opus. A busy arm, with all its `max_workers` slots
+  taken, is not skipped: the function waits off the workers for that arm. The reason is quota.
+  Haiku's weekly quota is tight, and Terra and Gemini run `max_workers` 1, so skipping a busy
+  arm would push most Terra-rung attempts back onto Haiku. An arm whose backoff has run out
+  but whose one probe another attempt holds counts as paused.
+- **The hand-off.** A usage limit mid-attempt starts the arm's pause and writes the limit record
+  under the arm's run id, and no worker sleeps. The same attempt number then goes to the row's
+  next arm that can launch. The arm's backoff ends on the clock, and the first launch on it
+  after that is the probe (D-07's 60, 120, 240 s, then 300 s polls). A transient abort still
+  ends the pass; its next pass is routed afresh.
+- **The waits.** When the routing reaches a busy arm, or no arm of the row can launch, the
+  function leaves the workers and comes back at its attempt number once an arm of its row can
+  run. This is the cascade form of a paused night's wait: waiting picks keep the drive open,
+  and the other arms' work keeps the workers. When every arm of the row is capped, the pass
+  ends for tonight with one line naming each arm's cap. The function is not offered again
+  tonight, gets no difficult-list entry, and comes back on a later night.
+- **The carried work.** The next arm's context pack holds the earlier attempts' notes, give-up
+  lines and best C, through the same earlier-notes path every night uses (07.2-02). A held
+  night keeps arms apart, and a cascade is never held.
+- **The records.** Each attempt record names the arm it ran on (run `<run>-<arm>`,
+  `model_requested`, `harness`, `backend`), a skipped or handed-off attempt too, so
+  `stats --run '<run>-*'` splits a cascade by arm. The limit record names the paused arm's run.
+  No record key was added.
 - **A denied write stops the drive.** A cascade has one dispatch lane, so a hook-denied write
   stops the whole cascade drive (fail closed), unlike an `--arm` night, which stops only that
   arm.
@@ -849,9 +867,17 @@ this.
   and the arm of each of its three attempts at its next pass, for example
   ` bucket [0, 64) attempts claude-haiku-5-5, gpt-6.1-terra, gpt-6.1-terra`. With `--json`,
   each pick document gains `cascade` {`bucket`, `pass`, `attempts`}. The dry run needs the
-  same `--allow-egress` flags as the night, because the arm checks run first.
+  same `--allow-egress` flags as the night, because the arm checks run first. The preview shows
+  each attempt's rung; a skip at run time is printed as it happens.
 - **Console.** The night prints one `cascade:` line naming each row and each arm's cap, and each
-  attempt line names its arm.
+  attempt line names its arm. A usage limit prints one line, the hand-off line or the wait
+  line. The templates:
+  - skip: `<label>: skipped <arm> (capped), <arm> (paused)`, the label naming the arm that runs;
+  - hand-off: `<label>: usage limit; arm <arm> pauses and passes this attempt to <next arm>`;
+  - wait: `<label>: usage limit; arm <arm> pauses for <seconds> s; the function goes back to
+    the queue at attempt <n>`;
+  - cap: `<label>: every arm of its row has launched its cap tonight (<arm>: <cap> sessions,
+    ...); the function waits for a later night`.
 
 The owner's run (Haiku 30, Terra 20, Gemini Flash 1), first as a dry run, then the night, after
 Terra's and Gemini's canaries have passed:

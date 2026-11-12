@@ -236,6 +236,7 @@ from .session import (
     WAIT_NOTE,
     SessionResult,
     agy_prompt,
+    arms_for_attempt,
     build_agy_argv,
     build_argv,
     build_codex_argv,
@@ -293,17 +294,26 @@ PARKED = "parked"  # quick 261109-gzu: a pass a sweep hit ended (never a record 
 # The console line of a park: `label` is _label(pick, n), `spec` the record's check.sweep_hit.
 PARKED_LINE = ("{label}: parked for the night (sweep hit: needs flags {spec}); left for flags "
                "propose/regate")  # fmt: skip
-# Quick 261112-fds (backlog 999.12a), a cascade pass (never a record outcome): its attempt's
-# arm has launched its cap tonight (ARM_CAPPED: the function waits for a later night), or
-# cannot launch now (ARM_WAITING: every max_workers slot busy, its pause holding, or every
-# night-cap slot reserved; the function goes back to the queue at that attempt number).
-# RESERVED is `_cascade_slot`'s and `_arm_state`'s answer when the arm can launch.
+# Quick 261112-fds (backlog 999.12a), a cascade pass (never a record outcome). Quick
+# 261112-fdt (999.12b): an arm that is capped or paused passes the attempt to the row's next
+# arm, a busy one (its pause ready, every max_workers slot or night-cap slot taken) makes the
+# pick wait. ARM_CAPPED: every arm of the attempt's row has launched its cap tonight (the
+# function waits for a later night). ARM_WAITING: the routing reached a busy arm, or no arm of
+# the row can launch now (the function goes back to the queue at that attempt number).
+# RESERVED is `_cascade_slot`'s, `_lane_state`'s and `_arm_state`'s answer when an arm can launch.
 ARM_CAPPED, ARM_WAITING, RESERVED = "arm capped", "arm waiting", "reserved"
 ATTEMPTS_PER_FUNCTION = 3  # D-07: the sessions of one pass (DriveConfig's default, the dry run)
-ARM_CAP_LINE = ("{label}: arm {arm} has launched its cap of {cap} sessions tonight; the "
-                "function waits for a later night (999.12b hands it to the row's next arm)")
+# `caps` names every arm of the row with its cap (--arm-cap's, else its max_sessions)
+ARM_CAP_LINE = ("{label}: every arm of its row has launched its cap tonight ({caps}); the "
+                "function waits for a later night")  # fmt: skip
 ARM_WAIT_LINE = ("{label}: usage limit; arm {arm} pauses for {seconds} s; the function goes "
                  "back to the queue at attempt {n}")  # fmt: skip
+# 261112-fdt: the attempt ran on a later arm of its row than its rung; `skipped` lists each arm
+# passed over as "<arm> (capped)" or "<arm> (paused)".
+ARM_SKIP_LINE = "{label}: skipped {skipped}"
+# 261112-fdt: a usage limit mid-attempt on `arm` hands the same attempt to the row's arm `to`
+# (the one line of that LIMIT; ARM_WAIT_LINE is the line when no arm can take it).
+HANDOFF_LINE = "{label}: usage limit; arm {arm} pauses and passes this attempt to {to}"
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
 STARTED, STOPPED, ENDED = "STARTED", "STOPPED", "ENDED"
 REFUSED = "REFUSED"  # a report only: the night did not start, so no run record is written
@@ -2941,8 +2951,9 @@ class _Coordinator:
         """A worker's pass ended: its unit and its number are free again. 07.2-06 (D-17): a
         hold run's function that had its attempt leaves the tier queue as a parked one does,
         so it is attempted once. 07.2-16: a function one arm matched is no work for the others
-        (`_Lane.drop`). Quick 261112-fds: an ARM_CAPPED pass leaves the tier queue for tonight
-        as a parked one does; an ARM_WAITING pass is a pass cut short (the tier queue keeps it
+        (`_Lane.drop`). Quick 261112-fds: an ARM_CAPPED pass (261112-fdt: every arm of its row
+        capped) leaves the tier queue for tonight as a parked one does; an ARM_WAITING pass (a
+        busy arm, or no arm of its row free) is a pass cut short (the tier queue keeps it
         eligible; a pool queue's pick goes back on `deferred`). Neither counts a pass."""
         hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
         lane, key = worker.lane, (worker.pick.exe, worker.pick.start)
@@ -3007,8 +3018,9 @@ class _Coordinator:
 
     def _ready(self, pick: Pick) -> bool:
         """The pick may be dispatched now: its unit is free and (quick 261112-fds, a cascade
-        night) its next attempt's arm is not ARM_WAITING (an ARM_CAPPED one is dispatched, so
-        that its pass ends ARM_CAPPED with its one line)."""
+        night) its next attempt's row is not ARM_WAITING (an ARM_CAPPED one is dispatched, so
+        that its pass ends ARM_CAPPED with its one line; 261112-fdt: `_arm_state` reads the
+        whole row)."""
         if (pick.exe, pick.unit) in self.busy:
             return False
         return not self.night.config.routing or self.night._arm_state(pick) != ARM_WAITING
@@ -3244,17 +3256,84 @@ class _Night:
 
     def _arm_state(self, pick: Pick) -> str:
         """Quick 261112-fds: under the night's condition, changing nothing, whether `pick`'s next
-        attempt (its waiting one, `_Lane.resume`, else 1) can launch on its arm now: ARM_CAPPED,
-        ARM_WAITING (its live slots full, its pause not ready, or every free slot of the night's
-        or the arm's cap reserved) or RESERVED. The coordinator offers no ARM_WAITING pick."""
+        attempt (its waiting one, `_Lane.resume`, else 1) can launch now. Quick 261112-fdt
+        (999.12b): over its rotated row (`_route_order`) by `_cascade_route`'s rule, so the
+        coordinator dispatches exactly the picks the routing will place: RESERVED at the first
+        arm that can launch, ARM_WAITING at the first busy one (`_busy`); a capped or paused arm
+        passes to the next; when the row runs out, ARM_CAPPED if every arm was capped, else
+        ARM_WAITING. The coordinator offers no ARM_WAITING pick."""
         with self.cond:
             n = self.lane.resume.get((pick.exe, pick.start), 1)
-            lane = self._route(pick, n)
+            capped = True
+            for lane in self._route_order(pick, n):
+                state = self._lane_state(lane)
+                if state == RESERVED:
+                    return RESERVED
+                if self._busy(lane, state):
+                    return ARM_WAITING
+                capped = capped and state == ARM_CAPPED
+            return ARM_CAPPED if capped else ARM_WAITING
+
+    def _lane_state(self, lane: _Lane) -> str:
+        """Quick 261112-fds's one-arm check (moved here by 261112-fdt): under the night's
+        condition, changing nothing, ARM_CAPPED (the arm has launched its cap), ARM_WAITING (its
+        live slots full, its pause not ready, or every free slot of the night's or the arm's cap
+        reserved) or RESERVED."""
+        with self.cond:
             if self._lane_end(lane):
                 return ARM_CAPPED
             if lane.reserved >= lane.live_cap or not self._room(lane) or not lane.pause.ready():
                 return ARM_WAITING
             return RESERVED
+
+    def _busy(self, lane: _Lane, state: str | None) -> bool:
+        """Quick 261112-fdt (coordinator ruling 2026-11-12): an arm that answered ARM_WAITING while
+        its pause is ready is busy (its max_workers slots taken, or every free cap slot
+        reserved), and the routing stops there: the pick waits for it. Any other ARM_WAITING is a
+        paused arm (a probe another worker holds is not ready either), which is skipped."""
+        return state == ARM_WAITING and lane.pause.ready()
+
+    def _route_order(self, pick: Pick, n: int) -> tuple[_Lane, ...]:
+        """Quick 261112-fdt (backlog 999.12b): the arm lanes attempt `n` of `pick`'s pass tries,
+        in order: its size bucket's row (backends.route_for) rotated to start at the attempt's
+        rung (session.arms_for_attempt). Its first lane is the rung's, which fds' `_route` gave
+        (folded in here). The pass is the dispatch lane's (`_pass`), counted once."""
+        row = backends.route_for(self.config.routing, pick.size).arms
+        arms = arms_for_attempt(self._pass(pick), row=row, attempt=n, attempts=self._attempts())
+        return tuple(self.arm_lanes[arm] for arm in arms)
+
+    def _cascade_route(self, pick: Pick, n: int) -> str | None:
+        """Quick 261112-fdt (backlog 999.12b): bind attempt `n` to the first arm of its rotated
+        row that `_cascade_slot` reserves, printing one ARM_SKIP_LINE when that is not the
+        rung's. Returns `_route_slot`'s answer."""
+        state, skipped = self._route_slot(pick, n)
+        if state == RESERVED and skipped:
+            self.deps.say(ARM_SKIP_LINE.format(label=self._label(pick, n),
+                                               skipped=", ".join(skipped)))  # fmt: skip
+        return state
+
+    def _route_slot(self, pick: Pick, n: int) -> tuple[str | None, list[str]]:
+        """Quick 261112-fdt: try `_cascade_slot` on each lane of `_route_order(pick, n)` in turn,
+        under the night's condition, binding `local.arm_lane` to it. None (a stop, the night
+        ended) and RESERVED end the routing with arm_lane on that lane, and so does a busy lane's
+        ARM_WAITING (`_busy`: the pick waits, no other arm takes the attempt). A capped or
+        paused lane is skipped. When the row runs out, arm_lane goes back to the rung lane and
+        the answer is ARM_CAPPED if every lane was capped, else ARM_WAITING. Only the lane that
+        reserves can take a probe (`try_launch` runs last in `_cascade_slot`). Also returns the
+        skipped arms as "<arm> (capped)" or "<arm> (paused)"."""
+        order = self._route_order(pick, n)
+        skipped: list[str] = []
+        capped = True
+        with self.cond:
+            for lane in order:
+                self.local.arm_lane = lane
+                state = self._cascade_slot()
+                if state in (None, RESERVED) or self._busy(lane, state):
+                    return state, skipped
+                skipped.append(f"{lane.arm} ({'capped' if state == ARM_CAPPED else 'paused'})")
+                capped = capped and state == ARM_CAPPED
+            self.local.arm_lane = order[0]
+            return (ARM_CAPPED if capped else ARM_WAITING), skipped
 
     def _lane_end(self, lane: _Lane) -> bool:
         """07.2-16 (D-22): the arm has launched its own cap of sessions (counted ones and spent
@@ -3614,12 +3693,14 @@ class _Night:
         07.2-06 (D-17, D-22): a hold run attempts each function once (`_hold_done`); a resumed
         one (owner approval 2026-11-10) numbers a redo after the run's recorded attempts.
 
-        Quick 261112-fds (backlog 999.12a), a cascade night: each attempt binds its rung's arm
-        lane (`_route`) and takes its slot through `_cascade_slot`, which never waits. An arm
-        at its cap ends the pass ARM_CAPPED (one console line; the function waits for a later
-        night, with no difficult-list entry); an arm that cannot launch now, or an attempt that
-        ended LIMIT, ends it ARM_WAITING, and the pass resumes at that attempt number
-        (`_Lane.resume`) once the coordinator sees its arm can launch."""
+        Quick 261112-fds (backlog 999.12a), a cascade night: each attempt binds an arm lane and
+        takes its slot through `_cascade_slot`, which never waits. Quick 261112-fdt (999.12b):
+        the lane is the first of its rotated row that reserves (`_cascade_route`): a capped or
+        paused arm passes the attempt to the row's next arm, a busy one makes the pick wait.
+        A row with every arm capped ends the pass ARM_CAPPED (one console line; the function
+        waits for a later night, with no difficult-list entry); a busy arm, or a row with no arm
+        that can launch, ends it ARM_WAITING, and the pass resumes at that attempt number
+        (`_Lane.resume`) once the coordinator sees an arm of its row can launch."""
         readability = self.config.session == READABILITY
         key = (pick.exe, pick.start)
         cascade = bool(self.config.routing)
@@ -3632,19 +3713,16 @@ class _Night:
             last = first + self._attempts()
         try:
             for n in range(first, last):
-                if cascade:  # quick 261112-fds: this attempt's rung of the row, never waiting
-                    self.local.arm_lane = self._route(pick, n)
-                    slot = self._cascade_slot()
+                if cascade:  # 261112-fds/fdt: the row's first arm that can launch, never waiting
+                    slot = self._cascade_route(pick, n)
                     if slot != RESERVED:
                         return self._cascade_end(pick, n, slot)
                 elif not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                     return None
-                try:
-                    outcome = self._announced(pick, n)
-                finally:
-                    self._release()  # not counted (a stop): a slot still held goes back
-                    self._hand_back()
-                if outcome == ARM_WAITING:
+                outcome = self._settled(pick, n)
+                if outcome == ARM_WAITING:  # 261112-fdt: a usage limit; the row takes it on
+                    outcome = self._handed_off(pick, n)
+                if outcome in (ARM_WAITING, ARM_CAPPED):
                     return self._cascade_end(pick, n, outcome)
                 if readability or outcome in (MATCHED, ABORTED, None):
                     return outcome
@@ -3663,14 +3741,54 @@ class _Night:
             self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         return CAPPED
 
+    def _settled(self, pick: Pick, n: int) -> str | None:
+        """Attempt `n` on its reserved slot; a slot it did not count goes back (a stop, a LIMIT)
+        and an unjudged probe is handed back (261112-fds)."""
+        try:
+            return self._announced(pick, n)
+        finally:
+            self._release()  # not counted (a stop): a slot still held goes back
+            self._hand_back()
+
+    def _handed_off(self, pick: Pick, n: int) -> str | None:
+        """Quick 261112-fdt (backlog 999.12b): attempt `n` ended LIMIT on the bound arm, whose
+        pause `_cascade_limited` started (or found holding) and whose limit record names its
+        run; its slot went back with arm_lane still on it. Route the same attempt over its row
+        again (`_route_slot`): RESERVED prints HANDOFF_LINE and runs it on that arm, never
+        advancing `n` or counting anything, until an attempt ends otherwise; ARM_WAITING (a
+        busy arm, or no arm of the row free) prints the one ARM_WAIT_LINE, naming the arm that
+        paused; ARM_CAPPED and None are returned as they are. Each round follows a real session
+        that ended LIMIT, which paused its arm, so the rounds end."""
+        outcome: str | None = ARM_WAITING
+        while outcome == ARM_WAITING:
+            label, (arm, seconds) = self._label(pick, n), self.local.limited
+            state, _ = self._route_slot(pick, n)
+            if state != RESERVED:
+                if state == ARM_WAITING:
+                    self.deps.say(self._wait_line(label, arm, seconds, n))
+                return state
+            self.deps.say(HANDOFF_LINE.format(label=label, arm=arm, to=self.arm_lane.arm))
+            outcome = self._settled(pick, n)
+        return outcome
+
+    @staticmethod
+    def _wait_line(label: str, arm: str, seconds: int | None, n: int) -> str:
+        """The console line of a LIMIT whose attempt no arm of the row can take now (fds'):
+        ARM_WAIT_LINE, or with no new pause (`seconds` None) the already-paused line."""
+        if seconds is None:
+            return (f"{label}: usage limit, arm {arm} is already paused; the function goes "
+                    f"back to the queue at attempt {n}")  # fmt: skip
+        return ARM_WAIT_LINE.format(label=label, arm=arm, seconds=seconds, n=n)
+
     def _cascade_end(self, pick: Pick, n: int, state: str | None) -> str | None:
         """Quick 261112-fds: end a cascade pass at attempt `n` that `_cascade_slot` or the
-        attempt cut short: ARM_CAPPED prints ARM_CAP_LINE; ARM_WAITING keeps `n` in the dispatch
-        lane's `resume`; None (a stop, or the night ended) returns None."""
+        attempt cut short: ARM_CAPPED prints ARM_CAP_LINE (261112-fdt: naming every arm of the
+        row with its cap); ARM_WAITING keeps `n` in the dispatch lane's `resume`; None (a stop,
+        or the night ended) returns None."""
         if state == ARM_CAPPED:
-            lane = self.arm_lane
-            self.deps.say(ARM_CAP_LINE.format(label=self._label(pick, n), arm=lane.arm,
-                                              cap=lane.max_sessions))  # fmt: skip
+            row = dict.fromkeys(backends.route_for(self.config.routing, pick.size).arms)
+            caps = ", ".join(f"{arm}: {self.arm_lanes[arm].max_sessions} sessions" for arm in row)
+            self.deps.say(ARM_CAP_LINE.format(label=self._label(pick, n), caps=caps))
         elif state == ARM_WAITING:
             with self.cond:
                 self.lane.resume[(pick.exe, pick.start)] = n
@@ -3720,14 +3838,6 @@ class _Night:
         if self.config.fable_trial:
             return FABLE_MODEL
         return model_for_pass(self._pass(pick))
-
-    def _route(self, pick: Pick, n: int) -> _Lane:
-        """Quick 261112-fds (backlog 999.12a): the arm lane of attempt `n` of `pick`'s pass on a
-        cascade night: the rung session.model_for_pass gives in the row of its size bucket
-        (backends.route_for). The pass is the dispatch lane's (`_pass`), counted once."""
-        row = backends.route_for(self.config.routing, pick.size).arms
-        arm = model_for_pass(self._pass(pick), row=row, attempt=n, attempts=self._attempts())
-        return self.arm_lanes[arm]
 
     def _arm(self, pick: Pick) -> backends.Arm:
         """07.2-12: this worker's arm (07.2-16: `--arm`'s or `--night-model`'s; quick
@@ -3814,7 +3924,9 @@ class _Night:
         it (`local.probe`), never a wait; a LIMIT starts (or renews) its arm's pause, is
         recorded and ends the attempt ARM_WAITING at once, with no backoff slept (a salvaged
         match is still MATCHED); a transient retry takes its slot through `_cascade_slot`, and
-        any answer but RESERVED aborts it as a cap that leaves no slot does."""
+        any answer but RESERVED aborts it as a cap that leaves no slot does. Quick 261112-fdt:
+        ARM_WAITING is this method's LIMIT answer only, and `_function` hands that attempt to
+        the row's next arm that can launch (`_handed_off`)."""
         transient = 0
         cascade = bool(self.config.routing)
         while True:
@@ -3839,7 +3951,7 @@ class _Night:
                 self._after_session(session)
                 matched = self._salvage(session)
                 if cascade:
-                    self._cascade_limited(pick, n, probe)
+                    self._cascade_limited(probe)
                     return MATCHED if matched else ARM_WAITING
                 self._limited(pick, n, probe)
                 if matched:
@@ -3866,21 +3978,19 @@ class _Night:
             return self._cascade_slot() == RESERVED
         return self._reserve()
 
-    def _cascade_limited(self, pick: Pick, n: int, probe: bool) -> None:
+    def _cascade_limited(self, probe: bool) -> None:
         """Quick 261112-fds: a cascade attempt's LIMIT starts (or, for the probe, renews) its
         arm's pause and records it (DEC-06), and no worker sleeps the backoff: it runs out on
-        the clock and the first launch after it is the probe (`_Pause.try_launch`)."""
+        the clock and the first launch after it is the probe (`_Pause.try_launch`). Quick
+        261112-fdt: the record still names this arm's run, and `local.limited` keeps (arm, the
+        backoff's seconds, None with no new pause) for `_handed_off`, which prints the one line
+        of this LIMIT (HANDOFF_LINE when the row takes the attempt on, else ARM_WAIT_LINE)."""
         lane = self.arm_lane
         limited = lane.pause.on_limit(probe)
         self.local.probe = False  # the verdict is in
-        label = self._label(pick, n)
-        if limited is None:
-            self.deps.say(f"{label}: usage limit, arm {lane.arm} is already paused; the "
-                          f"function goes back to the queue at attempt {n}")  # fmt: skip
-            return
-        seconds, streak = limited
-        self._record_limit(seconds, streak)
-        self.deps.say(ARM_WAIT_LINE.format(label=label, arm=lane.arm, seconds=seconds, n=n))
+        self.local.limited = (lane.arm, None if limited is None else limited[0])
+        if limited is not None:
+            self._record_limit(*limited)
 
     def _claim(self, pick: Pick, n: int) -> _Claim:
         """07-30 (D-09, D-25): attempt `n` of the function's pass tonight, on the model
@@ -6175,7 +6285,8 @@ class _Night:
 
     def _record_limit(self, seconds: int, streak: int) -> None:
         """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker of its arm;
-        07.2-16: the record names the arm's run id)."""
+        07.2-16: the record names the arm's run id; quick 261112-fdt: on a cascade hand-off it
+        is the paused arm's run, and the attempt goes on under the next arm's)."""
         record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.arm_lane.run,
                   "worker": self.worker, "seconds": seconds, "streak": streak,
                   "date": self.deps.today()}  # fmt: skip

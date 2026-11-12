@@ -122,6 +122,33 @@ def test_model_for_pass_climbs_a_cascade_row():
             session.model_for_pass(1, row=(a, b), attempt=n, attempts=3)
 
 
+_A, _B, _C, _T = "arm-a", "arm-b", "arm-c", "arm-t"
+
+
+@pytest.mark.parametrize(("pass_number", "row", "n", "order"), [
+    (1, (_A, _B, _C), 1, (_A, _B, _C)),
+    (1, (_A, _B, _C), 2, (_B, _C, _A)),
+    (1, (_A, _B, _C), 3, (_C, _A, _B)),
+    (2, (_A, _B, _C), 1, (_C, _A, _B)),
+    (1, (_A, _B), 3, (_B, _A)),
+    *((p, (_T,), n, (_T,)) for p in (1, 2) for n in (1, 2, 3)),
+])  # fmt: skip
+def test_arms_for_attempt_rotates_the_row_from_its_rung(pass_number, row, n, order):
+    """Quick 261112-fdt (999.12b): attempt n's arms in the order it tries them, the row rotated
+    to start at model_for_pass's rung (the rung stays on the last arm past the row's end), each
+    arm once; its first arm is always model_for_pass's (the invariant)."""
+    got = session.arms_for_attempt(pass_number, row=row, attempt=n, attempts=3)
+    assert got == order
+    assert got[0] == session.model_for_pass(pass_number, row=row, attempt=n, attempts=3)
+
+
+@pytest.mark.parametrize(("pass_number", "row", "n"), [
+    (0, (_A, _B), 1), (1, (_A, _B), 0), (1, (_A, _B), 4), (1, (), 1)])  # fmt: skip
+def test_arms_for_attempt_refuses_what_model_for_pass_refuses(pass_number, row, n):
+    with pytest.raises(ValueError):
+        session.arms_for_attempt(pass_number, row=row, attempt=n, attempts=3)
+
+
 def test_model_tables_agree():
     """T-07-125: every model the init check accepts has a co-author name and a price, and no
     other (Phase 07.2 D-16: Haiku 5.5 and Sonnet 5.5 join the three tables)."""

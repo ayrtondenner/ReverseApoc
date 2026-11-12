@@ -1540,5 +1540,8 @@ def test_cascade_refusals(argv, conflict, capsys, monkeypatch):
 
 
 def test_cascade_in_help(capsys):
+    """Quick 261112-fdt extends fds' test: the help says a paused or capped arm passes the
+    attempt to the row's next arm."""
     text = _drive_help(capsys)
     assert "--cascade" in text and "--arm-cap NAME=N" in text
+    assert "a paused or capped arm passes the attempt to the row's next arm" in text
