@@ -873,8 +873,12 @@ hands the same attempt on.
   and the arm of each of its three attempts at its next pass, for example
   ` bucket [0, 64) attempts claude-haiku-5-5, gpt-6.1-terra, gpt-6.1-terra`. With `--json`,
   each pick document gains `cascade` {`bucket`, `pass`, `attempts`}. The dry run needs the
-  same `--allow-egress` flags as the night, because the arm checks run first. The preview shows
-  each attempt's rung; a skip at run time is printed as it happens.
+  same `--allow-egress` flags as the night, because the arm checks run first. The preview
+  applies the caps (`--arm-cap`, else `max_sessions`): pick after pick, each attempt it shows
+  counts one launch of its arm, an attempt whose rung is capped shows the arm the routing would
+  take instead, for example `claude-haiku-5-5 (gemini-flash capped)`, and an attempt whose
+  whole row is capped shows `every arm capped` and ends that pick's list. Pauses and busy arms
+  are not previewed; a skip for either is printed at run time as it happens.
 - **Console.** The night prints one `cascade:` line naming each row and each arm's cap, and each
   attempt line names its arm. A usage limit prints one routing line, the hand-off line or the
   wait line, beside the attempt's own outcome line (`arm waiting after N s`). The templates:

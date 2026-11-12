@@ -7455,19 +7455,54 @@ HOLD_RUN_LINE = ("hold run: nothing lands and each function is attempted once; m
                  "build/driver/{run}/" + HOLD_RUN_MARKER)
 
 
-def _cascade_preview(routing: Sequence[backends.Route], pick: Pick,
-                     passes: Mapping[Key, int]) -> dict:  # fmt: skip
-    """Quick 261112-fds: a dry-run pick's cascade: its size bucket's row label, its next pass
-    (the committed log's pass index) and the arm of each of its attempts in that pass."""
+PREVIEW_ROW_CAPPED = "every arm capped"  # 261112-fdr (IN-05): a previewed attempt's whole row
+
+
+def _cascade_previews(routing: Sequence[backends.Route], picks: Sequence[Pick],
+                      passes: Mapping[Key, int],
+                      caps: Mapping[str, int | None]) -> list[dict]:  # fmt: skip
+    """Quick 261112-fds: each dry-run pick's cascade: its size bucket's row label, its next
+    pass (the committed log's pass index) and the arm of each of its attempts in that pass.
+    Quick 261112-fdr (IN-05): pick after pick, each attempt shown counts one launch of its arm
+    against the arm's cap in `caps` (`_arm_caps`; None or absent: no cap of its own), and an
+    attempt routes past a capped arm as the night does (`arms_for_attempt`), shown as
+    "<arm> (<arm> capped, ...)"; PREVIEW_ROW_CAPPED, when every arm of its row is capped, ends
+    the pick's pass, as ARM_CAPPED does. Pauses and busy arms are not previewed."""
+    launched: dict[str, int] = {}
+    return [_cascade_preview(routing, pick, passes, caps, launched) for pick in picks]
+
+
+def _cascade_preview(routing: Sequence[backends.Route], pick: Pick, passes: Mapping[Key, int],
+                     caps: Mapping[str, int | None], launched: dict[str, int]) -> dict:  # fmt: skip
+    """One pick of `_cascade_previews`, counting its attempts' launches in `launched`."""
     row = backends.route_for(routing, pick.size)
     pass_n = passes.get((pick.exe, pick.start), 0) + 1
-    attempts = [model_for_pass(pass_n, row=row.arms, attempt=n, attempts=ATTEMPTS_PER_FUNCTION)
-                for n in range(1, ATTEMPTS_PER_FUNCTION + 1)]  # fmt: skip
+    attempts: list[str] = []
+    for n in range(1, ATTEMPTS_PER_FUNCTION + 1):
+        order = arms_for_attempt(pass_n, row=row.arms, attempt=n, attempts=ATTEMPTS_PER_FUNCTION)
+        attempts.append(_previewed_attempt(order, caps, launched))
+        if attempts[-1] == PREVIEW_ROW_CAPPED:
+            break
     return {"bucket": row.label, "pass": pass_n, "attempts": attempts}
 
 
+def _previewed_attempt(order: Sequence[str], caps: Mapping[str, int | None],
+                       launched: dict[str, int]) -> str:  # fmt: skip
+    """The first arm of `order` below its cap, its launch counted, naming the capped arms it
+    passed over; PREVIEW_ROW_CAPPED when every arm is capped."""
+    for i, arm in enumerate(order):
+        cap = caps.get(arm)
+        if cap is not None and launched.get(arm, 0) >= cap:
+            continue
+        launched[arm] = launched.get(arm, 0) + 1
+        skipped = ", ".join(f"{other} capped" for other in order[:i])
+        return f"{arm} ({skipped})" if skipped else arm
+    return PREVIEW_ROW_CAPPED
+
+
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
-            picks: Sequence[DryPick], held: Sequence[Key] | None = None) -> int:  # fmt: skip
+            picks: Sequence[DryPick], held: Sequence[Key] | None = None,
+            caps: Mapping[str, int | None] | None = None) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
     gate (D-10). A tier pick's line and document add its tier, level and pass (07-26). `held`
     (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
@@ -7476,12 +7511,15 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     session would run on, and the document adds `fable_trial` {model, budget_usd}. Quick
     261112-fds: with --cascade each pick's line ends with its size bucket and the arm of each
     of its ATTEMPTS_PER_FUNCTION attempts at its next pass, and its document adds `cascade`
-    {bucket, pass, attempts}."""
+    {bucket, pass, attempts}; quick 261112-fdr (IN-05): with each arm's cap of `caps` applied
+    (`_cascade_previews`)."""
     docs, lines = [], []
     if options.fable_trial:
         lines.append(FABLE_TRIAL_DRY_RUN.format(count=len(picks), model=FABLE_MODEL,
                                                 budget=options.fable_budget_usd))  # fmt: skip
     passes = pass_index(Path(options.repo) / ATTEMPT_LOG) if options.routing else {}
+    previews = iter(_cascade_previews(options.routing, [_pick_of(entry) for entry in picks],
+                                      passes, caps or {}) if options.routing else ())  # fmt: skip
     for entry in picks:
         pick = _pick_of(entry)
         directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
@@ -7491,7 +7529,7 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         place = "" if "tier" not in doc else (
             f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
         if options.routing:
-            doc["cascade"] = _cascade_preview(options.routing, pick, passes)
+            doc["cascade"] = next(previews)
             place += (f" bucket {doc['cascade']['bucket']} attempts "
                       f"{', '.join(doc['cascade']['attempts'])}")  # fmt: skip
         lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
@@ -7802,12 +7840,17 @@ def _cascade_line(options: DriveOptions, arms: Mapping[str, backends.Arm]) -> st
     """Quick 261112-fds: CASCADE_LINE for the night's rows and each arm's effective cap
     (--arm-cap, else its max_sessions, else none of its own)."""
     rows = "; ".join(f"{row.label} {' > '.join(row.arms)}" for row in options.routing)
-    caps = dict(options.arm_caps)
-    shown = []
-    for arm in backends.routing_arms(options.routing):
-        cap = caps.get(arm, arms[arm].max_sessions)
-        shown.append(f"{arm}={cap}" if cap is not None else f"{arm} (no cap of its own)")
+    shown = [f"{arm}={cap}" if cap is not None else f"{arm} (no cap of its own)"
+             for arm, cap in _arm_caps(options, arms).items()]  # fmt: skip
     return CASCADE_LINE.format(rows=rows, caps=", ".join(shown))
+
+
+def _arm_caps(options: DriveOptions, arms: Mapping[str, backends.Arm]) -> dict[str, int | None]:
+    """Each cascade arm's cap tonight, in routing order: --arm-cap's, else its max_sessions,
+    else None (as `_Night` sets each arm lane's `max_sessions`)."""
+    caps = dict(options.arm_caps)
+    return {arm: caps.get(arm, arms[arm].max_sessions)
+            for arm in backends.routing_arms(options.routing)}  # fmt: skip
 
 
 def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) -> int:
@@ -7846,7 +7889,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                 _drafts(log, [_pick_of(entry) for entry in picks])
             if options.dry_run:
                 with _phase("pack"):
-                    return dry_run(options, worlds, picks, held)
+                    return dry_run(options, worlds, picks, held, _arm_caps(options, arms))
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
