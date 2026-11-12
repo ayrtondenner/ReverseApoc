@@ -237,6 +237,38 @@ def test_mismatch_classes_read_config_under_the_repo_by_default(tmp_path):
     assert causes.collect(tmp_path, []).to_json()["mismatch_classes"] == {"length": 1}
 
 
+# ---- hex address fold (todo causes-hex-address-keys) ----
+
+_TAIL = ("0x000ABCE0: length differs: ours 16 bytes, original 32 bytes; the original's tail is "
+         "not alignment filler")  # fmt: skip
+_TAIL_KEY = ("reloc: length differs: ours N bytes, original N bytes; the original's tail is not "
+             "alignment filler")  # fmt: skip
+
+
+def _reloc_mismatches(repo: Path, problems: tuple[str, ...]) -> None:
+    """One plain exit-1 check per problem, each the claimed entry's first reloc problem."""
+    attempt_dir = _attempt(repo, "run-a")
+    _log(attempt_dir, [_line(n, 1) for n in range(1, len(problems) + 1)])
+    for n, problem in enumerate(problems, start=1):
+        _doc(attempt_dir, n, _check_doc([_entry(reloc_problems=(problem,))]))
+
+
+def test_a_hex_address_folds_to_one_placeholder(tmp_path, capsys):
+    _config(tmp_path)
+    # Made-up addresses, in relocs._va's uppercase 0x%08X form.
+    _reloc_mismatches(tmp_path, (
+        f"{_TAIL} (pop at 0x000ABCDE)",
+        f"{_TAIL} (pop at 0x00041234)",
+        f"{_TAIL} (pop at 0x000B1F3C)",
+        f"{_TAIL} (ret at 0x000ABCDE)",
+        "0x00012350: _TEXT+0x1a3 (func_00023D50_) resolves to 0x000D65AB, the original "
+        "targets 0x000D67CD",
+    ))  # fmt: skip
+    got = _json(capsys, "--repo", str(tmp_path))["mismatch_classes"]
+    resolves = "reloc: _TEXT+N (func_00023D50_) resolves to N, the original targets N"
+    assert got == {f"{_TAIL_KEY} (pop at N)": 3, f"{_TAIL_KEY} (ret at N)": 1, resolves: 1}
+
+
 def test_header_gaps_ranked(tmp_path):
     foo = "v.c(4): Error! E1011: Symbol 'foo' has not been declared\n"
     bar = "v.c(5): Error! E1011: Symbol 'bar' has not been declared\n"
