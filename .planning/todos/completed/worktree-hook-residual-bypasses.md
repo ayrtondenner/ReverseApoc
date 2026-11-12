@@ -52,4 +52,4 @@ Coordinator follow-up after the verifier (2026-11-12): docs/workflow.md now desc
 limits match the code; `SHELLOPTS`, `BASHOPTS` and `PS4` joined the steering names (RED a627f286, GREEN edc4418c), and
 the ordinary PowerShell pytest case takes the platform's path form, which the Linux container had failed on. One
 existing test (`test_worktree_command_allows_plain_output_redirection`) was edited in 9b070683 to write its `x.sh`
-first, as the new bare-script-name rule requires; accepted as an override, no denial loosened.
+first, as the new bare-script-name rule requires; accepted as an override (owner confirmed 2026-11-12), no denial loosened.
