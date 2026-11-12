@@ -2104,13 +2104,14 @@ def test_a_cascade_pass_resumes_at_its_waiting_attempt(tmp_path):
     """SONNET's first session ends LIMIT at attempt 2: the pass ends ARM_WAITING, the tier queue
     keeps the function eligible, and once the backoff has passed on the clock its pass resumes
     at attempt 2 (the probe), then attempt 3. No second attempt 1, one limit record, and no
-    worker slept the backoff: the pick waited in the queue instead."""
+    worker slept the backoff: the pick waited in the queue instead. Quick 261112-fdt: HAIKU is
+    capped at 1, so the paused SONNET has no free arm in its row to pass attempt 2 to."""
     from test_driver_pick import _tier_night
 
     night, deps = _tier_night(tmp_path, (START,), unit=UNIT, night_cls=ArmNight,
                               by_model={SONNET: [Sess("rate_limit", write=None)]})  # fmt: skip
     report = night.run(config={"attempts_per_function": 3, "max_sessions": 3,
-                               "routing": _every(HAIKU, SONNET)},
+                               "routing": _every(HAIKU, SONNET), "arm_caps": ((HAIKU, 1),)},
                        queue=deps.queue, requeue=deps.requeue, clock=_ticking(night))
     assert report.event == "ENDED", report.detail
     assert [(r["attempt"], r["model_requested"]) for r in night.kinds("attempt")] == [
