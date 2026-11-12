@@ -2506,3 +2506,38 @@ def test_a_dry_run_without_cascade_is_unchanged(tmp_path, capsys):
     assert all("cascade" not in pick for pick in picks)
     assert set(picks[0]) == {"exe", "start", "name", "unit", "size", "score", "pack",
                              "pack_bytes"}  # fmt: skip
+
+
+def test_the_cascade_preview_honours_the_arm_caps():
+    """IN-05 (quick 261112-fdr): the preview counts one launch per attempt it shows, pick after
+    pick, against each arm's cap, and routes past a capped arm as the night does. Row (HAIKU,
+    TERRA), HAIKU capped at 3 and TERRA at 2: p0 runs the plain ladder; p1's attempt 2 finds
+    TERRA capped and goes to HAIKU, its attempt 3 finds the whole row capped, which ends its
+    pass; p2 finds the whole row capped at attempt 1."""
+    from test_driver_workers import _every, _sized
+
+    picks = [_sized(i, 20) for i in range(3)]
+    previews = driver._cascade_previews(_every(HAIKU, TERRA), picks, {},
+                                        {HAIKU: 3, TERRA: 2})  # fmt: skip
+    assert [p["attempts"] for p in previews] == [
+        [HAIKU, TERRA, TERRA],
+        [HAIKU, f"{HAIKU} ({TERRA} capped)", driver.PREVIEW_ROW_CAPPED],
+        [driver.PREVIEW_ROW_CAPPED]]  # fmt: skip
+    assert [(p["bucket"], p["pass"]) for p in previews] == [("[0, 64)", 1)] * 3
+    uncapped = driver._cascade_previews(_every(HAIKU, TERRA), picks, {}, {HAIKU: None})
+    assert [p["attempts"] for p in uncapped] == [[HAIKU, TERRA, TERRA]] * 3
+
+
+def test_a_cascade_dry_run_reads_the_arm_caps(tmp_path, capsys):
+    """IN-05: `--dry-run --cascade --arm-cap` previews with the caps: with every arm capped at 1
+    no arm is shown launching twice, and a pick past the caps shows its row capped."""
+    rows = driver.backends.load_routing()
+    caps = ((HAIKU, 1), (TERRA, 1), (GEMINI, 1))
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, routing=rows, arm_caps=caps,
+                             allow_egress=(TERRA, GEMINI))  # fmt: skip
+    assert code == 0
+    shown = [a for pick in json.loads(out)["picks"] for a in pick["cascade"]["attempts"]]
+    launched = [a.split()[0] for a in shown if a.split()[0] in dict(caps)]
+    assert len(launched) == len(set(launched)), shown
+    assert driver.PREVIEW_ROW_CAPPED in shown, shown
