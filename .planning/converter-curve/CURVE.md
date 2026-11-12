@@ -37,6 +37,7 @@ quick id.
 | 14 | 261109-gzt | 8ce53b74490b30912d67b91ddc2def91de66a02c | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 15 | 261109-gzt | 83a884b6048dc1d57ac271f02c18c6a1f56d99b6 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 16 | 07.2-14 | 3d0a8bf1ebaf1eca61df3a3b17b6a72848dd52fd | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
+| 17 | 261112-fdx | cf4cc3c015b6d3db3289d5850b0e7998e87c01f4 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 17 | 11 | 1 | 0 | yes t1 exact -1, t1 near -1 | 0 | exempt (D-27) |
 
 ## Point 8
 
@@ -734,6 +735,85 @@ Not-matched Tier 1 rows by class and route:
 | mixed | 7 | 0 | 14 | 21 |
 | none | 44 | 0 | 1 | 45 |
 | rows | 56 | 0 | 751 | 807 |
+
+Refusal reasons over the not-matched Tier 1 rows:
+
+| reason | rows |
+| --- | --- |
+| call: stack-convention or odd callee name | 43 |
+| op: cdq | 31 |
+| pop: value not pushed in the block | 23 |
+| reg: esp read before any write | 21 |
+| call: stack arguments not pushed in the block | 18 |
+| call: result of a void callee is used | 15 |
+| jcc: no flag source | 15 |
+| jump: indirect (switch table) | 13 |
+| call: indirect | 11 |
+| call: target is not a row start | 9 |
+| idiv: dividend is not a cdq of eax | 8 |
+| stack: slot read at two widths | 8 |
+| decode: row does not decode to its end | 7 |
+| x87: stack live across a block end | 5 |
+| frame: ebp frame | 4 |
+| op: repne scasb | 3 |
+| reg: esi read before any write | 3 |
+| stack: saved register slot | 3 |
+| stack: address outside the frame | 2 |
+| stack: slot above the frame that is no parameter | 2 |
+| op: cwd | 1 |
+| op: enter | 1 |
+| op: in | 1 |
+| op: iretd | 1 |
+| op: one-operand imul | 1 |
+
+## Point 17
+
+Quick 261112-fdx: `slots.order_is_known` keeps three measured lines past the 07.1 sweep (A: one 2-byte array declared first beside 2-byte locals; B: two 4-byte arrays then an int, plain locals in later blocks; C: three or more 4-byte arrays then ints; line D broke and was not drawn). Compared with point 16, row by row, the compile, exact and score of each of the 1834 records stayed the same: no draft's frame falls on a new line here, so the change costs nothing and wins nothing on this curve. The Tier 1 table moves only because 6 Tier 1 rows were matched since point 16 (the spike 012 landings) and left the converter-only rows for the matched line (807 to 801 rows; 136 to 142 matched rows).
+
+Matched-row control (D-20): the matched line is 142 rows, 74 exact (136 and 73 at point 16, the 6 new matched rows accounting for the difference), and row by row the 175 exact records of point 16 are the 175 of point 17: none lost, none gained.
+
+Tier 1, 943 members, converter only:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 14 | 3 | 0 | 0 | 17 |
+| near | 3 | 8 | 0 | 0 | 11 |
+| compiled | 35 | 238 | 209 | 44 | 526 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 15 | 36 | 104 | 66 | 221 |
+| refused | 0 | 4 | 12 | 10 | 26 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 67 | 289 | 325 | 120 | 801 |
+
+Matched rows (142): 74 exact, 64 compiled, 0 refused, 4 hole-draft.
+
+Sample, 120 rows, tools: converter, search, slots, classify:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 0 | 1 | 0 | 0 | 1 |
+| near | 0 | 0 | 0 | 0 | 0 |
+| compiled | 0 | 36 | 28 | 17 | 81 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 0 | 3 | 11 | 19 | 33 |
+| refused | 0 | 0 | 1 | 4 | 5 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 0 | 40 | 40 | 40 | 120 |
+
+`hole-draft` rows are refused rows that lifted with holes. They can never be exact and are never searched, so `refused` falls by them with no real gain. The reasons below count each such row's strict lift, so the retry lowers no first-refusal count.
+
+Not-matched Tier 1 rows by class and route:
+
+| class | converter | search | agent | all |
+| --- | --- | --- | --- | --- |
+| tail | 0 | 0 | 3 | 3 |
+| slot | 0 | 0 | 0 | 0 |
+| size | 2 | 0 | 729 | 731 |
+| register | 1 | 0 | 1 | 2 |
+| branch | 1 | 0 | 0 | 1 |
+| mixed | 7 | 0 | 13 | 20 |
+| none | 43 | 0 | 1 | 44 |
+| rows | 54 | 0 | 747 | 801 |
 
 Refusal reasons over the not-matched Tier 1 rows:
 
