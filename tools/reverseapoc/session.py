@@ -225,8 +225,9 @@ def _skill_body(skill_text: str) -> str:
     return skill_text
 
 
-# 07.2 review WR-10: the skill tells a Claude session to look around with Read, Grep and Glob;
-# a Codex or agy session has none of them, and a shell read is a stray. Each form named here is
+# 07.2 review WR-10 (wording 261112-fdv): a Codex or agy session has no Read, Grep or Glob tool,
+# and a shell read is a stray; the skill says to read through the wrapper where a harness's file
+# tools cannot read, and this note says this session is such a case. Each form named here is
 # one the driver's rules allow (tests/test_codex.py checks them against hooks.bash_allowed).
 # Canary round 3: Sol wrote its files with `Set-Content`, a command the audit flags, which stops
 # the whole night; a file-edit tool's writes (Codex's apply_patch, reported as file_change
@@ -238,8 +239,8 @@ WAIT_NOTE = ("A wrapper command, `attempt check` above all, can run for several 
              "your shell tool hands a command back while it is still running, keep waiting on "
              "it (poll it) until it exits and you have its output before you do anything else; "
              "never end your turn while a wrapper command is still running.")
-_HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so where the skill "
-                 "says to look around with them, read through the wrapper instead: "
+_HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so read through "
+                 "the wrapper, as the skill says where your file tools cannot read: "
                  "`attempt context` prints the context pack, `attempt asm` and "
                  "`attempt asm <NAME>` print listings, and `attempt check` prints its summary "
                  "and the paths of its evidence. Create and edit files only with your file-edit "

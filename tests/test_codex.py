@@ -201,10 +201,11 @@ def test_harness_note_points_at_the_skill_text_that_exists():
 
 def test_codex_prompt_harness_note():
     """07.2 review WR-10: a Codex session has no Read, Grep or Glob tool (quick 261112-fdv: the
-    skill now names the action, not those tools). One harness note after the skill body, before the session rules,
-    says so and names where files are read instead: the wrapper forms that print (context,
-    asm, asm <NAME>, check), each of them a form the rules allow. The session rules forbid any
-    other command, reads, listings and searches included; nothing names a read tool."""
+    skill now names the action, not those tools). One harness note after the skill body, before
+    the session rules, says so and names where files are read instead: the wrapper forms that
+    print (context, asm, asm <NAME>, check), each of them a form the rules allow. The session
+    rules forbid any other command, reads, listings and searches included; nothing names a
+    read tool."""
     from reverseapoc import hooks
 
     goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
