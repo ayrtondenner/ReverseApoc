@@ -2786,7 +2786,8 @@ class _Lane:
     and gives a redo the next attempt number. Read and written under the night's condition.
     Quick 261112-fds: a cascade arm's lane (`_Night.arm_lanes`) runs at most `live_cap`
     sessions at once (its max_workers; None: its own workers bound it); the dispatch lane's
-    `resume` holds the next attempt number of a function whose cascade pass ended ARM_WAITING."""
+    `resume` holds the next attempt number of a function whose cascade pass ended ARM_WAITING.
+    Quick 261112-fdr (WR-02): a cascade arm's `spent` also counts its LIMIT launches."""
 
     arm: str | None
     run: str
@@ -3338,8 +3339,8 @@ class _Night:
 
     def _lane_end(self, lane: _Lane) -> bool:
         """07.2-16 (D-22): the arm has launched its own cap of sessions (counted ones and spent
-        transient launches), or (owner ruling 2026-11-10) a denied write stopped it; under the
-        night's condition."""
+        transient launches; quick 261112-fdr: and a cascade arm's LIMIT launches), or (owner
+        ruling 2026-11-10) a denied write stopped it; under the night's condition."""
         capped = lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
         return capped or lane.stopped
 
@@ -3952,7 +3953,7 @@ class _Night:
                 self._after_session(session)
                 matched = self._salvage(session)
                 if cascade:
-                    self._cascade_limited(probe)
+                    self._cascade_limited(probe, counted=matched)
                     return MATCHED if matched else ARM_WAITING
                 self._limited(pick, n, probe)
                 if matched:
@@ -3979,14 +3980,22 @@ class _Night:
             return self._cascade_slot() == RESERVED
         return self._reserve()
 
-    def _cascade_limited(self, probe: bool) -> None:
+    def _cascade_limited(self, probe: bool, *, counted: bool) -> None:
         """Quick 261112-fds: a cascade attempt's LIMIT starts (or, for the probe, renews) its
         arm's pause and records it (DEC-06), and no worker sleeps the backoff: it runs out on
         the clock and the first launch after it is the probe (`_Pause.try_launch`). Quick
         261112-fdt: the record still names this arm's run, and `local.limited` keeps (arm, the
         backoff's seconds, None with no new pause) for `_handed_off`, which prints the one line
-        of this LIMIT (HANDOFF_LINE when the row takes the attempt on, else ARM_WAIT_LINE)."""
+        of this LIMIT (HANDOFF_LINE when the row takes the attempt on, else ARM_WAIT_LINE).
+        Quick 261112-fdr (WR-02): a launch is a launch (--arm-cap's "launches at most N"), so a
+        LIMIT launch not `counted` as a salvaged match spends one slot of its arm's own cap, and
+        of no night total: its reserved slot goes back and the lane's `spent` goes up in one
+        hold of the condition. A capped arm is then never probed past its cap."""
         lane = self.arm_lane
+        if not counted:
+            with self.cond:
+                self._settle(counted=False, spent=False)
+                lane.spent += 1
         limited = lane.pause.on_limit(probe)
         self.local.probe = False  # the verdict is in
         self.local.limited = (lane.arm, None if limited is None else limited[0])
