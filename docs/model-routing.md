@@ -825,7 +825,9 @@ hands the same attempt on.
   night keeps one drive lock, one audit under the gate lock and one commit queue.
 - **Caps.** Each arm launches at most `--arm-cap NAME=N` sessions tonight, else its
   `max_sessions`, else only `--max-sessions` caps it. An `--arm-cap` above the arm's
-  `max_sessions` is refused. A capped arm is skipped for the attempt (see "The skip").
+  `max_sessions` is refused. A capped arm is skipped for the attempt (see "The skip"). A
+  launch that ends in a usage limit counts against its arm's own cap too, though not against
+  `--max-sessions`, so `--arm-cap gemini-flash=1` means one agy launch, whatever it ends in.
 - **The skip.** An attempt runs on the first arm of its row that can launch now. It tries the
   row from the attempt's rung, then the later arms, then the row's start. An arm that is capped
   or paused is skipped for that attempt only, so the next attempt's rung is still the ladder's.
@@ -894,6 +896,14 @@ reverseapoc drive --cascade --workers 3 \
   --arm-cap claude-haiku-5-5=30 --arm-cap gpt-6.1-terra=20 --arm-cap gemini-flash=1 \
   --allow-egress gpt-6.1-terra --allow-egress gemini-flash
 ```
+
+The caps add up to 51 sessions, under `--max-sessions` 60, so this night normally ends
+`arms capped`. Every row holds Terra, so once Haiku and Gemini are capped and Terra hits a
+usage limit, the night waits and probes Terra as a paused night does (60, 120, 240 s, then
+300 s polls). Each probe that ends in a limit uses one of Terra's 20, so the night still ends
+`arms capped` once Terra is capped too. When Terra's week is used up, that takes at most its
+remaining launches, under two hours of polls. Each is a Codex launch that sends the context
+pack (`--allow-egress`) and writes one limit record.
 
 ### The evidence for each default row
 
