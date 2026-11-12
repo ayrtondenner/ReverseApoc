@@ -1336,11 +1336,13 @@ def _runspace(name: str, word: str) -> str:
 
 def _allowlist_denial(tool: str, command: str, cwd: str, name: str, *, nested: bool = False) -> str:
     """Why a simple command of a script-naming call (or of a substitution in it, `nested`) has no
-    listed shape (A5, A6), or why it names a script after a PowerShell direct script run, or
-    runs one inside a subexpression (A8: the script runs in the caller's runspace); else ''."""
+    listed shape (A5, A6), or why it names a script or holds a `$(` after a PowerShell direct
+    script run, or runs one inside a subexpression (A8: the script runs in the caller's
+    runspace); else ''."""
     direct = ""
     for segment in _simple_commands(tool, command):
-        if direct and any(_segment_scripts(tool, segment)):
+        later = any(_segment_scripts(tool, segment)) or any("$(" in text for text, _op in segment)
+        if direct and later:
             return _runspace(name, direct)
         raw, bad = _shape(tool, segment)
         offender = bad or _command_offender(tool, raw, cwd)
@@ -1358,6 +1360,38 @@ def _indirect(tool: str, name: str, trigger: str) -> str:
     return (f"a {tool} command from the harness worktree {name} names a script and also holds "
             f"{trigger!r} (a heredoc or here-string marker, or a backslash-newline), so the hook "
             "cannot tell which file runs (261109-gzy); run the script by a plain path from the "
+            "worktree root, in a call of its own")  # fmt: skip
+
+
+_WORD_STARTS = frozenset(" \t\r\n;&|()<>")
+
+
+def _bare_quoting(tool: str, text: str) -> str:
+    """261112-fdw: the first `$'` (an ANSI-C quote) or word-initial `#` (a comment) outside
+    quotes, which the word reader does not follow, or ''. An escaped character is skipped."""
+    escape = "\\" if tool == "Bash" else "`"
+    quote, index = "", 0
+    while index < len(text):
+        char = text[index]
+        if char == escape and quote != "'":
+            index += 2
+            continue
+        if quote:
+            quote = "" if char == quote else quote
+        elif text.startswith("$'", index):
+            return "$'"
+        elif char == "#" and (index == 0 or text[index - 1] in _WORD_STARTS):
+            return "#"
+        elif char in "'\"":
+            quote = char
+        index += 1
+    return ""
+
+
+def _quoting(tool: str, name: str, trigger: str) -> str:
+    return (f"a {tool} command from the harness worktree {name} names a script and also holds "
+            f"{trigger!r} outside quotes (an ANSI-C quote or a comment), so the hook cannot tell "
+            "which file runs (261109-gzy, 261112-fdw); run the script by a plain path from the "
             "worktree root, in a call of its own")  # fmt: skip
 
 
@@ -1393,7 +1427,10 @@ def _worktree_command(payload: Mapping) -> Decision:
     trigger = _INDIRECTION.search(command)
     if trigger is not None:
         return _deny(_indirect(tool, name, trigger.group()))
-    reason = _scripts_denial(words, cwd, tool, pairs) or _allowlist_denial(tool, text, cwd, name)
+    quoting = _bare_quoting(tool, text)
+    reason = (_scripts_denial(words, cwd, tool, pairs)
+              or (_quoting(tool, name, quoting) if quoting else "")
+              or _allowlist_denial(tool, text, cwd, name))  # fmt: skip
     judged = (_allowlist_denial(tool, content, cwd, name, nested=True) for content in contents)
     reason = reason or next((found for found in judged if found), "")
     return _deny(reason) if reason else NO_OPINION
