@@ -3241,7 +3241,9 @@ class _Night:
         sessions are running, when every free slot of the night's or the arm's cap is reserved
         (an attempt still running may end uncounted), or while its pause holds; else RESERVED,
         with the slot reserved as `_reserve` does and `local.probe` set to `try_launch`'s
-        answer. A transient retry that still holds the probe keeps it (RULINGS amendment)."""
+        answer. A transient probe is itself a verdict (`_attempt` runs `on_clear` and clears
+        `local.probe` before its transient branch), so a retry never holds the probe: it asks
+        `try_launch` again (quick 261112-fdr, IN-03)."""
         lane = self.arm_lane
         with self.cond:
             if self.stop.is_set() or self._end():
