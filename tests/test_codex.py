@@ -187,9 +187,21 @@ def _note(prompt: str) -> str:
     return note
 
 
+def test_harness_note_points_at_the_skill_text_that_exists():
+    """Quick 261112-fdv: the skill no longer says to look around with Read, Grep and Glob; it says
+    to read through the wrapper where the harness's file tools cannot read. The harness note
+    must point at that wording, not at the removed one."""
+    skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
+    note = _note(session.codex_prompt(session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH),
+                                      skill))  # fmt: skip
+    assert "look around" not in skill
+    assert "look around" not in note
+    assert "read through the wrapper" in skill and "read through the wrapper" in note
+
+
 def test_codex_prompt_harness_note():
-    """07.2 review WR-10: the skill says to look around with Read, Grep and Glob, which a Codex
-    session does not have. One harness note after the skill body, before the session rules,
+    """07.2 review WR-10: a Codex session has no Read, Grep or Glob tool (quick 261112-fdv: the
+    skill now names the action, not those tools). One harness note after the skill body, before the session rules,
     says so and names where files are read instead: the wrapper forms that print (context,
     asm, asm <NAME>, check), each of them a form the rules allow. The session rules forbid any
     other command, reads, listings and searches included; nothing names a read tool."""
