@@ -1734,13 +1734,35 @@ def _arm_name(value: str) -> str:
     return value
 
 
+def _name_count(value: str, form: str) -> tuple[str, int]:
+    """`NAME=COUNT`: an arm of config/driver/backends.toml and a whole number of 1 or more;
+    `form` is the flag's own spelling of it in the error."""
+    name, sep, count = value.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"{value!r} is not {form}")
+    return _arm_name(name), _positive(count)
+
+
 def _arm_spec(value: str) -> tuple[str, int]:
     """07.2-16 (D-22): `--arm NAME=WORKERS`, an arm of config/driver/backends.toml and its
     worker count, a whole number of 1 or more."""
-    name, sep, workers = value.partition("=")
-    if not sep:
-        raise argparse.ArgumentTypeError(f"{value!r} is not NAME=WORKERS")
-    return _arm_name(name), _positive(workers)
+    return _name_count(value, "NAME=WORKERS")
+
+
+def _arm_cap(value: str) -> tuple[str, int]:
+    """Quick 261112-fds: `--arm-cap NAME=N`, a cascade arm and its session cap tonight."""
+    return _name_count(value, "NAME=N")
+
+
+class _Cascade(argparse.Action):
+    """Quick 261112-fds (backlog 999.12a): `--cascade` stores backends.load_routing()'s rows;
+    a malformed [routing] table exits 2 here, as a bad --arm does."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        try:
+            setattr(namespace, self.dest, backends.load_routing())
+        except backends.ArmError as exc:
+            parser.error(str(exc))
 
 
 class _Given(argparse.Action):
@@ -1803,7 +1825,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   write_picks=args.write_picks, hold=args.hold,
                                   land_held=tuple(args.land_held or ()),
                                   allow_egress=tuple(args.allow_egress or ()),
-                                  arms=arms)  # fmt: skip
+                                  arms=arms, routing=tuple(args.cascade),
+                                  arm_caps=tuple(args.arm_cap or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1846,16 +1869,63 @@ def _arm_conflict(args: argparse.Namespace) -> str | None:
     return f"--arm cannot be used with {', '.join(clash)}" if clash else None
 
 
+# quick 261112-fds (backlog 999.12a): what `--cascade` cannot run with besides --hold, whose
+# refusal names --arm, and --session readability
+_CASCADE_WITH = (("arm", "--arm"), ("night_model", "--night-model"),
+                 ("fable_trial", "--fable-trial"), ("canary", "--canary"),
+                 ("land_held", "--land-held"))  # fmt: skip
+
+
+def _cascade_conflict(args: argparse.Namespace) -> str | None:
+    """Quick 261112-fds: a flag `--cascade` cannot run with, or None. A held comparison keeps
+    using --arm (RULINGS fds, YAGNI)."""
+    if not args.cascade:
+        return None
+    if args.hold:
+        return ("--cascade cannot be used with --hold: a held comparison runs its arms with "
+                "--arm NAME=WORKERS")  # fmt: skip
+    clash = [flag for name, flag in _CASCADE_WITH if getattr(args, name)]
+    if args.session == driver.READABILITY:
+        clash.append("--session readability")
+    return f"--cascade cannot be used with {', '.join(clash)}" if clash else None
+
+
+def _arm_cap_conflict(args: argparse.Namespace) -> str | None:
+    """Quick 261112-fds: `--arm-cap` without --cascade, an arm capped twice, or one in none of
+    the cascade's rows, or None."""
+    names = [name for name, _ in args.arm_cap or ()]
+    if not names:
+        return None
+    if not args.cascade:
+        return "--arm-cap needs --cascade"
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        return f"--arm-cap {twice[0]} is given twice; cap each arm once"
+    cascade = backends.routing_arms(args.cascade)
+    stray = [name for name in names if name not in cascade]
+    if stray:
+        return f"--arm-cap {stray[0]} names no arm of the cascade's rows ({', '.join(cascade)})"
+    return None
+
+
 def _harness_conflict(args: argparse.Namespace) -> str | None:
     """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
     model is for a matching night that is no Fable trial; a hold run is a matching night that
     launches sessions; --stratify writes its picks file from a dry run; --land-held lands
     and launches nothing. 07.2-12 (D-11): each --allow-egress names an arm of the night (07.2-16:
-    the --night-model arm or an --arm), and that arm sends the context pack to a
-    non-Anthropic backend."""
+    the --night-model arm or an --arm; quick 261112-fds: an arm of the --cascade rows), and
+    that arm sends the context pack to a non-Anthropic backend."""
+    for conflict in (_cascade_conflict(args), _arm_cap_conflict(args)):
+        if conflict is not None:
+            return conflict
     readability = args.session == driver.READABILITY
-    night = [name for name, _ in args.arm or ()] or [args.night_model]
+    if args.cascade:
+        night = list(backends.routing_arms(args.cascade))
+    else:
+        night = [name for name, _ in args.arm or ()] or [args.night_model]
     for name in args.allow_egress or ():
+        if name not in night and args.cascade:
+            return f"--allow-egress {name} names no arm of the cascade's rows (D-11)"
         if name not in night:
             return f"--allow-egress {name} names no --night-model or --arm arm of this run (D-11)"
         if not backends.load_arms()[name].egress:
@@ -1918,6 +1988,17 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    "one audit, one commit queue), each under run id <run>-NAME with its own "
                    "queue, usage pause and limits (D-22); refused with --night-model, --workers, "
                    "--fable-trial, --canary, --land-held and --session readability")
+    p.add_argument("--cascade", action=_Cascade, nargs=0, default=(),
+                   help="the size-routed cascade (backlog 999.12a): each function's attempts "
+                   "climb the arms of its size bucket's row in config/driver/backends.toml "
+                   "[routing], in this one drive, each arm under run id <run>-ARM with its own "
+                   "pause, max_workers, caps, canary and --allow-egress; a function whose arm "
+                   "is paused or full goes back to the queue (docs/model-routing.md); refused "
+                   "with --hold, --arm, --night-model, --fable-trial, --canary, --land-held and "
+                   "--session readability")  # fmt: skip
+    p.add_argument("--arm-cap", type=_arm_cap, action="append", default=None, metavar="NAME=N",
+                   help="repeatable, with --cascade: arm NAME launches at most N sessions "
+                   "tonight (at most its backends.toml max_sessions)")  # fmt: skip
     p.add_argument("--allow-egress", action="append", default=None, metavar="ARM",
                    help="the owner's opt-in for --night-model or --arm ARM to send context "
                    "packs to its non-Anthropic backend (D-11); without it such an arm is "

@@ -299,6 +299,7 @@ PARKED_LINE = ("{label}: parked for the night (sweep hit: needs flags {spec}); l
 # night-cap slot reserved; the function goes back to the queue at that attempt number).
 # RESERVED is `_cascade_slot`'s and `_arm_state`'s answer when the arm can launch.
 ARM_CAPPED, ARM_WAITING, RESERVED = "arm capped", "arm waiting", "reserved"
+ATTEMPTS_PER_FUNCTION = 3  # D-07: the sessions of one pass (DriveConfig's default, the dry run)
 ARM_CAP_LINE = ("{label}: arm {arm} has launched its cap of {cap} sessions tonight; the "
                 "function waits for a later night (999.12b hands it to the row's next arm)")
 ARM_WAIT_LINE = ("{label}: usage limit; arm {arm} pauses for {seconds} s; the function goes "
@@ -379,7 +380,7 @@ class DriveConfig:
     min_cli_version: tuple[int, int, int]  # F28; plan 06-25 passes MIN_CLI_VERSION
     max_sessions: int = 60  # D-07 (it was 30, D-48)
     target_matched: int = 0  # D-07 CONTEXT default: off (it was 10, D-48)
-    attempts_per_function: int = 3  # D-07, per pass
+    attempts_per_function: int = ATTEMPTS_PER_FUNCTION  # D-07, per pass
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
     workers: int = 1  # D-06: sessions at once; 1 is the Phase 6 serial driver (the verb: 3)
@@ -2807,7 +2808,13 @@ class _Lane:
 def _lanes(config: DriveConfig) -> list[_Lane]:
     """07.2-16 (D-22): the night's arms as lanes, numbering their workers in arm order; with
     several arms each runs under `<run>-<arm>`. DriverError for an arm named twice, a worker
-    count below 1, or arms on a readability night (its sessions take no arm)."""
+    count below 1, or arms on a readability night (its sessions take no arm). Quick
+    261112-fds: a cascade night (`routing`) runs no other mode."""
+    clash = [name for name, on in (("arms", config.arms), ("night_model", config.night_model),
+                                   ("hold", config.hold), ("fable_trial", config.fable_trial),
+                                   ("readability", config.session == READABILITY)) if on]
+    if config.routing and clash:
+        raise DriverError(f"a cascade night (routing) cannot also run {', '.join(clash)}")
     if config.arms and config.session != MATCHING_KIND:
         raise DriverError(f"arms run on a {MATCHING_KIND} night only")
     arms = config.arms or ((config.night_model, config.workers),)
@@ -7319,6 +7326,17 @@ HOLD_RUN_LINE = ("hold run: nothing lands and each function is attempted once; m
                  "build/driver/{run}/" + HOLD_RUN_MARKER)
 
 
+def _cascade_preview(routing: Sequence[backends.Route], pick: Pick,
+                     passes: Mapping[Key, int]) -> dict:  # fmt: skip
+    """Quick 261112-fds: a dry-run pick's cascade: its size bucket's row label, its next pass
+    (the committed log's pass index) and the arm of each of its attempts in that pass."""
+    row = backends.route_for(routing, pick.size)
+    pass_n = passes.get((pick.exe, pick.start), 0) + 1
+    attempts = [model_for_pass(pass_n, row=row.arms, attempt=n, attempts=ATTEMPTS_PER_FUNCTION)
+                for n in range(1, ATTEMPTS_PER_FUNCTION + 1)]  # fmt: skip
+    return {"bucket": row.label, "pass": pass_n, "attempts": attempts}
+
+
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
             picks: Sequence[DryPick], held: Sequence[Key] | None = None) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
@@ -7326,11 +7344,15 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
     `held_starts`, and with a signed tier one `held: N` line after the picks. On a Fable trial
     (quick 261101-b5f, OD-5) a first `fable trial:` line names the model and budget every
-    session would run on, and the document adds `fable_trial` {model, budget_usd}."""
+    session would run on, and the document adds `fable_trial` {model, budget_usd}. Quick
+    261112-fds: with --cascade each pick's line ends with its size bucket and the arm of each
+    of its ATTEMPTS_PER_FUNCTION attempts at its next pass, and its document adds `cascade`
+    {bucket, pass, attempts}."""
     docs, lines = [], []
     if options.fable_trial:
         lines.append(FABLE_TRIAL_DRY_RUN.format(count=len(picks), model=FABLE_MODEL,
                                                 budget=options.fable_budget_usd))  # fmt: skip
+    passes = pass_index(Path(options.repo) / ATTEMPT_LOG) if options.routing else {}
     for entry in picks:
         pick = _pick_of(entry)
         directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
@@ -7339,6 +7361,10 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         docs.append(doc)
         place = "" if "tier" not in doc else (
             f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
+        if options.routing:
+            doc["cascade"] = _cascade_preview(options.routing, pick, passes)
+            place += (f" bucket {doc['cascade']['bucket']} attempts "
+                      f"{', '.join(doc['cascade']['attempts'])}")  # fmt: skip
         lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
                      f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes){place}")
     keys = tuple(held or ())

@@ -7,6 +7,8 @@ plan 06 built the flags below (D-17). Plans 12, 13,
 15 and 16 add their own sections to this page: the backends file, the Codex and Antigravity
 harnesses, and several arms in one drive. What the arms measured in spike 012 (per arm and size
 bucket: matches, tokens, cost, quota, canary failures) is in [model-comparison.md](model-comparison.md).
+Quick 261112-fds (backlog 999.12a) adds the size-routed cascade, `drive --cascade`, at the end
+of this page.
 
 ## The flags
 
@@ -42,6 +44,11 @@ bucket: matches, tokens, cost, quota, canary failures) is in [model-comparison.m
   committed.
 - `--land-held RUN...` lands the hold runs' exact results later (see "Landing a hold run"
   below). A trailing `*` names a prefix, as in `stats --run`.
+- `--cascade` runs the size-routed cascade: each function's attempts climb the arms of its size
+  bucket's row in the `[routing]` table of `config/driver/backends.toml`, in this one drive
+  (see "The size-routed cascade" below).
+- `--arm-cap NAME=N`, repeatable, with `--cascade` only: cascade arm NAME launches at most N
+  sessions tonight. N may not exceed the arm's backends.toml `max_sessions`.
 
 ## The hold-run marker
 
@@ -134,9 +141,16 @@ The drive refuses (exit 2), before any preflight, each of these combinations:
   `--canary` or `--fable-trial`;
 - `--allow-egress ARM` when ARM is not the `--night-model` arm or an `--arm` arm, or when ARM
   sends nothing to a non-Anthropic backend;
-- `--arm` with the flags listed under "Several arms in one drive" below.
+- `--arm` with the flags listed under "Several arms in one drive" below;
+- `--cascade` with `--hold` (a held comparison keeps using `--arm NAME=WORKERS`), `--arm`,
+  `--night-model`, `--fable-trial`, `--canary`, `--land-held` or `--session readability`;
+- `--allow-egress ARM` with `--cascade` when ARM is in none of the cascade's rows;
+- `--arm-cap` without `--cascade`, an `--arm-cap` arm named twice, and an `--arm-cap` arm in
+  none of the cascade's rows.
 
-An unknown `--night-model` arm exits 2 and names the known arms.
+An unknown `--night-model` arm exits 2 and names the known arms. A malformed `[routing]` table
+exits 2 when `--cascade` is parsed, naming the file and the key. An `--arm-cap` above the arm's
+`max_sessions` exits 2 before any command.
 
 ## Backends
 
@@ -772,3 +786,100 @@ Without `--run` there is none: the JSON field `comparison` is null and the text 
 - **Ratios.** `exact_per_api_usd`, `exact_per_wall_hour` and `exact_per_mtok`: exact functions
   per API-equivalent dollar, per wall hour and per million tokens, from the unrounded figures,
   shown to 2 decimals; null when the denominator is 0 or missing.
+
+## The size-routed cascade
+
+Quick 261112-fds (backlog 999.12a) routes each function by its size, cheapest arm first, in one
+drive: `reverseapoc drive --cascade`. Spike 012 showed that under 64 B the cheap arms match what
+the strong ones do, and that quota binds before dollars ([model-comparison.md](model-comparison.md),
+"Routing conclusion"). The escalation hand-off of backlog 999.12b (quick 261112-fdt) builds on
+this.
+
+- **The table.** `config/driver/backends.toml` holds a top-level `[routing]` table beside the
+  arms. Only `drive --cascade` reads it (`backends.load_routing`). Each key is a size range in
+  `reverseapoc stats`' own bucket label form, `"[low, high)"`, with `inf` for no upper bound, so
+  no new threshold is defined. A key may span consecutive stats buckets: `"[256, inf)"` is
+  stats' `[256, 1024)` and `[1024, inf)` merged into one row. Each value is the ordered list of
+  arms, and every arm must be an `[arms."..."]` entry. The committed rows are the owner's:
+
+  | Key | Arms, in order |
+  |---|---|
+  | `"[0, 64)"` | `claude-haiku-5-5`, `gpt-6.1-terra` |
+  | `"[64, 256)"` | `claude-haiku-5-5`, `gpt-6.1-terra`, `gemini-flash` |
+  | `"[256, inf)"` | `gpt-6.1-terra` |
+
+  A key that is no stats span, an empty row, a row that is not a list of arm names, an arm the
+  table does not hold, a bucket in two rows, a bucket in no row, or a missing `[routing]` table
+  exits 2 when `--cascade` is parsed, naming the file and the key.
+- **The ladder.** A pass has three attempts (D-07). Attempt n of pass p runs on rung
+  (p - 1) * 3 + n of its row, counted from 1, and the row's last arm takes every attempt past
+  the row's end. So a function under 64 B runs Haiku, then Terra, then Terra on pass 1, and
+  Terra on every attempt from pass 2. A function of 256 B and up runs Terra throughout.
+- **Run ids.** Each arm's attempts run under `<run>-<arm>`, with that arm's model, harness,
+  session environment, audit and co-author, as the `--arm` lanes do. The night's STARTED and
+  ENDED records keep `<run>` and count every arm. Compare the arms with
+  `reverseapoc stats --run '<run>-*'`.
+- **Concurrency.** `--workers` is the number of passes in flight. Each arm runs at most its
+  backends.toml `max_workers` sessions at once (Terra and Gemini 1, the Claude arms 10). The
+  night keeps one drive lock, one audit under the gate lock and one commit queue.
+- **Caps.** Each arm launches at most `--arm-cap NAME=N` sessions tonight, else its
+  `max_sessions`, else only `--max-sessions` caps it. An `--arm-cap` above the arm's
+  `max_sessions` is refused. Under this change alone (261112-fds), an attempt whose arm has
+  reached its cap ends the function's pass for tonight (`arm capped`, one console line): the
+  function is not offered again tonight, gets no difficult-list entry, and comes back next
+  night. The hand-off to the row's next arm comes with backlog 999.12b (quick 261112-fdt).
+- **A paused or full arm.** A function whose next attempt's arm is paused, or has all its
+  `max_workers` slots busy, takes no worker. It goes back to the queue at that attempt number,
+  and the other arms' work keeps the workers. A LIMIT starts its arm's pause and is recorded,
+  and no worker sleeps the backoff: the first launch after the backoff has passed on the clock
+  is the probe (D-07's 60, 120, 240 s, then 300 s polls). Waiting picks keep the drive open
+  while the pause holds, as a paused one-arm night does. Backlog 999.12b turns the wait into a
+  skip to the row's next arm.
+- **A denied write stops the drive.** A cascade has one dispatch lane, so a hook-denied write
+  stops the whole cascade drive (fail closed), unlike an `--arm` night, which stops only that
+  arm.
+- **Every per-arm gate holds.** Each cascade arm is checked as an `--arm` arm is: a Codex or agy
+  arm needs its own canary PASS for the installed CLI, an arm that sends the pack off the
+  machine needs its own `--allow-egress NAME` (an `--allow-egress` naming no cascade arm is
+  refused), a hosted arm needs its key, and each session is audited by its own harness.
+- **Refusals.** `--cascade` is refused with `--hold` (held comparisons keep using `--arm`),
+  `--arm`, `--night-model`, `--fable-trial`, `--canary`, `--land-held` and
+  `--session readability`; see "The refusals" above for `--arm-cap`.
+- **The dry run.** `reverseapoc drive --dry-run --cascade` prints, after each pick, its bucket
+  and the arm of each of its three attempts at its next pass, for example
+  ` bucket [0, 64) attempts claude-haiku-5-5, gpt-6.1-terra, gpt-6.1-terra`. With `--json`,
+  each pick document gains `cascade` {`bucket`, `pass`, `attempts`}. The dry run needs the
+  same `--allow-egress` flags as the night, because the arm checks run first.
+- **Console.** The night prints one `cascade:` line naming each row and each arm's cap, and each
+  attempt line names its arm.
+
+The owner's run (Haiku 30, Terra 20, Gemini Flash 1), first as a dry run, then the night, after
+Terra's and Gemini's canaries have passed:
+
+```
+reverseapoc drive --dry-run --cascade --workers 3 \
+  --arm-cap claude-haiku-5-5=30 --arm-cap gpt-6.1-terra=20 --arm-cap gemini-flash=1 \
+  --allow-egress gpt-6.1-terra --allow-egress gemini-flash
+reverseapoc drive --cascade --workers 3 \
+  --arm-cap claude-haiku-5-5=30 --arm-cap gpt-6.1-terra=20 --arm-cap gemini-flash=1 \
+  --allow-egress gpt-6.1-terra --allow-egress gemini-flash
+```
+
+### The evidence for each default row
+
+Every figure below is spike 012's, from [model-comparison.md](model-comparison.md) and the
+[spike README](../.planning/spikes/012-model-routing/README.md), with their marks: (L) a
+list-price estimate, (S) an owner screenshot reading, (R) a recomputation from the `stats` token
+counts. Spike 012 ran one attempt per arm over 20 picks, so a gap of one function is noise.
+
+| Row | Evidence |
+|---|---|
+| `[0, 64)`: Haiku, Terra | Haiku held 3 of 7 at $0.17 (L), 15.8% match per check; Opus held the same 3 at $3.23 (L). Terra held 3 of 7 at $0.47 (R), with 27.3% match per check and 9.72 exact per wall hour. Haiku and Terra held the same three functions (`tacp func_0009D110`, `tacp func_000A66A0`, `ufo2p func_00038510`); Sonnet alone held a fourth, `ufo2p func_00038550`. So Terra's rung adds a second vendor at the owner's choice, not a measured extra match. |
+| `[64, 256)`: Haiku, Terra, Gemini Flash | Haiku held 2 of 7 at $0.31 (L); one of them, the 176 B `ufo2p func_0005DB80`, failed the gate. Terra held 1, the 208 B `tacp func_00022140` that Haiku also held, at $0.67 (R). Gemini 3.8 Flash ran no pick in this bucket: its one session, under 64 B, held nothing (1 of 3 checks matched) and took about 22% of its weekly group (S), which is why the owner caps it at 1. GLM-5.3 alone held the 64 B `tacp func_00039E40` and is not in the row. |
+| `[256, inf)`: Terra | No arm that ran this bucket held anything (Haiku 0 of 6, 32 checks, all mismatches). The Codex arms, Terra among them, did not run it (quota). So Terra first is the owner's choice, with no spike 012 measurement in this bucket. |
+
+The caps' context: the medium-picks Codex run took the 5-hour window from about 53% to 100%
+(S), about 0.7% of the week per session (R). The calibration of 57 Opus sessions = 6% of the
+weekly bar (S) is an Opus figure, not Haiku's.
+
+ROADMAP 999.12's last follow-up recalibrates these rows after a few real nights.

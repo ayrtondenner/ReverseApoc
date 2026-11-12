@@ -345,14 +345,48 @@ def _spans() -> dict[str, tuple[int, ...]]:
 
 def load_routing(path: Path = ARMS_TOML, arms: Mapping[str, Arm] | None = None
                  ) -> tuple[Route, ...]:  # fmt: skip
-    """The [routing] rows of backends.toml in bucket order; `arms` None: load_arms(path)."""
+    """The [routing] rows of backends.toml in bucket order; `arms` None: load_arms(path).
+    ArmError, naming the file and the key, for a missing [routing] table, a key that is no
+    stats.SIZE_BUCKETS span, a value that is not a non-empty list of arm names, an arm the arm
+    table does not hold, a bucket in two rows and a bucket in no row (T-261112-fds-05)."""
     path = Path(path)
-    if arms is None:
-        load_arms(path)
+    table = load_arms(path) if arms is None else arms
     routing = _read(path).get(ROUTING)
+    if not isinstance(routing, Mapping):
+        raise ArmError(f"{path}: no [{ROUTING}] table of size rows (drive --cascade)")
     spans = _spans()
-    rows = [Route(key, spans[key], tuple(value)) for key, value in routing.items()]
+    rows, seen = [], {}
+    for key, value in routing.items():
+        try:
+            row = _route(key, value, spans, table)
+        except ArmError as exc:
+            raise ArmError(f"{path}: {ROUTING} {key!r}: {exc}") from None
+        twice = [bucket for bucket in row.buckets if bucket in seen]
+        if twice:
+            raise ArmError(f"{path}: {ROUTING} {key!r}: covers the bucket of "
+                           f"{seen[twice[0]]!r} again")  # fmt: skip
+        seen.update(dict.fromkeys(row.buckets, key))
+        rows.append(row)
+    missing = [label for label, buckets in spans.items()
+               if len(buckets) == 1 and buckets[0] not in seen]  # fmt: skip
+    if missing:
+        raise ArmError(f"{path}: {ROUTING}: no row holds the bucket {', '.join(missing)}")
     return tuple(sorted(rows, key=lambda row: row.buckets[0]))
+
+
+def _route(key: str, value: object, spans: Mapping[str, tuple[int, ...]],
+           arms: Mapping[str, Arm]) -> Route:  # fmt: skip
+    """One [routing] row; ArmError names what is wrong with it."""
+    if key not in spans:
+        one = [label for label, buckets in spans.items() if len(buckets) == 1]
+        raise ArmError(f"is not a size bucket: use one of {', '.join(one)} or a span of "
+                       'consecutive ones, such as "[256, inf)"')  # fmt: skip
+    if not isinstance(value, list) or not value or not all(isinstance(a, str) for a in value):
+        raise ArmError(f"{value!r} is not a non-empty list of arm names")
+    unknown = [name for name in value if name not in arms]
+    if unknown:
+        raise ArmError(f"{unknown[0]!r} is not an arm of the table: {', '.join(arms)}")
+    return Route(key, spans[key], tuple(value))
 
 
 def route_for(routes: Sequence[Route], size: int) -> Route:
