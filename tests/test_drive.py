@@ -2339,3 +2339,170 @@ def test_multi_arm_keeps_the_codex_audit(tmp_path, capsys, monkeypatch):
     assert stopped["reason"] == driver.GUARDRAIL and "type notes.md" in stopped["detail"]
     assert len(night.launched) == 1
     assert night.kinds("attempt")[0]["run"] == f"{RUN}-{LUNA}"
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade through run_drive ----
+
+SONNET = "claude-sonnet-5-5"
+TERRA = "gpt-6.1-terra"
+
+
+def _cascade_night(tmp_path: Path, monkeypatch, picks) -> tuple[Rig, Night, list]:
+    """`drive` on a Rig whose night (run_drive's own DriveConfig) runs in test_driver_workers'
+    ArmNight, with D-07's three attempts per function kept."""
+    from test_driver_workers import ArmNight
+
+    rig = Rig(tmp_path / "rig")
+    night = ArmNight(tmp_path / "night", picks=picks)
+    real, seen = driver.drive, []
+
+    def drive(config, deps, *, lock=None):
+        seen.append(config)
+        return real(replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240)),
+                    night.deps())  # fmt: skip
+
+    monkeypatch.setattr(driver, "drive", drive)
+    return rig, night, seen
+
+
+def test_cascade_reaches_the_night_end_to_end(tmp_path, capsys, monkeypatch):
+    """999.12a tracer: DriveOptions.routing reaches the night's DriveConfig, and one function's
+    attempts climb its row (HAIKU, SONNET, SONNET) under `<run>-<arm>`."""
+    from test_driver_workers import _every, _wpick
+
+    rows = _every(HAIKU, SONNET)
+    rig, night, seen = _cascade_night(tmp_path, monkeypatch, (_wpick(0),))
+    code, _, err = rig.drive(capsys, json=True, routing=rows, workers=1)
+    assert code == 0, err
+    assert seen[0].routing == rows and seen[0].attempts_per_function == 3
+    assert [(r["attempt"], r["model_requested"], r["run"]) for r in night.kinds("attempt")] == [
+        (1, HAIKU, f"{RUN}-{HAIKU}"), (2, SONNET, f"{RUN}-{SONNET}"),
+        (3, SONNET, f"{RUN}-{SONNET}")]  # fmt: skip
+
+
+@pytest.mark.parametrize(("allow", "words"), [
+    ((), f"--allow-egress {TERRA}"),
+    ((TERRA, GEMINI), f"--canary --night-model {TERRA}"),
+    ((DEEPSEEK,), DEEPSEEK),
+], ids=["no-egress", "no-canary", "stray-egress"])  # fmt: skip
+def test_cascade_arms_pass_every_per_arm_gate(tmp_path, capsys, allow, words):
+    """T-261112-fds-01, -02: each cascade arm that sends the pack off the machine needs its own
+    --allow-egress, an --allow-egress naming no cascade arm is refused, and each Codex or agy
+    arm needs its canary PASS: exit 2 before any session."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             routing=driver.backends.load_routing(), allow_egress=allow)
+    assert code == 2
+    assert words in _refusal(out)["detail"]
+    _no_session_ran(rig)
+
+
+def test_cascade_arm_caps_reach_the_night(tmp_path, capsys, monkeypatch):
+    """run_drive hands the cascade's rows, its arm caps and --workers to the night (no --arm
+    lanes), and prints the cascade line once, naming each row and each arm's cap."""
+    from test_driver_workers import _every
+
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rows = _every(HAIKU, SONNET)
+    rig = Rig(tmp_path)
+    code, out, err = rig.drive(capsys, routing=rows, arm_caps=((HAIKU, 5),), workers=2)
+    assert code == 0, err
+    config = seen[0]
+    assert (config.routing, config.arm_caps, config.workers, config.arms) == (
+        rows, ((HAIKU, 5),), 2, ())  # fmt: skip
+    cascade = [line for line in err.splitlines() if "cascade: " in line]  # console: stderr
+    assert len(cascade) == 1, err
+    for row in rows:
+        assert f"{row.label} {HAIKU} > {SONNET}" in cascade[0]
+    assert f"{HAIKU}=5" in cascade[0]
+
+
+@pytest.mark.parametrize(("caps", "words"), [
+    ((("gemini-flash", 21),), ("--arm-cap gemini-flash=21", "max_sessions 20")),
+    (((SONNET, 1),), (f"--arm-cap {SONNET}=1", f"{HAIKU}, {TERRA}, gemini-flash")),
+], ids=["above-max-sessions", "not-a-cascade-arm"])  # fmt: skip
+def test_a_cascade_arm_cap_above_max_sessions_is_refused(tmp_path, capsys, caps, words):
+    """An --arm-cap above the arm's backends.toml max_sessions, or naming no cascade arm, is
+    refused before any session."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             routing=driver.backends.load_routing(), arm_caps=caps,
+                             allow_egress=(TERRA, GEMINI))  # fmt: skip
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert all(word in detail for word in words), detail
+    _no_session_ran(rig)
+
+
+# ---- 261112-fds Task 3: the other modes refused, and the cascade's dry run ----
+
+
+@pytest.mark.parametrize(("clash", "word"), [
+    ({"arms": ((HAIKU, 1), (SONNET, 1))}, "arms"),
+    ({"night_model": HAIKU}, "night_model"),
+    ({"hold": True}, "hold"),
+    ({"session": driver.READABILITY}, "readability"),
+    ({"fable_trial": True}, "fable_trial"),
+], ids=["arms", "night-model", "hold", "readability", "fable-trial"])  # fmt: skip
+def test_a_cascade_config_refuses_the_other_modes(tmp_path, clash, word):
+    """A DriveConfig with routing and any other mode is refused before any lane is built."""
+    from test_driver_workers import _every
+
+    config = driver.DriveConfig(run_id=RUN, repo_root=tmp_path, tested_major=2,
+                                min_cli_version=(2, 1, 240), routing=_every(HAIKU), **clash)
+    with pytest.raises(driver.DriverError, match="cascade") as exc:
+        driver._lanes(config)
+    assert word in str(exc.value)
+
+
+def _expected_cascade(rig: Rig, rows, exe: str, start: int, size: int) -> tuple[str, int, list]:
+    from reverseapoc import session
+
+    passes = driver.pass_index(rig.repo / driver.ATTEMPT_LOG)
+    row = driver.backends.route_for(rows, size)
+    p = passes.get((exe, start), 0) + 1
+    arms = [session.model_for_pass(p, row=row.arms, attempt=n, attempts=3) for n in (1, 2, 3)]
+    return row.label, p, arms
+
+
+def test_cascade_dry_run_prints_each_picks_bucket_and_attempts(tmp_path, capsys):
+    """`--dry-run --cascade`: each pick's line ends with its bucket and the arm of each of its
+    three attempts; each pick document gains `cascade` {bucket, pass, attempts}."""
+    rows = driver.backends.load_routing()
+    egress = (TERRA, GEMINI)
+    rig = Rig(tmp_path / "text")
+    code, out, _ = rig.drive(capsys, dry_run=True, routing=rows, allow_egress=egress)
+    assert code == 0
+    lines = [line for line in out.splitlines() if line.startswith(("ufo2p", "tacp"))]
+    assert lines
+    for line in lines:
+        words = line.split()
+        size = int(words[words.index("size") + 1])
+        label, _, arms = _expected_cascade(rig, rows, words[0], int(words[1], 16), size)
+        assert line.endswith(f" bucket {label} attempts {', '.join(arms)}"), line
+    rig = Rig(tmp_path / "json")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, routing=rows, allow_egress=egress)
+    assert code == 0
+    for pick in json.loads(out)["picks"]:
+        label, p, arms = _expected_cascade(rig, rows, pick["exe"], int(pick["start"], 16),
+                                           pick["size"])  # fmt: skip
+        assert pick["cascade"] == {"bucket": label, "pass": p, "attempts": arms}
+
+
+def test_a_dry_run_without_cascade_is_unchanged(tmp_path, capsys):
+    rig = Rig(tmp_path / "text")
+    code, out, _ = rig.drive(capsys, dry_run=True)
+    assert code == 0 and " bucket " not in out
+    rig = Rig(tmp_path / "json")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    picks = json.loads(out)["picks"]
+    assert all("cascade" not in pick for pick in picks)
+    assert set(picks[0]) == {"exe", "start", "name", "unit", "size", "score", "pack",
+                             "pack_bytes"}  # fmt: skip

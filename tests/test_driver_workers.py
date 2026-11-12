@@ -1862,3 +1862,273 @@ def test_any_other_stray_still_stops_every_arm(tmp_path, spec):
     report = night.run(config={"arms": TWO_ARMS, "hold": True})
     assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
     assert DENIED_PATH in report.detail
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade ----
+
+ROW_LABELS = (("[0, 64)", (0,)), ("[64, 256)", (1,)), ("[256, inf)", (2, 3)))
+
+
+def _rows(*arms: tuple[str, ...]) -> tuple[driver.backends.Route, ...]:
+    """Routing rows for the three committed keys, the n-th row's arms `arms[n]`."""
+    return tuple(driver.backends.Route(label, buckets, tuple(row))
+                 for (label, buckets), row in zip(ROW_LABELS, arms, strict=True))  # fmt: skip
+
+
+def _every(*arms: str) -> tuple[driver.backends.Route, ...]:
+    """Every row the same ladder."""
+    return _rows(arms, arms, arms)
+
+
+def _sized(i: int, size: int) -> Pick:
+    start = START + 0x10000 * i
+    return Pick(EXE, start, f"func_{start:08X}", _unit(i), size, 100 + i)
+
+
+def _climb(night: Night) -> list[tuple]:
+    return [(r["attempt"], r["model_requested"], r["run"]) for r in night.kinds("attempt")]
+
+
+def test_cascade_climbs_the_row(tmp_path):
+    """999.12a: one function's three attempts climb its row (HAIKU, SONNET): HAIKU, then SONNET,
+    then SONNET (the row's last arm takes every later attempt), each under `<run>-<arm>` in its
+    own attempt directory; the night's run records keep the base run id and count each arm."""
+    pick = _wpick(0)
+    night = ArmNight(tmp_path, picks=(pick,))
+    lines: list[str] = []
+    report = night.run(config={"routing": _every(HAIKU, SONNET)}, say=lines.append)
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _climb(night) == [(1, HAIKU, _arm_run(HAIKU)), (2, SONNET, _arm_run(SONNET)),
+                             (3, SONNET, _arm_run(SONNET))]  # fmt: skip
+    for n, arm in ((1, HAIKU), (2, SONNET), (3, SONNET)):
+        assert (_driver_dir(night) / _arm_run(arm) / EXE / pick.name / f"attempt-{n}").is_dir()
+    assert list(_driver_dir(night).rglob("*-uncounted-*")) == []
+    run_records = night.kinds("run")
+    assert [r["run"] for r in run_records] == [RUN, RUN]
+    totals = run_records[-1]["totals"]
+    assert {name: share["sessions"] for name, share in totals["by_model"].items()} == {
+        HAIKU: 1, SONNET: 2}  # fmt: skip
+    assert any(f"attempt 1/3 ({HAIKU})" in line for line in lines), lines
+    assert any(f"attempt 2/3 ({SONNET})" in line for line in lines), lines
+
+
+def test_cascade_routes_by_size(tmp_path):
+    """999.12a: each pick's attempt runs on its own size bucket's row."""
+    picks = (_sized(0, 20), _sized(1, 100), _sized(2, 300))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"routing": _rows((HAIKU,), (SONNET,), (driver.OPUS_MODEL,)),
+                               "attempts_per_function": 1})  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    got = {r["function"]: (r["model_requested"], r["run"]) for r in night.kinds("attempt")}
+    assert got == {picks[0].name: (HAIKU, _arm_run(HAIKU)),
+                   picks[1].name: (SONNET, _arm_run(SONNET)),
+                   picks[2].name: (driver.OPUS_MODEL, _arm_run(driver.OPUS_MODEL))}  # fmt: skip
+
+
+@pytest.mark.parametrize(("config", "expected"), [
+    ({}, {(driver.OPUS_MODEL, RUN)}),
+    ({"fable_trial": True}, {(driver.FABLE_MODEL, RUN)}),
+    ({"night_model": HAIKU}, {(HAIKU, RUN)}),
+    ({"arms": TWO_ARMS, "hold": True}, {(HAIKU, _arm_run(HAIKU)), (SONNET, _arm_run(SONNET))}),
+], ids=["d09", "fable-trial", "night-model", "arms-hold"])  # fmt: skip
+def test_a_night_without_routing_picks_its_arm_as_before(tmp_path, config, expected):
+    """RULINGS fds invariant: on every night without --cascade each attempt's arm is the
+    lane's (or D-09's on the default night), under the run id it had before; the one-lane
+    nights' console labels carry no arm suffix."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
+    lines: list[str] = []
+    report = night.run(config=config, say=lines.append)
+    assert report.event == "ENDED", report.detail
+    assert {(r["model_requested"], r["run"]) for r in night.kinds("attempt")} == expected
+    if "arms" not in config:
+        started = [line for line in lines if line.endswith(": started")]
+        assert started and not any("(" in line for line in started), started
+
+
+# ---- 261112-fds Task 2: caps, max_workers and no worker held on an arm that cannot launch ----
+
+
+def _one_worker(arm: str) -> dict[str, driver.backends.Arm]:
+    """The committed arm table with `arm`'s max_workers 1."""
+    table = driver.backends.load_arms()
+    table[arm] = replace(table[arm], max_workers=1)
+    return table
+
+
+def _peak_of(night: Night, run: str) -> int:
+    """The most sessions of run `run` that were running at once."""
+    mine = {i for i, launch in enumerate(night.launched) if _run_of(night, launch) == run}
+    active = peak = 0
+    for event, index in night.events:
+        if index in mine:
+            active += 1 if event == "start" else -1
+            peak = max(peak, active)
+    return peak
+
+
+def _deferred_on_release(monkeypatch) -> list[tuple[str, str | None, bool]]:
+    """Each released pass as (function, outcome, the pick is back on its lane's deferred)."""
+    seen: list = []
+    real = driver._Coordinator.release
+
+    def release(self, worker):
+        real(self, worker)
+        with self.night.cond:
+            seen.append((worker.pick.name, worker.outcome, worker.pick in worker.lane.deferred))
+
+    monkeypatch.setattr(driver._Coordinator, "release", release)
+    return seen
+
+
+def test_cascade_never_holds_a_worker_on_a_full_or_paused_arm(tmp_path, monkeypatch):
+    """999.12a (T-261112-fds-04): two workers; HAIKU (max_workers 1) takes the small picks,
+    SONNET the medium ones, and SONNET's first session ends LIMIT. The paused pass ends at once
+    (ARM_WAITING, back on the pool's deferred list), no worker sleeps a backoff, HAIKU keeps
+    working while SONNET is paused and never runs two sessions at once, the first SONNET launch
+    after the backoff has passed on the clock relaunches the waiting attempt 1, and every pick
+    gets its counted attempt."""
+    nights = _capture_nights(monkeypatch)
+    released = _deferred_on_release(monkeypatch)
+    small = [_wpick(i) for i in (0, 2, 3, 4)]
+    medium = [_sized(1, 100), _sized(5, 100)]
+    picks = (small[0], medium[0], *small[1:], medium[1])
+    night = ArmNight(tmp_path, picks=picks, by_model={SONNET: [Sess("rate_limit", write=None)]})
+    first_haiku: list[int] = []
+
+    def after(unit, index):  # the first HAIKU session ends only once SONNET's pause began
+        if _run_of(night, night.launched[index]) == _arm_run(HAIKU) and not first_haiku:
+            first_haiku.append(index)
+            assert _poll(lambda: nights[-1].arm_lanes[SONNET].pause.paused), "no SONNET pause"
+
+    night.after = after
+    sleeps: list[float] = []
+    lines: list[str] = []
+    report = night.run(config={"workers": 2, "attempts_per_function": 1,
+                               "arm_table": _one_worker(HAIKU),
+                               "routing": _rows((HAIKU,), (SONNET,), (HAIKU,))},
+                       sleep=sleeps.append, say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    attempts = night.kinds("attempt")
+    assert sorted(r["function"] for r in attempts) == sorted(p.name for p in picks)
+    assert {(r["function"], r["attempt"], r["run"]) for r in attempts if r["model_requested"]
+            == SONNET} == {(p.name, 1, _arm_run(SONNET)) for p in medium}  # fmt: skip
+    (limit,) = night.kinds("limit")
+    assert limit["run"] == _arm_run(SONNET)
+    runs = [_run_of(night, launch) for launch in night.launched]
+    sonnet = [i for i, run in enumerate(runs) if run == _arm_run(SONNET)]
+    assert len(sonnet) == 3  # the LIMIT launch, its relaunch after the pause, the other pick
+    limited, relaunch = sonnet[0], sonnet[1]
+    assert any(runs[i] == _arm_run(HAIKU) for i in range(limited + 1, relaunch))
+    assert _peak_of(night, _arm_run(HAIKU)) == 1
+    assert sleeps == []
+    assert len([line for line in lines if f"arm {SONNET} pauses" in line]) == 1, lines
+    waiting = [entry for entry in released if entry[1] == driver.ARM_WAITING]
+    assert waiting and all(back for _, _, back in waiting), released
+
+
+def test_cascade_arm_runs_at_most_its_max_workers(tmp_path):
+    """A cascade arm runs at most its backends.toml max_workers sessions at once, whatever the
+    night's --workers. The first session holds on until a second one starts (or a short while
+    passed), so a second launch beside it would show in `peak`."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+
+    def before(unit, index):
+        if index == 0:
+            deadline = time.monotonic() + 2.0
+            while len(night.launched) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+    night.before = before
+    report = night.run(config={"workers": 3, "attempts_per_function": 1,
+                               "arm_table": _one_worker(HAIKU), "routing": _every(HAIKU)})
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert len(night.launched) == 3 and night.peak == 1
+
+
+def test_cascade_arm_cap_holds_the_function_for_tonight(tmp_path):
+    """--arm-cap HAIKU=1: the second pick's attempt finds HAIKU at its cap, so its pass ends
+    ARM_CAPPED with one console line, and it gets no difficult-list entry."""
+    picks = (_wpick(0), _wpick(1))
+    night = ArmNight(tmp_path, picks=picks)
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU),
+                               "arm_caps": ((HAIKU, 1),)}, say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert len(night.launched) == 1
+    capped = [line for line in lines if "cap" in line and HAIKU in line and picks[1].name in line]
+    assert len(capped) == 1 and " 1 " in capped[0], lines
+    difficult = driver.load_difficult(night.repo / driver.DIFFICULT)
+    assert (picks[1].exe, picks[1].start) not in difficult
+
+
+def test_cascade_arm_cap_mid_pass_leaves_the_tier_queue(tmp_path):
+    """--arm-cap SONNET=1 on a tier night: F's attempts 1 (HAIKU) and 2 (SONNET) run, its
+    attempt 3 finds SONNET capped, so its pass ends ARM_CAPPED and it leaves the tier queue for
+    tonight; S runs attempt 1 on HAIKU, then the same. No difficult-list entry, no loop."""
+    from test_driver_pick import _tier_night
+
+    a, b = START, START + 0x10
+    night, deps = _tier_night(tmp_path, (a, b), unit=UNIT, night_cls=ArmNight)
+    report = night.run(config={"attempts_per_function": 3, "routing": _every(HAIKU, SONNET),
+                               "arm_caps": ((SONNET, 1),)},
+                       queue=deps.queue, requeue=deps.requeue)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    got = [(int(r["start"], 16), r["attempt"], r["model_requested"])
+           for r in night.kinds("attempt")]  # fmt: skip
+    first = got[0][0]
+    second = b if first == a else a
+    assert got == [(first, 1, HAIKU), (first, 2, SONNET), (second, 1, HAIKU)]
+    assert driver.load_difficult(night.repo / driver.DIFFICULT) == {}
+
+
+def _ticking(night: Night, step: float = 10.0):
+    """A clock seam that moves the night's fake clock on every reading."""
+
+    def clock() -> float:
+        night.now += step
+        return night.now
+
+    return clock
+
+
+def test_a_cascade_pass_resumes_at_its_waiting_attempt(tmp_path):
+    """SONNET's first session ends LIMIT at attempt 2: the pass ends ARM_WAITING, the tier queue
+    keeps the function eligible, and once the backoff has passed on the clock its pass resumes
+    at attempt 2 (the probe), then attempt 3. No second attempt 1, one limit record, and no
+    worker slept the backoff: the pick waited in the queue instead."""
+    from test_driver_pick import _tier_night
+
+    night, deps = _tier_night(tmp_path, (START,), unit=UNIT, night_cls=ArmNight,
+                              by_model={SONNET: [Sess("rate_limit", write=None)]})  # fmt: skip
+    report = night.run(config={"attempts_per_function": 3, "max_sessions": 3,
+                               "routing": _every(HAIKU, SONNET)},
+                       queue=deps.queue, requeue=deps.requeue, clock=_ticking(night))
+    assert report.event == "ENDED", report.detail
+    assert [(r["attempt"], r["model_requested"]) for r in night.kinds("attempt")] == [
+        (1, HAIKU), (2, SONNET), (3, SONNET)]  # fmt: skip
+    assert [r["run"] for r in night.kinds("limit")] == [_arm_run(SONNET)]
+    assert night.sleeps == []
+
+
+def test_a_cascade_probe_that_ends_without_a_verdict_is_handed_back(tmp_path, monkeypatch):
+    """RULINGS amendment: the probe attempt after SONNET's pause fails before its session (its
+    claim raises), so it ends with no on_limit/on_clear verdict: the night still ends, and the
+    probe is handed back (probe_taken reset), not lost."""
+    from test_driver_pick import _tier_night
+
+    nights = _capture_nights(monkeypatch)
+    real = driver._Night._claim
+
+    def claim(self, pick, n):
+        if getattr(self.local, "probe", False):
+            raise RuntimeError("made-up claim failure of the probe")
+        return real(self, pick, n)
+
+    monkeypatch.setattr(driver._Night, "_claim", claim)
+    night, deps = _tier_night(tmp_path, (START,), unit=UNIT, night_cls=ArmNight,
+                              by_model={SONNET: [Sess("rate_limit", write=None)]})  # fmt: skip
+    report = night.run(config={"attempts_per_function": 3, "routing": _every(SONNET)},
+                       queue=deps.queue, requeue=deps.requeue, clock=_ticking(night))
+    assert report.event == "STOPPED" and "made-up claim failure" in report.detail, report.detail
+    pause = nights[-1].arm_lanes[SONNET].pause
+    assert pause.paused and not pause.probe_taken

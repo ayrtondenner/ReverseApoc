@@ -414,3 +414,17 @@ input = 0.0
 output = 0.0
 cache_read = 0.0
 cache_creation = 0.0
+
+# The size-routed cascade (quick 261112-fds, backlog 999.12a), read only by `drive --cascade`
+# (backends.load_routing). Each key is a stats.SIZE_BUCKETS range in stats' own label form
+# "[low, high)" ("inf": no upper bound), so no new threshold is defined here. A key may span
+# consecutive stats buckets: "[256, inf)" is stats' [256, 1024) and [1024, inf) merged into
+# one row. Each value is the ladder of a function's attempts: attempt n of pass p runs on rung
+# (p - 1) * 3 + n of its row, counted from 1, and the row's last arm takes every later attempt.
+# Every arm must be an [arms."..."] entry above. The owner's defaults (2026-11-12) and each
+# row's evidence: docs/model-routing.md "The size-routed cascade", from spike 012's per-bucket
+# figures in docs/model-comparison.md.
+[routing]
+"[0, 64)" = ["claude-haiku-5-5", "gpt-6.1-terra"]
+"[64, 256)" = ["claude-haiku-5-5", "gpt-6.1-terra", "gemini-flash"]
+"[256, inf)" = ["gpt-6.1-terra"]

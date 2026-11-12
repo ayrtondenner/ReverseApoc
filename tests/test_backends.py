@@ -664,3 +664,88 @@ def test_token_cost_is_exact():
     tokens = {"input": 1_000_000, "output": 100_000, "cache_read": 2_000_000, "cache_creation": 0}
     cost = backends.token_cost(tokens, Price(0.10, 0.50, 0.01, 0.20))
     assert cost == Decimal("0.17") and isinstance(cost, Decimal)
+
+
+# ---- quick 261112-fds (backlog 999.12a): the size-routed cascade's [routing] table ----
+
+HAIKU = "claude-haiku-5-5"
+TERRA = "gpt-6.1-terra"
+GEMINI = "gemini-flash"
+
+
+def test_committed_routing_table():
+    """The owner's default rows, in bucket order, keyed by stats' own labels; every arm is an
+    [arms."..."] entry, and load_arms still loads the file that now holds [routing]."""
+    rows = backends.load_routing()
+    assert [(row.label, row.buckets, row.arms) for row in rows] == [
+        ("[0, 64)", (0,), (HAIKU, TERRA)),
+        ("[64, 256)", (1,), (HAIKU, TERRA, GEMINI)),
+        ("[256, inf)", (2, 3), (TERRA,)),
+    ]
+    arms = _arms()
+    assert {arm for row in rows for arm in row.arms} <= set(arms)
+    assert backends.routing_arms(rows) == (HAIKU, TERRA, GEMINI)
+
+
+def test_routing_rows_use_the_stats_buckets():
+    """route_for goes through stats.size_bucket, and each one-bucket row's key is stats' own
+    label of that bucket: no new threshold."""
+    from reverseapoc import stats
+
+    rows = backends.load_routing()
+    for size, label in ((0, "[0, 64)"), (63, "[0, 64)"), (64, "[64, 256)"), (255, "[64, 256)"),
+                        (256, "[256, inf)"), (1023, "[256, inf)"), (1024, "[256, inf)"),
+                        (4096, "[256, inf)")):  # fmt: skip
+        assert backends.route_for(rows, size).label == label, size
+    for row in rows:
+        if len(row.buckets) == 1:
+            assert row.label == stats._bucket_label(row.buckets[0])
+
+
+_TWO_CLAUDE_ARMS = """\
+[arms."claude-haiku-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-haiku-5-5"
+sends_disassembly = true
+max_workers = 10
+
+[arms."claude-sonnet-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-sonnet-5-5"
+sends_disassembly = true
+max_workers = 10
+"""
+_SMALL = '"[0, 64)" = ["claude-haiku-5-5"]\n'
+_MEDIUM = '"[64, 256)" = ["claude-sonnet-5-5"]\n'
+_LARGE = '"[256, inf)" = ["claude-sonnet-5-5"]\n'
+
+
+@pytest.mark.parametrize(("before", "routing", "named"), [
+    ("", '[routing]\n"[0, 64)" = ["claude-haiku-9-9"]\n' + _MEDIUM + _LARGE, "claude-haiku-9-9"),
+    ("", '[routing]\n"[0, 64)" = []\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", '[routing]\n"[0, 100)" = ["claude-haiku-5-5"]\n' + _MEDIUM + _LARGE, "[0, 100)"),
+    ("", '[routing]\n"under 64" = ["claude-haiku-5-5"]\n' + _MEDIUM + _LARGE, "under 64"),
+    ("", "[routing]\n" + _SMALL + '"[0, 256)" = ["claude-sonnet-5-5"]\n' + _LARGE, "[0, 256)"),
+    ("", "[routing]\n" + _SMALL + _MEDIUM, "[256, 1024)"),
+    ("", '[routing]\n"[0, 64)" = "claude-haiku-5-5"\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", '[routing]\n"[0, 64)" = [5]\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", "", "[routing]"),
+    ("routing = 5\n", "", "[routing]"),
+], ids=["unknown-arm", "empty-row", "unknown-bucket", "not-a-label", "bucket-twice",
+        "bucket-in-no-row", "a-string", "a-number", "no-table", "not-a-table"])  # fmt: skip
+def test_a_bad_routing_table_is_refused(tmp_path, before, routing, named):
+    """T-261112-fds-05: load_routing fails loudly, naming the file, the routing table and the
+    offending key or arm."""
+    path = _table(tmp_path, before + _TWO_CLAUDE_ARMS + "\n" + routing)
+    with pytest.raises(ArmError) as exc:
+        backends.load_routing(path)
+    text = str(exc.value)
+    assert str(path) in text and "routing" in text and named in text, text
+
+
+def test_load_arms_refuses_any_other_top_level_table(tmp_path):
+    path = _table(tmp_path, _TWO_CLAUDE_ARMS + "\n[other]\nx = 1\n")
+    with pytest.raises(ArmError, match="routing"):
+        load_arms(path)

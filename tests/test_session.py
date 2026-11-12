@@ -106,6 +106,22 @@ def test_model_for_pass_refuses_a_pass_below_one(pass_number):
         session.model_for_pass(pass_number)
 
 
+def test_model_for_pass_climbs_a_cascade_row():
+    """Quick 261112-fds: with a row, attempt n of pass p runs on rung (p - 1) * 3 + n, and the
+    row's last arm takes every later attempt; an attempt outside 1..attempts is refused."""
+    a, b, c, t = "arm-a", "arm-b", "arm-c", "arm-t"
+    climb = [session.model_for_pass(1, row=(a, b), attempt=n, attempts=3) for n in (1, 2, 3)]
+    assert climb == [a, b, b]
+    assert session.model_for_pass(2, row=(a, b), attempt=1, attempts=3) == b
+    assert [session.model_for_pass(1, row=(a, b, c), attempt=n, attempts=3)
+            for n in (1, 2, 3)] == [a, b, c]  # fmt: skip
+    assert {session.model_for_pass(p, row=(t,), attempt=n, attempts=3)
+            for p in (1, 2, 3) for n in (1, 2, 3)} == {t}  # fmt: skip
+    for n in (0, 4):
+        with pytest.raises(ValueError):
+            session.model_for_pass(1, row=(a, b), attempt=n, attempts=3)
+
+
 def test_model_tables_agree():
     """T-07-125: every model the init check accepts has a co-author name and a price, and no
     other (Phase 07.2 D-16: Haiku 5.5 and Sonnet 5.5 join the three tables)."""
