@@ -2578,3 +2578,26 @@ def test_a_tier_pick_waiting_on_a_busy_arm_leaves_its_unit_free(tmp_path):
     assert seen["g"], "G never ran while F waited for the busy SONNET"
     got = {r["function"]: r["model_requested"] for r in night.kinds("attempt")}
     assert got == {h.name: SONNET, g.name: HAIKU}
+
+
+AGY_LIMIT = "gemini_quota_limit"  # tests/fixtures/agy: a result whose error names the quota
+
+
+def test_a_cascade_limit_launch_counts_against_its_arm_cap(tmp_path):
+    """WR-02: row (GEMINI, HAIKU) with --arm-cap gemini-flash=1. GEMINI's first launch ends
+    LIMIT and hands attempt 1 to HAIKU. Its backoff then runs out on the ticking clock, but that
+    LIMIT launch used GEMINI's one session: every later pick skips it as capped, so the night
+    launches agy once."""
+    picks = tuple(_wpick(i) for i in range(4))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=[AGY_LIMIT] * len(picks))
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(GEMINI, HAIKU),
+                               "arm_caps": ((GEMINI, 1),)},
+                       clock=_ticking(night), say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(GEMINI)) == 1
+    assert _runs_launched(night, _arm_run(HAIKU)) == len(picks)
+    assert [r["run"] for r in night.kinds("limit")] == [_arm_run(GEMINI)]
+    skips = _skip_lines(lines)
+    assert len(skips) == len(picks) - 1 and all(f"{GEMINI} (capped)" in s for s in skips), lines
+    _validated(night)
