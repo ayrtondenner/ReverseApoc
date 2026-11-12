@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "batch_id": "261112-fdr",
+  "created_at": "2026-11-12T14:04:30.129Z",
+  "options": {},
+  "base_revision": "8951dd96d9cbead2598b11932f91481adedd6196",
+  "items": [
+    {
+      "quick_id": "261112-fds",
+      "client_id": null,
+      "description": "Backlog 999.12a, size-routed cascade core (ROADMAP.md \"Phase 999.12\"): add a [routing] table to config/driver/backends.toml keyed by size bucket (under 64 B, 64-255 B, 256 B and up) with an ordered arm list per row; generalize session.model_for_pass (tools/reverseapoc/session.py:97) and Worker._model/_arm/_claim (tools/reverseapoc/driver.py ~3507-3650) so a cascade drive picks the arm for (pass, size bucket, attempt n), the drive's three attempts per function being the ladder; add a drive mode (e.g. --cascade) with a per-arm session cap (--arm-cap ARM=N or similar) that co-exists with --arm lanes and --night-model and leaves every existing mode's behaviour unchanged; default rows from spike 012 (docs/model-comparison.md, stats --run 'spike012-*'): under 64 B claude-haiku-5-5 then gpt-6.1-terra; 64-255 B claude-haiku-5-5, gpt-6.1-terra, gemini-flash; 256 B and up gpt-6.1-terra first; --dry-run prints each pick's row; document the table and its sources in docs/model-routing.md; test-first (TDD)",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "config/driver/backends.toml",
+        "tools/reverseapoc/backends.py",
+        "tools/reverseapoc/session.py",
+        "tools/reverseapoc/driver.py",
+        "tools/reverseapoc/cli.py",
+        "docs/model-routing.md",
+        "tests/test_backends.py",
+        "tests/test_session.py",
+        "tests/test_driver.py",
+        "tests/test_cli.py"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "2ccc2111",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261112-fdt",
+      "client_id": null,
+      "description": "Backlog 999.12b, cascade escalation and pause handoff (depends on 999.12a): on PARTIAL or GAVE_UP the function's next attempt goes to the next arm of its row and, in a normal (not --hold) night, its context pack carries the earlier attempts' notes and best draft (reuse the 07.2 give-up records and tools/reverseapoc/contextpack.py); an arm that is paused (Codex 5-hour window, agy weekly quota, usage limit) or has reached its session cap passes the attempt to the next arm of the row instead of holding the function; stats/attempts record which arm each attempt ran on; test-first (TDD), touching tools/reverseapoc/driver.py, session.py, contextpack.py and tests",
+      "status": "complete",
+      "depends_on": [
+        "261112-fds"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/session.py",
+        "tools/reverseapoc/driver.py",
+        "tools/reverseapoc/cli.py",
+        "docs/model-routing.md",
+        "tests/test_session.py",
+        "tests/test_driver_workers.py",
+        "tests/test_cli.py"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "6d96fdbd",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261112-fdu",
+      "client_id": null,
+      "description": "Todo .planning/todos/pending/causes-hex-address-keys.md: in tools/reverseapoc/causes.py normalise a whole hex address or offset token (0x[0-9A-Fa-f]+ and bare hex runs after \"at\") into one placeholder before the digit-to-N fold, test-first; then re-run `uv run reverseapoc causes` on runs 20261107-030004 and 20261107-170844 and confirm the top classes recorded in docs/learnings.md (the 9d entry) do not change; move the todo to .planning/todos/completed/ with the result",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/causes.py",
+        "tests/test_causes.py"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "94a4c824",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261112-fdv",
+      "client_id": null,
+      "description": "Todo .planning/todos/pending/skill-harness-neutral-wording.md: reword the lines of .claude/skills/watcom-decomp/SKILL.md that name Claude Code tools (\"Look around with Read, Grep and Glob\", \"the Bash tool's timeout\" and any others) so they name the action (read a file, search, run the wrapper) and read correctly for Codex and agy drive sessions too; must go through superpowers:writing-skills, RED first (a baseline pressure scenario on the old text), using how the 2026-11-11 Codex and agy canaries and spike 012 sessions actually read the skill (build/driver/spike012-*, .planning/spikes/012-model-routing/LEARNINGS.md) as the evidence; keep session.py's per-harness note consistent; move the todo to completed",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tests/test_skill.py",
+        ".claude/skills/watcom-decomp/SKILL.md",
+        ".planning/todos/completed/skill-harness-neutral-wording.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "f0b64cf4",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261112-fdw",
+      "client_id": null,
+      "description": "Todo .planning/todos/pending/worktree-hook-residual-bypasses.md: close the three accepted residual bypasses in the worktree main-path PreToolUse rule (tools/reverseapoc/hooks.py, from quick task 261109-gzy): replace the denylist with an allowlist (a script-naming command must be a plain interpreter followed by a plain script path), match indirection keywords on tokenized unquoted words, normalise PowerShell backtick and backslash escapes before the suffix test, failing closed; a negative test for each listed bypass (sl, chdir, -e, -ec, -enc, --eval, --directory, --project, -C, -WorkingDirectory, a quoted or escaped keyword, a backtick-escaped script word) plus positive controls that ordinary worktree commands still pass; test-first; move the todo to completed",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/hooks.py",
+        "tests/test_hooks.py",
+        "docs/workflow.md",
+        ".planning/todos/completed/worktree-hook-residual-bypasses.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "2c7db2fa",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261112-fdx",
+      "client_id": null,
+      "description": "Todo .planning/todos/pending/slot-model-array-ties.md (what is still open): measure frames past the sweep and the three 07.2-14 frames with probe/ and .planning/converter-curve/measure_curve.py (matched-row control over the exact rows) and narrow REFUSED_HOLDING / order_is_known in tools/reverseapoc/slots.py only where a measurement draws the line (tests/test_slots_real.py), adding a curve point to .planning/converter-curve/CURVE.md; if no measured line can be drawn the item ends as a documented partial in the todo, never a guess; test-first",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "probe/cg_slots.c",
+        "tests/test_slots_real.py",
+        "tests/test_slots.py",
+        "tools/reverseapoc/slots.py",
+        "probe/README.md",
+        "docs/matching.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "cf4cc3c0",
+      "failure_reason": null
+    }
+  ]
+}

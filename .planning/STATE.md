@@ -151,6 +151,12 @@ None yet.
 | 261109-gzy | Worktree shell commands that spell the main checkout are denied, fail closed (two security rounds; residual risk todo) | 2026-11-09 | bf8a7f56 | — | .planning/quick/261109-gzy-project-pretooluse-hook-tools-reverseapoc-hooks-py-via-claud |
 | 261109-gzz | probe/README.md figures re-read or marked as preview | 2026-11-09 | 03c1d99b | — | .planning/quick/261109-gzz-probe-readme-md-identify-the-lines-taken-from-07-1-research |
 | 261110-f30 | Spike 012 per-arm comparison table (stats --run), list prices for Codex/agy arms, land-held credits every arm that matched | 2026-11-10 | 725fce51 | — | [261110-f30-spike-012-comparison-table-and-multi-arm](./quick/261110-f30-spike-012-comparison-table-and-multi-arm/) |
+| 261112-fds | 999.12a size-routed cascade core (drive --cascade, [routing], --arm-cap) | 2026-11-12 | 2ccc2111 | — | .planning/quick/261112-fds-backlog-999-12a-size-routed-cascade-core-roadmap-md-phase-99 |
+| 261112-fdt | 999.12b cascade escalation and pause hand-off | 2026-11-12 | 6d96fdbd | — | .planning/quick/261112-fdt-backlog-999-12b-cascade-escalation-and-pause-handoff-depends |
+| 261112-fdu | causes folds hex addresses into one key | 2026-11-12 | 94a4c824 | — | .planning/quick/261112-fdu-todo-planning-todos-pending-causes-hex-address-keys-md-in-to |
+| 261112-fdv | watcom-decomp skill names actions, not Claude Code tools | 2026-11-12 | f0b64cf4 | — | .planning/quick/261112-fdv-todo-planning-todos-pending-skill-harness-neutral-wording-md |
+| 261112-fdw | worktree hook allowlist closes the residual bypasses | 2026-11-12 | 2c7db2fa | — | .planning/quick/261112-fdw-todo-planning-todos-pending-worktree-hook-residual-bypasses |
+| 261112-fdx | slot model lines A-C drawn past the 07.1 sweep (D broke) | 2026-11-12 | cf4cc3c0 | — | .planning/quick/261112-fdx-todo-planning-todos-pending-slot-model-array-ties-md-what-is |
 
 ### Roadmap Evolution
 
