@@ -2379,3 +2379,165 @@ def test_cascade_escalates_on_partial_and_gave_up(tmp_path, first):
         return
     assert _climb(night) == [(1, HAIKU, _arm_run(HAIKU)), (2, SONNET, _arm_run(SONNET))]
     assert outcome == {"partial": driver.PARTIAL, "gave-up": driver.GAVE_UP}[first]
+
+
+# ---- 261112-fdt Task 2: a usage limit hands the attempt on; a busy or full row waits ----
+
+RATE_LIMIT = Sess("rate_limit", write=None)
+
+
+def _validated(night: Night) -> None:
+    for record in night.records():
+        driver.validate_record(record)
+
+
+def test_a_usage_limit_hands_the_attempt_to_the_rows_next_arm(tmp_path):
+    """HAIKU's session ends LIMIT at 1045 (launched at 1000, +45 s): its pause runs to 1105 on
+    the clock, the limit record names RUN-HAIKU, and the same attempt 1 goes on to SONNET at
+    once. One HANDOFF_LINE is that LIMIT's only line (no wait line, no skip line for the arm
+    that just paused), and no worker sleeps."""
+    night = ArmNight(tmp_path, picks=(_wpick(0),), by_model={HAIKU: [RATE_LIMIT]})
+    lines: list[str] = []
+    sleeps: list[float] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU, SONNET)},
+                       say=lines.append, sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert sleeps == []
+    assert [_run_of(night, launch) for launch in night.launched] == [_arm_run(HAIKU),
+                                                                     _arm_run(SONNET)]
+    assert _climb(night) == [(1, SONNET, _arm_run(SONNET))]
+    (limit,) = night.kinds("limit")
+    assert (limit["run"], limit["seconds"], limit["streak"]) == (_arm_run(HAIKU), 60, 1)
+    (handoff,) = _handoff_lines(lines)
+    assert f"arm {HAIKU} pauses" in handoff and handoff.endswith(f"to {SONNET}"), handoff
+    assert _wait_lines(lines) == [] and _skip_lines(lines) == [], lines
+    assert [r["run"] for r in night.kinds("run")] == [RUN, RUN]
+    _validated(night)
+
+
+def test_a_paused_arm_is_skipped_until_its_backoff_ends(tmp_path, monkeypatch):
+    """p0 runs HAIKU at 1000 and ends LIMIT at 1045 (HAIKU paused until 1105), handed to
+    SONNET (launched at 1045). p1 is offered at 1090: SONNET can launch, so it is not deferred;
+    it skips the paused HAIKU. p2 at 1135 runs on HAIKU as its probe, which clears the pause.
+    No worker sleeps."""
+    nights = _capture_nights(monkeypatch)
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks, by_model={HAIKU: [RATE_LIMIT]})
+    lines: list[str] = []
+    sleeps: list[float] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU, SONNET)},
+                       say=lines.append, sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    got = [(r["function"], r["model_requested"]) for r in night.kinds("attempt")]
+    assert got == [(picks[0].name, SONNET), (picks[1].name, SONNET), (picks[2].name, HAIKU)]
+    assert night.at == [1000.0, 1045.0, 1090.0, 1135.0]
+    assert sleeps == []
+    assert not nights[-1].arm_lanes[HAIKU].pause.paused
+    assert len(_handoff_lines(lines)) == 1, lines
+    (skip,) = _skip_lines(lines)
+    assert picks[1].name in skip and f"{HAIKU} (paused)" in skip, skip
+    _validated(night)
+
+
+def test_a_busy_arm_waits_without_holding_a_worker(tmp_path):
+    """Coordinator ruling 2026-11-12: two workers, HAIKU at max_workers 1. The first HAIKU
+    session is held open until c's SONNET session has started (at most WAIT_S), so the second
+    worker took c while the other small pick waited for HAIKU, off the workers. Both small
+    picks run on HAIKU, one at a time, though SONNET (max_workers 10) was free: a busy arm is
+    not skipped. No skip line, no sleep."""
+    a, b, c = _sized(0, 20), _sized(1, 20), _sized(2, 100)
+    night = ArmNight(tmp_path, picks=(a, b, c))
+    seen: dict = {}
+
+    def before(unit, index):
+        if _run_of(night, night.launched[index]) == _arm_run(HAIKU) and "c" not in seen:
+            seen["c"] = _poll(lambda: _runs_launched(night, _arm_run(SONNET)) >= 1)
+
+    night.before = before
+    lines: list[str] = []
+    sleeps: list[float] = []
+    report = night.run(config={"workers": 2, "attempts_per_function": 1,
+                               "arm_table": _one_worker(HAIKU),
+                               "routing": _rows((HAIKU, SONNET), (SONNET,), (SONNET,))},
+                       say=lines.append, sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert seen["c"], "c's SONNET session never started while HAIKU was busy"
+    got = {r["function"]: r["model_requested"] for r in night.kinds("attempt")}
+    assert got == {a.name: HAIKU, b.name: HAIKU, c.name: SONNET}
+    assert _peak_of(night, _arm_run(HAIKU)) == 1
+    assert _skip_lines(lines) == [] and sleeps == [], lines
+
+
+def _after_line(night: Night, lines: list[str], needle: str, step: float = 10.0):
+    """A say seam and a clock seam: the clock stands still until a printed line holds
+    `needle`, then moves `step` s on every reading, so every decision before it is fixed."""
+    moving: list[bool] = []
+
+    def say(line: str) -> None:
+        lines.append(line)
+        if needle in line:
+            moving.append(True)
+
+    def clock() -> float:
+        if moving:
+            night.now += step
+        return night.now
+
+    return say, clock
+
+
+def test_a_row_with_no_free_arm_waits_and_resumes(tmp_path, monkeypatch):
+    """HAIKU ends LIMIT at 1045 (paused until 1105) and hands attempt 1 to SONNET, which ends
+    LIMIT at 1090 (paused until 1150) with HAIKU still paused: the pass ends ARM_WAITING with
+    one ARM_WAIT_LINE naming SONNET, the pick goes back on the pool's deferred list at attempt
+    1, and no worker sleeps. The clock moves only after that line: once it passes 1105 the
+    row's state is RESERVED through HAIKU (its backoff ends first), and attempt 1 runs on HAIKU
+    as its probe. RULINGS fdt's "waits as a paused single-arm night does", through fds' resume."""
+    released = _deferred_on_release(monkeypatch)
+    night = ArmNight(tmp_path, picks=(_wpick(0),),
+                     by_model={HAIKU: [RATE_LIMIT], SONNET: [RATE_LIMIT]})  # fmt: skip
+    lines: list[str] = []
+    sleeps: list[float] = []
+    say, clock = _after_line(night, lines, "goes back to the queue at attempt 1")
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU, SONNET)},
+                       say=say, clock=clock, sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert [_run_of(night, launch) for launch in night.launched] == [
+        _arm_run(HAIKU), _arm_run(SONNET), _arm_run(HAIKU)]  # fmt: skip
+    assert _climb(night) == [(1, HAIKU, _arm_run(HAIKU))]
+    assert [(r["run"], r["seconds"], r["streak"]) for r in night.kinds("limit")] == [
+        (_arm_run(HAIKU), 60, 1), (_arm_run(SONNET), 60, 1)]  # fmt: skip
+    (handoff,) = _handoff_lines(lines)
+    assert f"arm {HAIKU} pauses" in handoff and handoff.endswith(f"to {SONNET}"), handoff
+    (wait,) = _wait_lines(lines)
+    assert f"arm {SONNET} pauses for 60 s" in wait and f"({SONNET})" in wait, wait
+    assert _skip_lines(lines) == [], lines
+    waiting = [entry for entry in released if entry[1] == driver.ARM_WAITING]
+    assert len(waiting) == 1 and waiting[0][2], released
+    assert sleeps == []
+    _validated(night)
+
+
+def test_a_handed_off_attempt_sees_the_earlier_arms_work(tmp_path):
+    """Row (HAIKU, SONNET, OPUS): HAIKU's attempt 1 is PARTIAL and leaves its work; SONNET's
+    attempt 2 ends LIMIT and is handed to OPUS, whose attempt-2 pack carries HAIKU attempt 1's
+    notes, give-up line and best C (07.2-02, unchanged). One HANDOFF_LINE, no other line for
+    that LIMIT."""
+    pick = _wpick(0)
+    night = ArmNight(tmp_path, picks=(pick,), by_model={SONNET: [RATE_LIMIT]},
+                     sessions=[Sess(write=None, checks=(check_line(1, 40.0),))])  # fmt: skip
+    seen, pack = _packs_seen(night)
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 3,
+                               "routing": _every(HAIKU, SONNET, OPUS)},
+                       session=_leaves_work(night, {HAIKU}), pack=pack,
+                       say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _climb(night) == [(1, HAIKU, _arm_run(HAIKU)), (2, OPUS, _arm_run(OPUS)),
+                             (3, OPUS, _arm_run(OPUS))]  # fmt: skip
+    assert [r["run"] for r in night.kinds("limit")] == [_arm_run(SONNET)]
+    _assert_carries(_notes_at(night, seen, _arm_run(OPUS), pick, 2), _arm_run(HAIKU), pick, 1)
+    (handoff,) = _handoff_lines(lines)
+    assert f"arm {SONNET} pauses" in handoff and handoff.endswith(f"to {OPUS}"), handoff
+    assert _wait_lines(lines) == [] and _skip_lines(lines) == [], lines
+    _validated(night)
