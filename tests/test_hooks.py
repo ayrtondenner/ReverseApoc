@@ -1759,6 +1759,8 @@ def test_worktree_command_finds_backtick_hidden_scripts(worktree, command):
 QUOTING_DENIED = [
     ("Bash", "bash x.sh $'a'"),          # names a script and contains $'...'
     ("Bash", "bash x.sh # a note"),      # names a script and has a word starting with #
+    ("Bash", 'echo "$(echo $\'a\')"; bash x.sh'),  # $'...' inside a substitution
+    ("PowerShell", "& ./x.ps1 {#}"),     # any unquoted #, not only at a word start
 ]
 QUOTING_ALLOWED = [
     ("Bash", 'git commit -m "fix #12 in hooks.py"'),   # '#' inside quotes is not a comment
