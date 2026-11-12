@@ -155,6 +155,12 @@ SHAPES = {
                               Marked("d", 4, 0x1BA, 1)),  # fmt: skip
     "pr_line_b_c4x2_i_blk_late": (*_arrays(4, 0x8E, 0x8F), Marked("c", 4, 0x1BB),
                                   Marked("d", 4, 0x1BC, 1)),  # fmt: skip
+    # Line C (quick 261112-fdx): three or more 4-byte arrays first, then ints, in one block.
+    "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
+    "pr_line_c_c4x2_s2_i": (*_arrays(4, 0x90, 0x91, 0x1BD), Marked("d", 4, 0x1BE)),
+    "pr_line_c_c4x3_i2": (*_arrays(4, 0x92, 0x93, 0x94), *_ints("de", 0x1BF)),
+    "pr_line_c_c4x4_i": (*_arrays(4, 0x95, 0x96, 0x97, 0x98), Marked("e", 4, 0x1C1)),
+    "pr_line_c_c4x3_i_late": (*_arrays(4, 0x99, 0x9A, 0x9B), Marked("d", 4, 0x1C2)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -201,16 +207,10 @@ TIES = {
 # no count, so the refusal is wider than it, on the safe side.
 REFUSED_HOLDING = {
     "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
-    "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
     "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
     "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
     "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
-    # Line C (quick 261112-fdx): three or more 4-byte arrays first, then ints, in one block.
-    "pr_line_c_c4x2_s2_i": (*_arrays(4, 0x90, 0x91, 0x1BD), Marked("d", 4, 0x1BE)),
-    "pr_line_c_c4x3_i2": (*_arrays(4, 0x92, 0x93, 0x94), *_ints("de", 0x1BF)),
-    "pr_line_c_c4x4_i": (*_arrays(4, 0x95, 0x96, 0x97, 0x98), Marked("e", 4, 0x1C1)),
-    "pr_line_c_c4x3_i_late": (*_arrays(4, 0x99, 0x9A, 0x9B), Marked("d", 4, 0x1C2)),
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {

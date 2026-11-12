@@ -104,7 +104,7 @@ def test_frame_layout_refuses_three_arrays_of_one_size():
 
 
 def test_three_arrays_beside_a_scalar_have_no_known_order():
-    declared = (*(slots.Local(name, 4, array=True) for name in "abc"), slots.Local("d", 4))
+    declared = (slots.Local("a", 4), *(slots.Local(name, 4, array=True) for name in "bcd"))
     assert slots.order_is_known(declared) is False
 
 
@@ -312,4 +312,32 @@ def test_two_arrays_then_an_int_keep_the_rule_across_blocks(shape, layout):
     ],
 )
 def test_two_arrays_off_line_b_stay_refused(shape):
+    assert slots.order_is_known(_shape(*shape)) is False
+
+
+@pytest.mark.parametrize(
+    ("shape", "layout"),
+    [
+        ((C4, C4, C4, INT), {"a": 0xC, "b": 8, "c": 4, "d": 0}),  # pr_arr_three_int
+        ((C4, C4, C4, INT, INT), {"a": 0x10, "b": 0xC, "c": 8, "d": 4, "e": 0}),
+        ((C4, C4, C4, C4, INT), {"a": 0x10, "b": 0xC, "c": 8, "d": 4, "e": 0}),
+    ],
+)
+def test_three_or_more_arrays_then_ints_keep_the_rule(shape, layout):
+    """Line C: pr_arr_three_int, pr_line_c_c4x2_s2_i, _c4x3_i2, _c4x4_i and _c4x3_i_late hold."""
+    declared = _shape(*shape)
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == layout
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (INT, C4, C4, C4),  # pr_arr_int_three: it leaves
+        (C4, C4, C4),  # pr_arr_char4_x3: it leaves
+        (C4, C4, INT, C4),
+        (C4, C4, C4, INT, INT1),
+    ],
+)
+def test_arrays_off_line_c_stay_refused(shape):
     assert slots.order_is_known(_shape(*shape)) is False
