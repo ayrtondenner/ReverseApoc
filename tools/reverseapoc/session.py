@@ -94,12 +94,21 @@ _GOAL_COMMAND = "/goal "  # Claude Code's /goal; a Codex prompt carries the goal
 _FRONT_MATTER = "---"  # a SKILL.md's front matter fence
 
 
-def model_for_pass(pass_number: int) -> str:
-    """The model of a function's pass `pass_number` (1-based, Phase 7 D-09): Opus while the pass
-    is within ESCALATE_AFTER_PASSES, Fable for every later pass."""
+def model_for_pass(pass_number: int, *, row: Sequence[str] = (), attempt: int = 1,
+                   attempts: int = 1) -> str:  # fmt: skip
+    """The model (or arm) of a function's pass `pass_number` (1-based). With no `row`, Phase 7
+    D-09: Opus while the pass is within ESCALATE_AFTER_PASSES, Fable for every later pass. With
+    a `row` (quick 261112-fds, `drive --cascade`: a routing row's ladder), attempt `attempt` of
+    `attempts` per pass runs on rung (pass_number - 1) * attempts + attempt, counted from 1, and
+    the row's last arm takes every attempt past its end. ValueError for a pass below 1 and,
+    with a row, for an attempt outside 1..attempts."""
     if pass_number < 1:
         raise ValueError(f"pass number {pass_number} is below 1")
-    return OPUS_MODEL if pass_number <= ESCALATE_AFTER_PASSES else FABLE_MODEL
+    if not row:
+        return OPUS_MODEL if pass_number <= ESCALATE_AFTER_PASSES else FABLE_MODEL
+    if not 1 <= attempt <= attempts:
+        raise ValueError(f"attempt {attempt} is outside 1..{attempts}")
+    return row[min((pass_number - 1) * attempts + attempt - 1, len(row) - 1)]
 
 
 def build_argv(

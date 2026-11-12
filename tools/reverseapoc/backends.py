@@ -52,6 +52,12 @@ the table has no billing field. `record_arm` finds the arm of an attempt or land
 `token_cost` prices its tokens exactly: the API-equivalent figure of `stats --run`'s comparison
 table and the ranking of `drive --land-held`. A record's `cost_usd` stays what the arm really
 pays.
+
+Quick 261112-fds (backlog 999.12a): the optional top-level `[routing]` table beside `[arms]`
+gives each size bucket the ordered arms of a `drive --cascade` night. `load_routing` reads it
+into `Route` rows keyed by stats.SIZE_BUCKETS labels (a key may span consecutive buckets, so no
+new threshold), `route_for` finds a function's row through stats.size_bucket, and
+`routing_arms` lists the distinct arms of the rows, the cascade night's arms.
 """
 
 from __future__ import annotations
@@ -70,6 +76,7 @@ from .streamjson import _COST_DIGITS, PRICES_PER_MTOK, TOKENS_PER_MTOK, Price, U
 from .targets import REPO_ROOT
 
 ARMS_TOML = REPO_ROOT / "config" / "driver" / "backends.toml"
+ROUTING = "routing"  # quick 261112-fds: the top-level table of `drive --cascade`'s rows
 HARNESSES = ("claude", "codex", "agy")  # the agent CLI a session runs under (schema 3)
 ANTHROPIC = "anthropic"  # the backend of the Claude Code login (no base URL, no key variable)
 # D-18, D-26: the bearer token of a loopback arm with no key variable (the local llama.cpp
@@ -286,17 +293,23 @@ def _arm(name: str, table: object) -> Arm:
                else None)  # fmt: skip
 
 
-def load_arms(path: Path = ARMS_TOML) -> dict[str, Arm]:
-    """Read and validate backends.toml; ArmError names the file, the arm and the field."""
-    path = Path(path)
+def _read(path: Path) -> dict:
     try:
         with path.open("rb") as fh:
-            data = tomllib.load(fh)
+            return tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
         raise ArmError(f"{path}: {exc}") from exc
+
+
+def load_arms(path: Path = ARMS_TOML) -> dict[str, Arm]:
+    """Read and validate backends.toml; ArmError names the file, the arm and the field. The
+    optional [routing] table is load_routing's (quick 261112-fds)."""
+    path = Path(path)
+    data = _read(path)
     arms = data.get("arms")
-    if set(data) != {"arms"} or not isinstance(arms, Mapping) or not arms:
-        raise ArmError(f"{path}: needs one [arms.<name>] table per arm and nothing else")
+    if set(data) - {"arms", ROUTING} or not isinstance(arms, Mapping) or not arms:
+        raise ArmError(f"{path}: needs one [arms.<name>] table per arm, an optional "
+                       f"[{ROUTING}] table (drive --cascade) and nothing else")  # fmt: skip
     out = {}
     for name, table in arms.items():
         try:
@@ -304,6 +317,58 @@ def load_arms(path: Path = ARMS_TOML) -> dict[str, Arm]:
         except ArmError as exc:
             raise ArmError(f"{path}: arm {name!r}: {exc}") from None
     return out
+
+
+@dataclass(frozen=True)
+class Route:
+    """Quick 261112-fds: one row of the [routing] table. `label` is its key, a stats-style
+    "[low, high)" range ("inf": no bound), `buckets` the consecutive stats.SIZE_BUCKETS indices
+    it spans, `arms` the ladder of a function's attempts, in order."""
+
+    label: str
+    buckets: tuple[int, ...]
+    arms: tuple[str, ...]
+
+
+def _spans() -> dict[str, tuple[int, ...]]:
+    """Every valid routing key: one label per consecutive span i..j of stats.SIZE_BUCKETS,
+    formatted as stats._bucket_label formats one bucket, mapped to its bucket indices."""
+    from .stats import SIZE_BUCKETS  # stats imports this module
+
+    out = {}
+    for i, (low, _) in enumerate(SIZE_BUCKETS):
+        for j in range(i, len(SIZE_BUCKETS)):
+            high = SIZE_BUCKETS[j][1]
+            out[f"[{low}, {'inf' if high is None else high})"] = tuple(range(i, j + 1))
+    return out
+
+
+def load_routing(path: Path = ARMS_TOML, arms: Mapping[str, Arm] | None = None
+                 ) -> tuple[Route, ...]:  # fmt: skip
+    """The [routing] rows of backends.toml in bucket order; `arms` None: load_arms(path)."""
+    path = Path(path)
+    if arms is None:
+        load_arms(path)
+    routing = _read(path).get(ROUTING)
+    spans = _spans()
+    rows = [Route(key, spans[key], tuple(value)) for key, value in routing.items()]
+    return tuple(sorted(rows, key=lambda row: row.buckets[0]))
+
+
+def route_for(routes: Sequence[Route], size: int) -> Route:
+    """The row holding stats.size_bucket(size)."""
+    from .stats import size_bucket  # stats imports this module
+
+    bucket = size_bucket(size)
+    row = next((row for row in routes if bucket in row.buckets), None)
+    if row is None:
+        raise ArmError(f"no {ROUTING} row holds a function of {size} bytes")
+    return row
+
+
+def routing_arms(routes: Sequence[Route]) -> tuple[str, ...]:
+    """The distinct arms of the rows, in row order: the cascade night's arms."""
+    return tuple(dict.fromkeys(arm for row in routes for arm in row.arms))
 
 
 def _token(arm: Arm, env: Mapping[str, str]) -> str:

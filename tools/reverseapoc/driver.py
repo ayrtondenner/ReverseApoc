@@ -398,6 +398,10 @@ class DriveConfig:
     # workers are then their sum and `workers` is not read. Empty: one arm, `night_model`'s
     # (or each pass's Claude arm) with `workers`.
     arms: tuple[tuple[str, int], ...] = ()
+    # quick 261112-fds (backlog 999.12a): `drive --cascade`'s backends.toml [routing] rows
+    # (backends.load_routing). Non-empty: each attempt runs on its function's size row's rung
+    # (_Night._route), under `<run>-<arm>`, with that arm's gates. Empty: no cascade.
+    routing: tuple[backends.Route, ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -3018,6 +3022,15 @@ class _Night:
             lane.pause = _Pause(self.cond, self.stop, deps.clock)
             lane.max_sessions = self.arms[lane.arm].max_sessions if lane.arm else None
         self.pause = self.lanes[0].pause  # D-07: one arm's pause holds for its every worker
+        # quick 261112-fds (backlog 999.12a): on a cascade night, one lane per routing arm,
+        # under `<run>-<arm>` with no workers of its own: each attempt binds the lane of its
+        # rung (`arm_lane`), so its run id, pause, cap, model and audit are that arm's.
+        self.arm_lanes: dict[str, _Lane] = {}
+        for arm in backends.routing_arms(config.routing):
+            lane = _Lane(arm, f"{config.run_id}-{arm}", ())
+            lane.pause = _Pause(self.cond, self.stop, deps.clock)
+            lane.max_sessions = self.arms[arm].max_sessions
+            self.arm_lanes[arm] = lane
         # 07-21 stop-all: worker -> the pid of its live session (run_session's on_start/on_end)
         self.pids: dict[int, int] = {}
         self.pid_lock = threading.Lock()
@@ -3072,6 +3085,15 @@ class _Night:
         probe, --land-held)."""
         return getattr(self.local, "lane", self.lanes[0])
 
+    @property
+    def arm_lane(self) -> _Lane:
+        """Quick 261112-fds: the lane of this attempt's arm, which every per-arm site reads (its
+        reserve, settle, model, arm, label, claim, run id, pause and limit record): the
+        thread-local `arm_lane` while a cascade attempt is bound (`_function`), else `lane`,
+        so a night without --cascade reads exactly the lane it read before."""
+        bound = getattr(self.local, "arm_lane", None)
+        return self.lane if bound is None else bound
+
     # --- workers (07-21) ---
 
     def _reserve(self) -> bool:
@@ -3085,7 +3107,7 @@ class _Night:
         nothing more launches. 07.2-16 (D-22): the worker's arm's own cap (`_Lane.max_sessions`)
         is held the same way beside the night's: an arm at its cap launches nothing more, while
         the other arms go on."""
-        lane = self.lane
+        lane = self.arm_lane
         with self.cond:
             while True:
                 if self.stop.is_set() or self._end() or self._lane_end(lane):
@@ -3110,7 +3132,7 @@ class _Night:
         """Under the night's condition: this worker's reserved slot (if it holds one) becomes a
         counted session, a spent transient launch, or is given back, in the night's totals and
         its arm's alike."""
-        lane = self.lane
+        lane = self.arm_lane
         self.sessions += counted
         lane.sessions += counted
         self.spent += spent
@@ -3459,21 +3481,26 @@ class _Night:
         readability = self.config.session == READABILITY
         key = (pick.exe, pick.start)
         first = self.lane.attempted.get(key, 0) + 1
-        for n in range(first, first + self._attempts()):
-            if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
-                return None
-            try:
-                outcome = self._announced(pick, n)
-            finally:
-                self._release()  # not counted (a stop): a slot still held goes back
-            if readability or outcome in (MATCHED, ABORTED, None):
-                return outcome
-            if self.config.hold:
-                return self._hold_done(key, outcome)
-            with self.cond:
-                spec = self.parked.get(key)
-            if spec is not None:
-                return self._park(key, self._label(pick, n), spec)
+        try:
+            for n in range(first, first + self._attempts()):
+                if self.config.routing:  # quick 261112-fds: this attempt's rung of the row
+                    self.local.arm_lane = self._route(pick, n)
+                if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
+                    return None
+                try:
+                    outcome = self._announced(pick, n)
+                finally:
+                    self._release()  # not counted (a stop): a slot still held goes back
+                if readability or outcome in (MATCHED, ABORTED, None):
+                    return outcome
+                if self.config.hold:
+                    return self._hold_done(key, outcome)
+                with self.cond:
+                    spec = self.parked.get(key)
+                if spec is not None:
+                    return self._park(key, self._label(pick, n), spec)
+        finally:
+            self.local.arm_lane = None  # nothing outside the pass sees an attempt's arm
         callees = tuple(self.deps.matched_callees(pick))
         with self.cond:  # the list and the pass counts are shared by every worker
             difficult[key] = callees
@@ -3512,23 +3539,33 @@ class _Night:
         this worker's arm, `--arm`'s or `--night-model`'s)."""
         if self.config.session == READABILITY:
             return OPUS_MODEL
-        if self.lane.arm is not None:
-            return self.arms[self.lane.arm].model
+        if self.arm_lane.arm is not None:
+            return self.arms[self.arm_lane.arm].model
         if self.config.fable_trial:
             return FABLE_MODEL
         return model_for_pass(self._pass(pick))
 
+    def _route(self, pick: Pick, n: int) -> _Lane:
+        """Quick 261112-fds (backlog 999.12a): the arm lane of attempt `n` of `pick`'s pass on a
+        cascade night: the rung session.model_for_pass gives in the row of its size bucket
+        (backends.route_for). The pass is the dispatch lane's (`_pass`), counted once."""
+        row = backends.route_for(self.config.routing, pick.size).arms
+        arm = model_for_pass(self._pass(pick), row=row, attempt=n, attempts=self._attempts())
+        return self.arm_lanes[arm]
+
     def _arm(self, pick: Pick) -> backends.Arm:
-        """07.2-12: this worker's arm (07.2-16: `--arm`'s or `--night-model`'s) on a matching
-        night, else the Claude arm of the session's model (the table keys the Claude arms by
-        their model id)."""
-        if self.lane.arm is not None and self.config.session != READABILITY:
-            return self.arms[self.lane.arm]
+        """07.2-12: this worker's arm (07.2-16: `--arm`'s or `--night-model`'s; quick
+        261112-fds: the attempt's cascade rung) on a matching night, else the Claude arm of the
+        session's model (the table keys the Claude arms by their model id)."""
+        if self.arm_lane.arm is not None and self.config.session != READABILITY:
+            return self.arms[self.arm_lane.arm]
         return self.arms[self._model(pick)]
 
     def _label(self, pick: Pick, n: int) -> str:
-        """The console label of one attempt; 07.2-16: with several arms it names the arm."""
-        arm = f" ({self.lane.arm})" if len(self.lanes) > 1 else ""
+        """The console label of one attempt; 07.2-16: with several arms it names the arm (quick
+        261112-fds: on a cascade night, the attempt's arm)."""
+        several = len(self.lanes) > 1 or bool(self.config.routing)
+        arm = f" ({self.arm_lane.arm})" if several else ""
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}{arm}"
 
     def _announced(self, pick: Pick, n: int) -> str | None:
@@ -3567,7 +3604,7 @@ class _Night:
         released after its landing decision, also when the night stops. A unit already claimed
         stops the night: the coordinator never hands one unit to two workers, so only a claim
         this run failed to release can be there. 07.2-16: the claim names the arm's run id."""
-        record = {"run": self.lane.run, "worker": self.worker, "exe": pick.exe,
+        record = {"run": self.arm_lane.run, "worker": self.worker, "exe": pick.exe,
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": self.config.session, "pass": self._pass(pick),
@@ -3600,11 +3637,11 @@ class _Night:
         while True:
             self._halt_if_stopping()
             with self.cond:  # owner ruling 2026-11-10: a stopped arm relaunches nothing
-                stopped = self.lane.stopped
+                stopped = self.arm_lane.stopped
             if stopped:
                 raise _Halt()
             # D-07: no launch while the pause holds (07.2-16: this worker's arm's pause, D-22)
-            probe = self.lane.pause.wait_to_launch()
+            probe = self.arm_lane.pause.wait_to_launch()
             claim = self._claim(pick, n)
             session = self._launch(claim)
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
@@ -3618,7 +3655,7 @@ class _Night:
                 if matched:
                     return MATCHED
                 continue
-            self.lane.pause.on_clear(probe)
+            self.arm_lane.pause.on_clear(probe)
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 self._spend()
@@ -3639,7 +3676,7 @@ class _Night:
         two arms never share an attempt directory."""
         pass_n = self._pass(pick)
         model = self._model(pick)
-        return _Claim(pick, self.lane.run, self.repo, n, pass_n=pass_n, model=model,
+        return _Claim(pick, self.arm_lane.run, self.repo, n, pass_n=pass_n, model=model,
                       budget_usd=self.config.budget_for(model),
                       session=self.config.session, arm=self._arm(pick))  # fmt: skip
 
@@ -3648,7 +3685,7 @@ class _Night:
         backoff, then the next launch of any worker is the probe; under a pause another worker
         started, this worker just waits at its next launch. 07.2-16 (D-22): the pause is this
         worker's arm's; the other arms keep launching."""
-        pause = self.lane.pause
+        pause = self.arm_lane.pause
         limited = pause.on_limit(probe)
         if limited is None:
             self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
@@ -5925,7 +5962,7 @@ class _Night:
     def _record_limit(self, seconds: int, streak: int) -> None:
         """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker of its arm;
         07.2-16: the record names the arm's run id)."""
-        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.lane.run,
+        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.arm_lane.run,
                   "worker": self.worker, "seconds": seconds, "streak": streak,
                   "date": self.deps.today()}  # fmt: skip
         self._append(record)
@@ -5949,8 +5986,9 @@ class _Night:
 
     def _night_totals(self) -> dict:
         """`_totals` over this night's attempt, abort and limit records: 07.2-16, those of every
-        arm's run id too."""
-        runs = {self.config.run_id, *(lane.run for lane in self.lanes)}
+        arm's run id too (quick 261112-fds: and every cascade arm's)."""
+        runs = {self.config.run_id, *(lane.run for lane in self.lanes),
+                *(lane.run for lane in self.arm_lanes.values())}  # fmt: skip
         mine = [r for _, r in self.night_records if r.get("run") in runs]
         limits = [r for r in mine if r["kind"] == KIND_LIMIT]
         sessions = [r for r in mine if r["kind"] in (KIND_ATTEMPT, KIND_ABORT)]
@@ -6280,6 +6318,9 @@ class DriveOptions:
     # 07.2-16 (D-22): `--arm NAME=WORKERS`, repeatable: several arms in this one drive process
     # (`night_arms`); `--night-model X` is the one arm (X, --workers).
     arms: tuple[tuple[str, int], ...] = ()
+    # quick 261112-fds (backlog 999.12a): `--cascade`, the [routing] rows of backends.toml
+    # (backends.load_routing); empty: no cascade. The cascade's arms are backends.routing_arms.
+    routing: tuple[backends.Route, ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -7343,7 +7384,8 @@ def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     workers than its max_workers, and backends.preflight must pass for each: a non-Anthropic
     arm that sends the pack needs its own --allow-egress, an --allow-egress naming no such arm
     of the night is refused (backends.refuse_stray_egress), and a base URL needs a non-blank
-    key in the sessions' environment. 07.2-16 (D-22): every check runs per arm."""
+    key in the sessions' environment. 07.2-16 (D-22): every check runs per arm. Quick
+    261112-fds: on a cascade night the arms are the routing rows' (backends.routing_arms)."""
     shown = backends.ARMS_TOML.relative_to(backends.REPO_ROOT).as_posix()
     try:
         arms = backends.load_arms()
@@ -7352,7 +7394,8 @@ def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     if options.canary:
         night: tuple[tuple[str, int | None], ...] = ((options.canary_model, None),)
     else:
-        night = night_arms(options) or ((MODEL, None),)
+        cascade = tuple((arm, None) for arm in backends.routing_arms(options.routing))
+        night = night_arms(options) or cascade or ((MODEL, None),)
     for name, _ in night:
         if name not in arms:
             raise Refused("night model", f"{name!r} is not an arm of {shown}: {', '.join(arms)}")
@@ -7428,7 +7471,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          fable_trial=options.fable_trial,
                          night_model=options.night_model, hold=options.hold,
                          land_held=options.land_held, arm_table=arms,
-                         arms=lanes)  # fmt: skip
+                         arms=lanes, routing=options.routing)  # fmt: skip
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))
@@ -7609,10 +7652,12 @@ def refuse_unproven(options: DriveOptions, seams: Seams,
     A night of any arm off the Claude Code harness is Refused unless the arm's pass file says
     PASS for its harness and the CLI version installed now; a harness with no canary is always
     refused (fail closed). A canary, a dry run and --land-held run no such session and are not
-    refused. 07.2-16 (D-22): every arm of `night_arms` is checked."""
+    refused. 07.2-16 (D-22): every arm of `night_arms` is checked (quick 261112-fds: on a
+    cascade night, every arm of its routing rows)."""
     if options.canary or options.dry_run or options.land_held:
         return
-    for name, _ in night_arms(options):
+    names = [name for name, _ in night_arms(options)] or backends.routing_arms(options.routing)
+    for name in names:
         _refuse_unproven_arm(options, seams, arms, arms[name])
 
 
