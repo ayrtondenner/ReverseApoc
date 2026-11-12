@@ -24,8 +24,9 @@ M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past th
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
 pr_tie_three, and its three arrays take other offsets. Local.array carries the shapes that leave
 M2 or M4 in a frame of one size: three or more multi-element arrays alone (pr_arr_char4_x3), an
-array of 2 bytes beside plain locals (pr_arr_two_one_small, pr_arr_one_two_small), and two arrays
-beside a later block (pr_arr_two_block). No standard sort reproduces these orders and a table by
+array of 2 bytes beside plain locals unless it is the only one and declared first (line A of quick
+261112-fdx; pr_arr_two_one_small, pr_arr_one_two_small leave), and two arrays beside a later
+block (pr_arr_two_block). No standard sort reproduces these orders and a table by
 count would not hold either, so the model refuses them, and some frames it refuses hold.
 07.2-14 measured past the 07.1 sweep and moved nothing: a `char[4]` beside a `short[2]` keeps M2
 (pr_arr_c4_s2), two `char[4]` beside a `short[2]` leave it (pr_arr_c4x2_s2), a `char[4]` and an
@@ -45,6 +46,7 @@ SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
 _ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
 _MEASURED_ARRAYS = 2  # the most multi-element arrays the model calls known at one size
 _BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
+_LEADING_SMALL_ARRAYS = 1  # line A: the arrays under 4 bytes keep M2 beside plain locals, if first
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,10 @@ class Local:
 def order_is_known(locals_: Sequence[Local]) -> bool:
     """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
     and no more than _MEASURED_ARRAYS of them are arrays. Only size 4 keeps its order across
-    blocks, with at most one array, and under size 4 the locals are all arrays or none. Measured
+    blocks, with at most one array. Under size 4 the locals sit in one block and are all arrays
+    or none, or one array is declared first (line A: pr_line_a_c2_h to pr_line_a_c2_h11 and
+    pr_arr_one_three_small, from 1 to 11 shorts after it; measured as `char[2]` and, in
+    pr_line_a_uc2_h3, `unsigned char[2]`, beside `short`, `unsigned short` and `short[1]`). Measured
     in both cells: two arrays of 4 bytes of any element type hold (pr_arr_char4_x2,
     pr_arr_short2_x2, pr_arr_c4_s2), three do not (pr_arr_char4_x3, pr_arr_c4x2_s2), and `int[1]`
     is no array (pr_arr_int1_x3)."""
@@ -75,7 +80,8 @@ def order_is_known(locals_: Sequence[Local]) -> bool:
         return False
     if sizes == {_BLOCK_ORDERED_SIZE}:
         return one_block or arrays < 2
-    return one_block and arrays in (0, len(locals_))
+    leading = arrays == _LEADING_SMALL_ARRAYS and locals_[0].array
+    return one_block and (arrays in (0, len(locals_)) or leading)
 
 
 def _padded(size: int) -> int:
