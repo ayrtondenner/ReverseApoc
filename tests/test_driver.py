@@ -826,6 +826,77 @@ def test_transcript_paths_are_judged_against_the_checkout():
     assert driver.transcript_paths(events, repo) == [["src/ufo2p/u.c"], None]
 
 
+# ---- the 20261112-cascade STOP: a Claude session's Git Bash drive paths (/c/...) ----
+
+NOTES_REL = "build/driver/20261112-cascade/tacp/func_0001ECC0/attempt-1/notes.md"
+
+
+def _transcript_writes(repo: Path, *raws: str) -> list[dict]:
+    """A Claude transcript whose init cwd is `repo` and which writes each of `raws`."""
+    uses = [{"type": "tool_use", "name": "Write", "input": {"file_path": raw}} for raw in raws]
+    return [{"type": "system", "subtype": "init", "cwd": str(repo)},
+            {"type": "assistant", "message": {"content": uses}}]  # fmt: skip
+
+
+def _bash_drive_form(path: Path, drive: str = "") -> str:
+    """`path` as a Git Bash drive path on Windows (`/c/Users/...`, on `drive` when given, else on
+    the path's own drive); elsewhere the plain POSIX path, under `/<drive>` when given."""
+    if sys.platform != "win32":
+        return f"/{drive}{path.as_posix()}" if drive else path.as_posix()
+    return f"/{(drive or path.drive[0]).lower()}{path.as_posix()[len(path.drive) :]}"
+
+
+def _plain_forms(path: Path) -> list[str]:
+    """The spellings of `path` other than the Git Bash one: on Windows `C:\\...`, `C:/...` and
+    the rooted `\\Users\\...`; elsewhere the POSIX path."""
+    if sys.platform != "win32":
+        return [path.as_posix()]
+    return [str(path), path.as_posix(), str(path)[len(path.drive) :]]
+
+
+def _repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    return repo
+
+
+def test_a_git_bash_drive_write_inside_the_checkout_is_not_a_stray(tmp_path):
+    """A Claude (Haiku) session on Windows wrote /c/<checkout>/build/driver/.../notes.md; Claude
+    Code read it as C:\\<checkout>\\..., so the transcript audit reads it as that drive's form
+    only, not also as the rooted C:\\c\\<checkout>\\... (the 20261112-cascade STOP)."""
+    repo = _repo(tmp_path)
+    events = _transcript_writes(repo, _bash_drive_form(repo / NOTES_REL))
+    assert driver.transcript_paths(events, repo) == [[NOTES_REL.casefold()]]
+
+
+def test_a_git_bash_drive_write_outside_the_checkout_is_still_a_stray(tmp_path):
+    repo = _repo(tmp_path)
+    events = _transcript_writes(repo, _bash_drive_form(tmp_path / "elsewhere" / "notes.md"))
+    assert driver.transcript_paths(events, repo) == [None]
+
+
+def test_a_git_bash_write_on_another_drive_is_still_a_stray(tmp_path):
+    """/d/<checkout path>/... names drive D:, not the checkout on C:."""
+    repo = _repo(tmp_path)
+    other = "e" if repo.drive[:1].lower() == "d" else "d"
+    events = _transcript_writes(repo, _bash_drive_form(repo / NOTES_REL, other))
+    assert driver.transcript_paths(events, repo) == [None]
+
+
+def test_other_spellings_of_a_transcript_write_are_judged_as_before(tmp_path):
+    """The C:\\..., C:/... and rooted \\Users\\... forms keep their one reading; a backslashed
+    \\c\\... is not the Git Bash shape and keeps both readings, one outside (fail closed)."""
+    repo = _repo(tmp_path)
+    inside = _plain_forms(repo / NOTES_REL)
+    outside = _plain_forms(tmp_path / "elsewhere" / "notes.md")
+    raws = [*inside, *outside]
+    want: list[list[str] | None] = [[NOTES_REL.casefold()]] * len(inside) + [None] * len(outside)
+    if sys.platform == "win32":
+        raws.append(_bash_drive_form(repo / NOTES_REL).replace("/", "\\"))
+        want.append(None)
+    assert driver.transcript_paths(_transcript_writes(repo, *raws), repo) == want
+
+
 # ---- Security ruling (06-23 commit_match): only plain new headers, literal pathspecs ----
 
 
