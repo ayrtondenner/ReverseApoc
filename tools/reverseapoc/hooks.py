@@ -781,7 +781,7 @@ _SED_PRINT = re.compile(rf"{_SED_ADDRESS}(?:;{_SED_ADDRESS})*")
 # loads (compared uppercased, as Windows does); setting one is refused (A6 b).
 _STEERING_NAMES = frozenset({
     "PATH", "PATHEXT", "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "IFS", "CDPATH", "ENV", "SHELL",
-    "COMSPEC", "EDITOR", "VISUAL", "PAGER",
+    "COMSPEC", "EDITOR", "VISUAL", "PAGER", "SHELLOPTS", "BASHOPTS", "PS4",
 })  # fmt: skip
 _STEERING_PREFIXES = ("BASH_", "DYLD_", "GIT_", "LD_", "NODE_", "PYTEST_", "PYTHON", "UV_")
 _BASH_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
