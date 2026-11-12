@@ -2395,3 +2395,46 @@ def test_cascade_arms_pass_every_per_arm_gate(tmp_path, capsys, allow, words):
     assert code == 2
     assert words in _refusal(out)["detail"]
     _no_session_ran(rig)
+
+
+def test_cascade_arm_caps_reach_the_night(tmp_path, capsys, monkeypatch):
+    """run_drive hands the cascade's rows, its arm caps and --workers to the night (no --arm
+    lanes), and prints the cascade line once, naming each row and each arm's cap."""
+    from test_driver_workers import _every
+
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rows = _every(HAIKU, SONNET)
+    rig = Rig(tmp_path)
+    code, out, err = rig.drive(capsys, routing=rows, arm_caps=((HAIKU, 5),), workers=2)
+    assert code == 0, err
+    config = seen[0]
+    assert (config.routing, config.arm_caps, config.workers, config.arms) == (
+        rows, ((HAIKU, 5),), 2, ())  # fmt: skip
+    cascade = [line for line in out.splitlines() if line.startswith("cascade:")]
+    assert len(cascade) == 1, out
+    for row in rows:
+        assert f"{row.label} {HAIKU} > {SONNET}" in cascade[0]
+    assert f"{HAIKU}=5" in cascade[0]
+
+
+@pytest.mark.parametrize(("caps", "words"), [
+    ((("gemini-flash", 21),), ("--arm-cap gemini-flash=21", "max_sessions 20")),
+    (((SONNET, 1),), (f"--arm-cap {SONNET}=1", f"{HAIKU}, {TERRA}, gemini-flash")),
+], ids=["above-max-sessions", "not-a-cascade-arm"])  # fmt: skip
+def test_a_cascade_arm_cap_above_max_sessions_is_refused(tmp_path, capsys, caps, words):
+    """An --arm-cap above the arm's backends.toml max_sessions, or naming no cascade arm, is
+    refused before any session."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             routing=driver.backends.load_routing(), arm_caps=caps,
+                             allow_egress=(TERRA, GEMINI))  # fmt: skip
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert all(word in detail for word in words), detail
+    _no_session_ran(rig)
