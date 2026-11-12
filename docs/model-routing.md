@@ -846,6 +846,10 @@ hands the same attempt on.
   and the other arms' work keeps the workers. When every arm of the row is capped, the pass
   ends for tonight with one line naming each arm's cap. The function is not offered again
   tonight, gets no difficult-list entry, and comes back on a later night.
+- **The end.** Once every cascade arm has launched its cap, the night ENDS `arms capped`: the
+  passes still running finish, nothing more is dispatched, and the normal end of run follows
+  (ninja verify, `gate --all`, the attempt-log commit). The cap line above is for a row that is
+  capped while another row still has an arm that can run.
 - **The carried work.** The next arm's context pack holds the earlier attempts' notes, give-up
   lines and best C, through the same earlier-notes path every night uses (07.2-02). A held
   night keeps arms apart, and a cascade is never held.

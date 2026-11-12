@@ -320,6 +320,7 @@ REFUSED = "REFUSED"  # a report only: the night did not start, so no run record 
 START = "start"
 NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED = (
     "nothing to do", "max sessions", "target matched", "queue exhausted")  # fmt: skip
+ARMS_CAPPED = "arms capped"  # quick 261112-fdr (WR-03): every cascade arm launched its cap
 GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL = "guardrail", "stop signal", "init", "error", "tool"
 INTERRUPTED = "interrupted"  # KeyboardInterrupt/SystemExit: recorded, then re-raised
 LINT, TIMEOUT = "lint", "timeout"  # an attempt record's abort_reason
@@ -697,7 +698,7 @@ RECORD_FIELDS: dict[str, dict[str, Callable[[object], bool]]] = {
 RUN_REASONS = {
     STARTED: (START,),
     STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL, INTERRUPTED),
-    ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED),
+    ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED, ARMS_CAPPED),
 }
 
 # Schema 2 (Phase 7, DEC-06/DEC-07, research section J): a v2 line carries "schema": 2 and
@@ -3629,13 +3630,18 @@ class _Night:
     def _end(self) -> str | None:
         """Why the night ends now (D-07): the match target (0: off), then the night cap, which
         counts every launched session: the counted ones and the spent transient launches (07-26
-        fix round 1)."""
+        fix round 1). Quick 261112-fdr (WR-03): on a cascade night, then every arm lane at its
+        own cap (`_lane_end`), so nothing more is dispatched only to print a cap line; passes
+        still running finish. A night without --cascade has no arm lanes and never ends so."""
         with self.cond:
             target = self.config.target_matched
             if target and self.matched >= target:
                 return TARGET_MATCHED
             if self.sessions + self.spent >= self.config.max_sessions:
                 return MAX_SESSIONS
+            lanes = self.arm_lanes.values()
+            if lanes and all(self._lane_end(lane) for lane in lanes):
+                return ARMS_CAPPED
             return None
 
     def _loop(self) -> str:

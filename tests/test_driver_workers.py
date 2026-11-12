@@ -2047,11 +2047,14 @@ def test_cascade_arm_runs_at_most_its_max_workers(tmp_path):
 
 def test_cascade_arm_cap_holds_the_function_for_tonight(tmp_path):
     """--arm-cap HAIKU=1: the second pick's attempt finds HAIKU at its cap, so its pass ends
-    ARM_CAPPED with one console line, and it gets no difficult-list entry."""
+    ARM_CAPPED with one console line, and it gets no difficult-list entry. Quick 261112-fdr
+    (WR-03): the large row's uncapped SONNET keeps the night open (with every arm capped it
+    would end ARMS_CAPPED instead)."""
     picks = (_wpick(0), _wpick(1))
     night = ArmNight(tmp_path, picks=picks)
     lines: list[str] = []
-    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU),
+    report = night.run(config={"attempts_per_function": 1,
+                               "routing": _rows((HAIKU,), (HAIKU,), (SONNET,)),
                                "arm_caps": ((HAIKU, 1),)}, say=lines.append)  # fmt: skip
     assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
     assert len(night.launched) == 1
@@ -2067,13 +2070,15 @@ def test_cascade_arm_cap_mid_pass_leaves_the_tier_queue(tmp_path):
     rung SONNET is capped, so the rotated row wraps to HAIKU). Every later pass, of F or of S,
     finds the whole row capped: it launches nothing, ends ARM_CAPPED with one ARM_CAP_LINE
     naming both arms and their caps, and leaves the tier queue for tonight. S gets no
-    difficult-list entry (F one, for its full capped pass), and the night ends."""
+    difficult-list entry (F one, for its full capped pass), and the night ends. Quick
+    261112-fdr (WR-03): the large row's uncapped OPUS keeps the night open past F's pass."""
     from test_driver_pick import _tier_night
 
     a, b = START, START + 0x10
     night, deps = _tier_night(tmp_path, (a, b), unit=UNIT, night_cls=ArmNight)
     lines: list[str] = []
-    report = night.run(config={"attempts_per_function": 3, "routing": _every(HAIKU, SONNET),
+    rows = _rows((HAIKU, SONNET), (HAIKU, SONNET), (driver.OPUS_MODEL,))
+    report = night.run(config={"attempts_per_function": 3, "routing": rows,
                                "arm_caps": ((HAIKU, 2), (SONNET, 1))},
                        queue=deps.queue, requeue=deps.requeue, say=lines.append)  # fmt: skip
     assert report.event == "ENDED", report.detail
