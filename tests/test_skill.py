@@ -548,3 +548,54 @@ def test_skill_says_a_refused_check_costs_nothing():
     wrapper = _section(text, "The attempt wrapper")
     assert f"none of the {session.MAX_CHECK_RUNS}" in wrapper
     assert "write plan.json beside notes.md first" in wrapper  # the refusal as it prints
+
+
+# ---- 261112-fdv: harness-neutral wording (Codex and agy prompts embed the skill) ----
+
+# 261112-fdv: session.codex_prompt and session.agy_prompt embed the skill's body, so a Claude Code
+# tool or tool parameter it names is one those sessions lack. The words Grep, Glob and Bash, the
+# span `timeout`, and a Read that does not open a line, a sentence (after ". ", ": " or "| ") or
+# a numbered item (the verb "Read the window" stays).
+_CLAUDE_TOOL = re.compile(r"\b(?:Grep|Glob|Bash)\b|`timeout`|(?<!^)(?<![.:|] )(?<!\d\. )\bRead\b",
+                          re.M)  # fmt: skip
+_HARNESS_NOTE_LEAD = "Harness note:"
+
+
+def claude_tool_mentions(text: str) -> list[str]:
+    """Every Claude Code tool name or tool parameter `text` names (_CLAUDE_TOOL)."""
+    return _CLAUDE_TOOL.findall(text)
+
+
+def test_skill_names_no_claude_code_tool():
+    """S1, S3 (261112-fdv RED): the spike 012 Codex and agy sessions had no Read, Grep, Glob or
+    Bash tool and no timeout parameter, so a line that names one points them at nothing."""
+    assert claude_tool_mentions(_text()) == []
+
+
+def test_harness_prompts_name_no_claude_code_tool_outside_their_note():
+    """S1 to S3 (261112-fdv RED): a Codex or agy session reads the skill inside its prompt, so
+    only the Harness note, which says what that session lacks, may name a Claude Code tool."""
+    func, unit, exe = "func_00010000", "u_00010000", "ufo2p"
+    unit_path = f"build/driver/r1/{exe}/{func}/attempt-1/view/src/{exe}/{unit}.c"
+    goal = session.goal_prompt(func, unit, exe, unit_path=unit_path)
+    for build in (session.codex_prompt, session.agy_prompt):
+        parts = build(goal, _text()).split("\n\n")
+        notes = [part for part in parts if part.startswith(_HARNESS_NOTE_LEAD)]
+        assert len(notes) == 1, build.__name__
+        found = [m for part in parts if part not in notes for m in claude_tool_mentions(part)]
+        assert found == [], (build.__name__, found)
+
+
+def test_skill_says_how_to_read_and_wait_in_any_harness():
+    """S2, S3 (261112-fdv RED): a harness without file tools reads through the wrapper's printing
+    forms (the gemini-flash and Codex sessions did), and a check handed back still running is
+    waited on until it exits (round 5: DONE, then the session's end killed the check)."""
+    text = _text()
+    row = next((line for line in text.splitlines() if line.startswith("| The only commands |")), "")
+    assert "read through the wrapper" in row, row
+    for form in ("attempt context", "attempt asm", "attempt asm <NAME>", "attempt check"):
+        assert form in _spans(row), form
+    wrapper = _section(text, "The attempt wrapper")
+    timing = next((line for line in wrapper.splitlines()
+                   if line.startswith("- Run every `attempt check`")), "")  # fmt: skip
+    assert "600000" in timing and "until it exits" in timing, timing
