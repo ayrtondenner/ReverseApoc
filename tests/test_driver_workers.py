@@ -2541,3 +2541,40 @@ def test_a_handed_off_attempt_sees_the_earlier_arms_work(tmp_path):
     assert f"arm {SONNET} pauses" in handoff and handoff.endswith(f"to {OPUS}"), handoff
     assert _wait_lines(lines) == [] and _skip_lines(lines) == [], lines
     _validated(night)
+
+
+# ---- 261112-fdr review fixes (WR-01 to WR-03, IN-04) ----
+
+
+def _tier_of(*picks: Pick):
+    """A Deps.queue seam: one tier queue over `picks`, ranked in the order given, no callees."""
+    from reverseapoc import picker
+
+    items = [picker.TierItem(1, 0, (False, rank, pick.start), pick)
+             for rank, pick in enumerate(picks)]  # fmt: skip
+    return lambda difficult: picker.TierQueue(items, {})
+
+
+def test_a_tier_pick_waiting_on_a_busy_arm_leaves_its_unit_free(tmp_path):
+    """WR-01: two workers, SONNET (max_workers 1) the only arm of the large row. H (large, its
+    own unit) runs on SONNET first; F (large) waits for SONNET; G (small, F's unit) is next in
+    the tier order. While H runs, F is skipped by function, not by unit, so G runs on HAIKU
+    beside H: H's session is held open until G's has started (at most WAIT_S)."""
+    h, f = _sized(0, 300), _sized(1, 300)
+    g = Pick(EXE, f.start + 0x10, f"func_{f.start + 0x10:08X}", f.unit, 20, 100)
+    night = ArmNight(tmp_path, picks=(h, f, g))
+    seen: dict = {}
+
+    def before(unit, index):
+        if _run_of(night, night.launched[index]) == _arm_run(SONNET) and "g" not in seen:
+            seen["g"] = _poll(lambda: _runs_launched(night, _arm_run(HAIKU)) >= 1)
+
+    night.before = before
+    report = night.run(config={"workers": 2, "attempts_per_function": 1, "max_sessions": 2,
+                               "arm_table": _one_worker(SONNET),
+                               "routing": _rows((HAIKU,), (HAIKU,), (SONNET,))},
+                       queue=_tier_of(h, f, g))  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.MAX_SESSIONS), report.detail
+    assert seen["g"], "G never ran while F waited for the busy SONNET"
+    got = {r["function"]: r["model_requested"] for r in night.kinds("attempt")}
+    assert got == {h.name: SONNET, g.name: HAIKU}
