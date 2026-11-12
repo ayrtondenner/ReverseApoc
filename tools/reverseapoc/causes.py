@@ -15,7 +15,8 @@ The causes come from the check's saved document, checks/NNNN.json:
   its own failed compiles by, and every Watcom code (E or W and 3-4 digits) in it is counted;
   a check document saved for an exit 2 is keyed by its first problem;
 - a mismatch is classed by the claimed function's entry: `not compiled` (absent from
-  functions[], or a problem names it), the reloc key batch._reloc_key gives, `length` (its size
+  functions[], or a problem names it), the reloc key batch._reloc_key gives once every hex
+  address or offset token of the first problem is folded to N, `length` (its size
   differs from the config/<exe>/functions.csv row, read as stats.read_sizes reads it), else
   `bytes`, with the mnemonic pair of the window's first differing row when check saved one;
 - a shared-header gap is a build failure naming an undeclared symbol (E1011) or a member or
@@ -59,6 +60,7 @@ _ERROR_MESSAGE = re.compile(r"\b(E\d{3,4})\b:?\s*(.*)")  # an error code and its
 _QUOTED = re.compile(r"'([^']+)'")
 _UNDECLARED = "E1011"  # "Symbol 'X' has not been declared"
 _MEMBER_OR_SUBSCRIPT = re.compile(r"member|subscript", re.IGNORECASE)
+_HEX_ADDRESS = re.compile(r"\b0x[0-9A-Fa-f]+")  # a 0x address or offset, either case
 FEW_BUILD_FAILURES_PERCENT = Decimal(1)  # under it, format() says so (RESEARCH Q5 caveat)
 
 
@@ -241,10 +243,16 @@ def _mnemonic(insn: Any) -> str:
     return _NO_INSN if insn is None else str(insn["mnemonic"])
 
 
+def _hex_folded(problem: str) -> str:
+    """Every hex address as N, before batch._reloc_key's digit fold, so that an uppercase hex
+    address does not leave its letters behind."""
+    return _HEX_ADDRESS.sub("N", problem)
+
+
 def _entry_class(entry: dict, exe: str, sizes: Mapping[stats.Key, int]) -> str:
     reloc = entry["reloc"]
     if not reloc["ok"]:
-        return batch._reloc_key(reloc["problems"])
+        return batch._reloc_key([_hex_folded(p) for p in reloc["problems"][:1]])
     row_size = sizes.get((exe, int(entry["va"], 16)))
     if row_size is not None and entry["size"] != row_size:
         return LENGTH
