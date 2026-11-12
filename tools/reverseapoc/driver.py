@@ -1339,11 +1339,25 @@ def _relative(raw: str | None, repo: Path, roots: Sequence[str]) -> list[str] | 
     return None if any(rel is None for rel in rels) else sorted(set(rels))
 
 
+_CLAUDE_BASH_DRIVE = re.compile(r"/([A-Za-z])(?:/|$)")  # Git Bash's /c/..., forward slashes only
+
+
+def _claude_drive_form(raw: str | None) -> str | None:
+    """A Git Bash drive path (`/c/...`) as Claude Code on Windows resolves it, `c:/...`, so it
+    is read as that drive's form only, never also as rooted on the current drive (the
+    20261112-cascade STOP, owner-approved). Any other path, or any host but Windows, as is."""
+    bash_drive = _CLAUDE_BASH_DRIVE.match(raw) if raw is not None and os.name == "nt" else None
+    if bash_drive is None:
+        return raw
+    return f"{bash_drive.group(1)}:/{raw[bash_drive.end() :]}"
+
+
 def transcript_paths(events: Sequence[dict], repo: Path) -> list[list[str] | None]:
     """For each write-tool call in the transcript, its repo-relative forms, or None when it
-    names no path or one outside the checkout (judged against `repo` and the init cwd)."""
+    names no path or one outside the checkout (judged against `repo` and the init cwd). A Git
+    Bash drive path is read as Claude Code reads it (`_claude_drive_form`)."""
     roots = _roots(repo, (streamjson.init_event(events) or {}).get("cwd"))
-    return [_relative(raw, repo, roots) for raw in _write_targets(events)]
+    return [_relative(_claude_drive_form(raw), repo, roots) for raw in _write_targets(events)]
 
 
 # ---- the Codex guard set (07.2-13; D-13, D-26; RESEARCH Q8, Pitfalls 6 and 11) ----
