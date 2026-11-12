@@ -168,6 +168,20 @@ REFUSED_HOLDING = {
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
     "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
     "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
+    # Line A (quick 261112-fdx): one 2-byte array declared first, then 2-byte plain locals.
+    "pr_line_a_c2_h": (*_arrays(2, 0x77), Marked("b", 2, 0x177)),
+    "pr_line_a_c2_h8": (*_arrays(2, 0x78),
+                        *(Marked(name, 2, 0x178 + n) for n, name in enumerate("bcdefghi"))),  # fmt: skip
+    "pr_line_a_c2_h11": (*_arrays(2, 0x79),
+                         *(Marked(name, 2, 0x180 + n) for n, name in enumerate("bcdefghijkl"))),  # fmt: skip
+    "pr_line_a_uc2_h3": (*_arrays(2, 0x7A), Marked("b", 2, 0x18B), Marked("c", 2, 0x18C),
+                         Marked("d", 2, 0x18D)),  # fmt: skip
+    "pr_line_a_c2_mixed": (*_arrays(2, 0x7B), Marked("b", 2, 0x18E), Marked("c", 2, 0x18F),
+                           Marked("d", 2, 0x190), Marked("e", 2, 0x191)),  # fmt: skip
+    "pr_line_a_c2_h3_late": (*_arrays(2, 0x7C), Marked("b", 2, 0x192), Marked("c", 2, 0x193),
+                             Marked("d", 2, 0x194)),  # fmt: skip
+    "pr_line_a_c2_h3_split": (*_arrays(2, 0x7D), Marked("b", 2, 0x195), Marked("c", 2, 0x196),
+                              Marked("d", 2, 0x197)),  # fmt: skip
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -213,6 +227,7 @@ FALLBACK_TWINS = (
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
 _MEMORY_STORE = re.compile(r"\w+ ptr \[esp[^\]]*\], (?P<source>\w+)$")
+_RETURNED = "ax"  # the register family a call returns an int or a pointer in
 
 
 @pytest.fixture(scope="module")
@@ -257,12 +272,14 @@ def _family(register: str) -> str:
 def _stores(code: bytes) -> Iterator[tuple[int, int]]:
     """(value, slot) of each constant stored in a slot. -oneatx loads a marker into a register
     first and may store it after pushes, so register constants are followed and each slot comes
-    from batch._frame_slots, which keeps track of the depth."""
+    from batch._frame_slots, which keeps track of the depth. A call keeps every register but eax,
+    the only one the probe's externs return in (a double comes back in st0), and -oneatx loads a
+    marker before a call to store it after (pr_line_a_c2_h3_split)."""
     frame_slots, _ = batch._frame_slots(code, 0)
     constants: dict[str, int] = {}
     for insn, slot in zip(x86.decode(code, 0), frame_slots, strict=True):
         if insn.is_call:
-            constants.clear()
+            constants.pop(_RETURNED, None)
         if insn.mnemonic != "mov":
             continue
         target, source = insn.op_str.split(", ", 1)

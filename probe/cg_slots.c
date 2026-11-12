@@ -1296,6 +1296,137 @@ void pr_arr_c4x2_s2_rev(void)
     pr_take(a, b, c);
 }
 
+/*
+ * Frames past the 07.1 sweep (quick 261112-fdx). Each tests one of four lines fixed before
+ * anything was measured: A, one 2-byte array declared first beside shorts; B, two 4-byte arrays
+ * then an int, beside later blocks of ints; C, three or more 4-byte arrays then ints; D, an
+ * array and an int beside one 2-byte local. The pr_line_k_ frames check the side the model
+ * already calls known. A _late frame stores and passes its top block's locals in reverse, and a
+ * _split frame passes its array in a call of its own.
+ */
+void pr_line_a_c2_h(void)
+{
+    char a[2];
+    short b;
+
+    a[0] = 0x77;
+    b = 0x177;
+    pr_take(a, &b);
+}
+
+void pr_line_a_c2_h8(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+    short h;
+    short i;
+
+    a[0] = 0x78;
+    b = 0x178;
+    c = 0x179;
+    d = 0x17a;
+    e = 0x17b;
+    f = 0x17c;
+    g = 0x17d;
+    h = 0x17e;
+    i = 0x17f;
+    pr_take(a, &b, &c, &d, &e, &f, &g, &h, &i);
+}
+
+void pr_line_a_c2_h11(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+    short h;
+    short i;
+    short j;
+    short k;
+    short l;
+
+    a[0] = 0x79;
+    b = 0x180;
+    c = 0x181;
+    d = 0x182;
+    e = 0x183;
+    f = 0x184;
+    g = 0x185;
+    h = 0x186;
+    i = 0x187;
+    j = 0x188;
+    k = 0x189;
+    l = 0x18a;
+    pr_take(a, &b, &c, &d, &e, &f, &g, &h, &i, &j, &k, &l);
+}
+
+void pr_line_a_uc2_h3(void)
+{
+    unsigned char a[2];
+    short b;
+    short c;
+    short d;
+
+    a[0] = 0x7a;
+    b = 0x18b;
+    c = 0x18c;
+    d = 0x18d;
+    pr_take(a, &b, &c, &d);
+}
+
+void pr_line_a_c2_mixed(void)
+{
+    char a[2];
+    short b;
+    short c[1];
+    unsigned short d;
+    short e[1];
+
+    a[0] = 0x7b;
+    b = 0x18e;
+    c[0] = 0x18f;
+    d = 0x190;
+    e[0] = 0x191;
+    pr_take(a, &b, c, &d, e);
+}
+
+void pr_line_a_c2_h3_late(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+
+    d = 0x194;
+    c = 0x193;
+    b = 0x192;
+    a[0] = 0x7c;
+    pr_take(&d, &c, &b, a);
+}
+
+void pr_line_a_c2_h3_split(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+
+    a[0] = 0x7d;
+    pr_take(a);
+    b = 0x195;
+    c = 0x196;
+    d = 0x197;
+    pr_take(&b, &c, &d);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {
