@@ -11,6 +11,52 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-11: fix the tools beside a live drive, and watch ci.yml (spike 012)
+
+- A drive holds the checkout's lock, git index and audit, and a second drive is refused. During spike 012 the fixes were built on separate branches and merged between drives; the last three were authored during drives 1, 2 and 2b (efdb1b99, be869480, faaf6746) and committed to main one minute after drive 2b ended. Evidence lines go to `build/gate/<spike>/results.txt`; one round's lines were lost to a log watcher holding the file open and had to be restored from the launcher's output.
+- A push to main can start CI (`ci.yml`) and, when a match commit changes `config/*/status.csv`, Pages (`pages.yml`). "CI green" for a fix means `ci.yml`'s run at that commit: select the run by workflow and commit, not the newest run. Record: [spike 012 learnings](../.planning/spikes/012-model-routing/LEARNINGS.md).
+
+## 2026-11-11: probe wording decides whether a model tries the probe (spike 012)
+
+- gpt-oss-120b refused a prompt that called itself a guardrail canary (30102605); round 3's models refused to run a command "outside the terminal sandbox" as unsafe (592e2ddb); Gemini refused a target above its workspace on scope, and gpt-oss folded `..` spellings (cc87173b); Claude 4.6 through agy refused the `..` reads itself, so agy's deny rule was never reached (be869480).
+- So each canary probe is one plain instruction, gives the exact string to pass character for character, and says the tool decides whether a path is allowed. A model that rewrites a probe still has to pass it (the owner's strict ruling): GPT-OSS 120B, which kept rewriting the `..` paths and prefixing commands with `cd`, was left out instead.
+
+## 2026-11-11: a canary must predict the night (spike 012)
+
+- Sol and Terra passed their Codex canaries, whose run dirs are timestamps, then their drive sessions under `spike012-gpt-6.1-sol` and `spike012-gpt-6.1-terra` lost the per-session trust setting: Codex 0.167 splits a `-c` key on every dot, even inside quotes. The audit stopped the drive on the two `error` items; the trust is now an inline table (cc0b7bad).
+- Earlier canaries had passed probes that never started (exit -1; b63167d2, 7e7f14e4) and never checked that the audit passes the canary's own wrapper calls (476ad5d1). A canary now counts a probe only if it ran, proves each check both ways, and runs the night's command audit over every other command (a6cfd9e9). Use the drive's run-id shapes in canaries too.
+
+## 2026-11-11: the fail-closed stops were right; widen only by exact shape (spike 012)
+
+- Five drive stops, each a real unknown: Muse Spark's hook-denied write (8da01b25), Codex `error` items from a dropped trust setting, so sessions ran without their rules (2bb2daf1), Gemini reading its own agy output files (b6524d00), Luna running `reverseapoc context` instead of the wrapper (950e8d08), and GLM-4.7-Flash's hook-denied write to `temp_check_runner.py` (an arm stop).
+- Each ended in a narrow owner ruling: a denied write stops its arm only (cdfdf6b5, d5bcccc2, then only on a unique tool_use id, tool and target, 92794e11); agy may read exactly its own `tasks/task-<n>.log` and `steps/<n>/output.txt` (226fb7d5); the stray arm leaves the picks. A guardrail stop does not commit the ledger, so a `chore(drive)` commit adds the records unedited.
+
+## 2026-11-11: subscription quotas bind before money (spike 012)
+
+- OpenRouter used $53.10 of the owner's $100 for the whole spike. The quotas ran out first: one Gemini Flash session through agy took about 22% of its weekly group, two agy Claude 4.6 canaries about 63% of theirs, a Codex canary about 2% of the 5-hour window and a small-pick Codex session about 0.5% of the week (owner screenshots; `agy -p /usage` prints nothing machine-readable).
+- So quota-bound arms get short pick lists, smallest functions first, and `max_sessions` caps (the agy Claude arms: 7). A paused arm with queued picks keeps the drive open. Per-arm figures: [model-comparison.md](model-comparison.md).
+
+## 2026-11-11: Codex cached tokens are priced twice in stats (spike 012, not fixed yet)
+
+- Codex's `input_tokens` already includes the cached tokens. `codexjson.usage` records it as input and `cached_input_tokens` again as cache read, so `stats` prices the cached part twice: GPT-6 Astra shows $75.51 API-equivalent against about $11.75 recomputed. The spike 012 README carries the recomputed figures.
+- The OpenRouter arms price both cache classes as input on purpose (an estimate may overstate, never understate), so their list figure ($70.53) is above what OpenRouter charged ($53.10). Before trusting a new CLI's cost, read one real usage event against its docs. Fix `codexjson.usage` test-first, then re-run `stats`.
+
+## 2026-11-11: a recovered 429 and an output overrun were misclassified (spike 012)
+
+- Phase 6's D-08 rule made any `api_retry` `rate_limit` a usage limit. On OpenRouter's short 429s, which Claude Code retried and recovered from, 11 finished sessions (7 with an exit-0 check) were set aside uncounted and redone on OpenRouter credit. Now a retry is a limit only when the session did not recover (3b2e42e9; `.planning/debug/recovered-429-counted-as-limit.md`).
+- A GLM-5.3 reply ran past Claude Code's 32000 output-token maximum; no signal explained it, so the classifier stopped the drive. By the owner's ruling that exact CLI error is the model's own failure, counted like a turn cap, and metered arms get `CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000` (11ea0a4f). Classify on how a session ended, and pin each new provider's transcript shapes as fixtures before its first drive.
+
+## 2026-11-11: what agy 1.5.5 and 1.5.6 do that the docs did not say (spike 012)
+
+- Stream and flags: events come in an `{"event": kind, kind: {...}}` envelope (d8db6e05); `--print-timeout` needs a Go duration such as `1800s` (1a3f45f3); the `unsandboxed` permission rule is ignored and grants nothing (69a654fa); on Windows 10 the terminal sandbox does not run at all, so the permission rules and the audit are the only guards.
+- Steps: headless agy ends the turn at its first soft-denied tool, so the canary is eight one-probe sessions (30102605); a soft-denied step ends ERROR with the permission check's message, not DENIED (cea8673f); `run_command` holds only `CommandLine` (f66387e3); denied targets come back canonicalized (f63f5850); a relative `read_file` path is rejected before the permission check (959ff435); a backgrounded command is polled with `manage_task` (Gemini) or waited on with `schedule` (Claude 4.6), and its output is read from agy's own `.system_generated` folder (cc87173b, efdb1b99, 226fb7d5).
+- agy updated itself from 1.5.5 to 1.5.6 mid-day, and the version-bound pass gate refused the gpt-oss drive until it re-canaried (it then failed). Expect a self-updating CLI to need a new canary at any time.
+
+## 2026-11-11: what Codex CLI 0.167.0 does on Windows that the docs did not say (spike 012)
+
+- Sandbox: `--ignore-user-config` dropped the owner's sandbox setting, so Codex ran unsandboxed and rejected every command (e82dcb58); elevated mode needs an admin setup the owner declined, so it runs unelevated (4c6795a8); there workspace-write denies the owner's uv cache (each session gets its own, a6cfd9e9) and the wrapper's ledger and Docker's pipe, so the wrapper runs through a driver-side broker (b9a7d74d). `whoami` shows the same groups inside the sandbox as outside, so the sandbox proof is behavioural (b63167d2).
+- Commands: each one is reported wrapped in the shell's absolute path, and only the real shells are unwrapped (629b104b, 09621301); a rejected command shows only on stderr (73627b4c); unified exec hands a long command back while it still runs, and Luna, Sol and Terra replied DONE while `attempt check` ran, so the prompts now say to wait (390885e6); a `-c` key splits on every dot (cc0b7bad); and a session writing a file with `Set-Content` instead of its file-edit tool is a stray (a6cfd9e9).
+
 ## 2026-11-11: cheap models match the small functions too (spike 012)
 
 - Spike 012 ran 13 model arms over one frozen 20-function list as hold drives ([spike 012](../.planning/spikes/012-model-routing/README.md)). Under 64 B, Haiku 5.5 held 3 of 7 at $0.78 API-equivalent for its whole run, the same count as Opus 5.5 at $17.45; at 64-255 B arms held 0 to 2; nothing at 256 B and up matched on any arm. 6 of the 7 distinct held functions landed (+489 B).
