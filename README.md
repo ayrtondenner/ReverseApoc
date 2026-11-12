@@ -171,6 +171,7 @@ Bring your own files. Nothing below downloads the game, and the compiler downloa
 
 - [docs/workflow.md](docs/workflow.md): the per-function loop, the guardrails and the Milestone 1 roadmap.
 - [docs/ceremonies.md](docs/ceremonies.md): which review, simplify and comment passes run on Python tooling and which may touch matched C.
+- [docs/model-routing.md](docs/model-routing.md): the model arms (Claude Code, Codex CLI, Antigravity CLI, OpenRouter) and their guards; [docs/model-comparison.md](docs/model-comparison.md): what each model measured on our matching task, per size bucket.
 - [GSD](https://github.com/open-gsd/gsd-core) structures milestones and phases (discuss, plan, execute, verify). [superpowers](https://github.com/obra/superpowers) drives the work inside a phase (brainstorming, TDD on tooling, verification before completion).
 - Coding rules: [docs/coding-style.md](docs/coding-style.md). Matching notes: [docs/matching.md](docs/matching.md). Journal: [docs/learnings.md](docs/learnings.md). Design: [docs/superpowers/specs/2026-10-19-reverseapoc-design.md](docs/superpowers/specs/2026-10-19-reverseapoc-design.md). Research: [docs/research/](docs/research/).
 
