@@ -1709,6 +1709,85 @@ def test_worktree_command_allowlist_entry_point(worktree):
     assert (allowed.returncode, allowed.stdout) == (0, b""), allowed.stderr
 
 
+SUBSTITUTIONS = [
+    ("Bash", 'echo "$(uv run --directory tools python y.py)"', CANNOT_TELL),
+    ("Bash", "echo \"$(bash -c 'node x.mjs')\"", CANNOT_TELL),
+    ("Bash", 'echo "`uv run --project tools python y.py`"', CANNOT_TELL),
+    ("Bash", 'X="$(uv run --directory tools python y.py)"; git add x.py', CANNOT_TELL),
+    ("Bash", 'echo "$(echo "$(uv run --directory t python y.py)")"', CANNOT_TELL),
+    ("Bash", "cat x.py <(node --eval 1)", CANNOT_TELL),
+    ("PowerShell", 'git commit -m "$(sl tools)"; & ./x.ps1', CANNOT_TELL),
+    ("PowerShell", 'echo "$(& ./a.ps1)"; & ./x.ps1', CANNOT_TELL),
+    ("Bash", 'echo x > y.py; X="$(uv run python y.py)"', "the same command writes it"),
+    ("Bash", 'git diff --exit-code "$(git merge-base HEAD main)" -- tools/x.py', None),
+    ("Bash", 'test "$(grep -c X tools/reverseapoc/hooks.py)" -ge 1', None),
+    ("Bash", 'echo "$(git rev-parse HEAD)" x.py', None),
+    ("Bash", "git commit -m 'literal $(cd tools) in hooks.py docs'", None),
+    ("PowerShell", 'git commit -m "fix $(git rev-parse --short HEAD) in hooks.py docs"', None),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command", "expected"), SUBSTITUTIONS)
+def test_worktree_command_judges_substitutions(worktree, name, command, expected):
+    """261112-fdw A10: each command substitution, quoted or nested, and each PowerShell
+    subexpression is held to the allowlist, and its script words are read with the call's (a
+    write and a run across the boundary are caught); a single-quoted one is literal."""
+    clean_scripts(worktree)
+    decision = always(shell(name, command, worktree))
+    if expected is None:
+        assert not decision.deny, command
+        return
+    assert decision.deny and expected in decision.reason, command
+
+
+def test_worktree_command_unterminated_substitution_fails_closed(worktree):
+    """261112-fdw A9: an unterminated substitution blocks (the shell would refuse it anyway)."""
+    for name, command in (("Bash", 'echo "$(uv run python x.py"'),
+                          ("PowerShell", 'git commit -m "$(git status x.py"')):  # fmt: skip
+        with pytest.raises(hooks.HookError, match="unterminated"):
+            always(shell(name, command, worktree))
+
+
+@pytest.mark.parametrize("command", ["& ./x.p`s1", '& "./x.p`u{73}1"', "uv run python x.p`y"])
+def test_worktree_command_finds_backtick_hidden_scripts(worktree, command):
+    """261112-fdw A2: a PowerShell backtick escape no longer hides a script suffix; the word
+    still needs the escape, so it cannot be read as written."""
+    clean_scripts(worktree)
+    decision = always(shell("PowerShell", command, worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason, command
+
+
+def test_worktree_command_reads_powershell_quotes_as_powershell_does(repo, worktree):
+    """261112-fdw A2: a single-quoted backtick stays literal, an escaped verb is the verb
+    PowerShell runs, and curly quotes are the quotes PowerShell takes them for."""
+    clean_scripts(worktree)
+    for name in SHELL_TOOLS:
+        assert not always(shell(name, "git commit -m 'fix `hooks.py`'", worktree)).deny, name
+    assert not always(shell("PowerShell", "g`it add x.py", worktree)).deny
+    (worktree / "x.ps1").write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    decision = always(shell("PowerShell", "& ./x.p‘’s1", worktree))
+    assert decision.deny and SPELLS_MAIN in decision.reason
+
+
+RUNSPACE_DENIED = ["& ./a.ps1; & ./x.ps1", "& ./a.ps1; uv run pytest -q tests/test_hooks.py",
+                   "& ./a.ps1 | & ./x.ps1", "./a.ps1; git add x.py"]  # fmt: skip
+RUNSPACE_ALLOWED = [("PowerShell", "& ./a.ps1; git status"),
+                    ("PowerShell", "uv run python a.py; uv run python x.py"),
+                    ("Bash", "bash a.sh; bash x.sh"), ("Bash", "./a.sh; ./x.sh")]  # fmt: skip
+
+
+def test_worktree_command_powershell_script_run_ends_the_call(worktree):
+    """261112-fdw A8: a .ps1 runs in the caller's runspace and can move its location, so no
+    script word may follow a direct script run; interpreter runs are child processes."""
+    clean_scripts(worktree)
+    for command in RUNSPACE_DENIED:
+        decision = always(shell("PowerShell", command, worktree))
+        assert decision.deny and CANNOT_TELL in decision.reason, command
+        assert "261112-fdw" in decision.reason, command
+    for name, command in RUNSPACE_ALLOWED:
+        assert not always(shell(name, command, worktree)).deny, command
+
+
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
 # A path include could pull an unscanned file (the attempt's notes.md under build/driver/, or any
 # other) into the compile, carrying a #pragma or inline asm past the scan.
