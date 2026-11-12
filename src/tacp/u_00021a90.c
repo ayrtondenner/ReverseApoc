@@ -13,7 +13,6 @@ INCLUDE_ASM(func_00021BB0);
 INCLUDE_ASM(func_00021E30);
 INCLUDE_ASM(func_00021FD0);
 INCLUDE_ASM(func_00022110);
-INCLUDE_ASM(func_00022140);
 INCLUDE_ASM(func_00022210);
 INCLUDE_ASM(func_000222A0);
 INCLUDE_ASM(func_000225E0);
@@ -157,6 +156,53 @@ struct tacrec_slots {
 }; /* size: 0x286 (at least) */
 
 extern struct tacrec_entry tacrec_table[];
+
+/* func_00022140: sum the record's mode bytes for mode `mode`; the record is tacrec_table[index]. */
+short func_00022140(short index, short mode)
+{
+    s8 *rec;
+    short total;
+
+    rec = (s8 *)&tacrec_table[index];
+    total = 0;
+    if ((u8)rec[0x45] <= 1) {
+        if (mode == 0 || mode == 1) {
+            total += rec[0x52];
+        }
+        if (mode == 0 || mode == 4) {
+            total += rec[0x53];
+        }
+        if (mode == 0 || mode == 2) {
+            total += rec[0x54];
+        }
+        if (mode == 0 || mode == 2) {
+            total += rec[0x55];
+        }
+        if (mode == 0 || mode == 3) {
+            total += rec[0x56];
+        }
+    } else {
+        if (mode == 0) {
+            total = rec[0x52];
+        }
+        if (mode == 0) {
+            total += rec[0x53];
+        }
+        if (mode == 0) {
+            total += rec[0x54];
+        }
+        if (mode == 0) {
+            total += rec[0x55];
+        }
+        if (mode == 0) {
+            total += rec[0x56];
+        }
+        if (mode == 0) {
+            total += rec[0x57];
+        }
+    }
+    return total;
+}
 
 /* tacrec_count_live_slots: count the used slots that reference live records
  * Returns 0 unless word_064 is greater than word_080. Otherwise counts the slots whose
