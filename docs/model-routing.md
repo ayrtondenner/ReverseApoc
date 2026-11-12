@@ -870,8 +870,8 @@ hands the same attempt on.
   same `--allow-egress` flags as the night, because the arm checks run first. The preview shows
   each attempt's rung; a skip at run time is printed as it happens.
 - **Console.** The night prints one `cascade:` line naming each row and each arm's cap, and each
-  attempt line names its arm. A usage limit prints one line, the hand-off line or the wait
-  line. The templates:
+  attempt line names its arm. A usage limit prints one routing line, the hand-off line or the
+  wait line, beside the attempt's own outcome line (`arm waiting after N s`). The templates:
   - skip: `<label>: skipped <arm> (capped), <arm> (paused)`, the label naming the arm that runs;
   - hand-off: `<label>: usage limit; arm <arm> pauses and passes this attempt to <next arm>`;
   - wait: `<label>: usage limit; arm <arm> pauses for <seconds> s; the function goes back to
