@@ -564,13 +564,13 @@ largest, the 208 B `tacp func_00022140`, Haiku among them), and no arm matched 2
 match), so escalation on failure has no false positives.
 **Target:** after spike 012 closes (its write-up gives the per-bucket numbers that calibrate the table).
 **Follow-ups:**
-- [ ] Generalize `session.model_for_pass(pass)` (D-09: Opus for passes 1-2, Fable from pass 3) to an arm per
+- [x] (closed by quick 261112-fds, 2ccc2111: `[routing]` in backends.toml, `drive --cascade`, `--arm-cap`) Generalize `session.model_for_pass(pass)` (D-09: Opus for passes 1-2, Fable from pass 3) to an arm per
   (pass, size bucket), from a routing table in `config/driver/backends.toml` (for example: under 64 B, Haiku or
   Luna first, then Sonnet or Terra; 64-255 B, Haiku, then Sonnet or Astra, then Opus; 256 B and up, a strong arm
   first), test-first; the drive's existing three attempts per function are the ladder.
-- [ ] Escalate on PARTIAL or GAVE_UP: the next attempt goes to the next arm in the function's row and, in a normal
+- [x] (closed by quick 261112-fdt, 6d96fdbd) Escalate on PARTIAL or GAVE_UP: the next attempt goes to the next arm in the function's row and, in a normal
   (not held) night, sees the earlier attempts' notes and best draft.
-- [ ] A paused arm (a Codex 5-hour window, an agy weekly quota, a usage limit) passes the attempt to the next arm in
+- [x] (closed by quick 261112-fdt, 6d96fdbd; a busy arm waits, coordinator ruling 2026-11-12) A paused arm (a Codex 5-hour window, an agy weekly quota, a usage limit) passes the attempt to the next arm in
   the row instead of holding the function.
-- [ ] Calibrate the table from spike 012's `stats --run 'spike012-*'` per-bucket figures; revisit after a few real
+- [ ] (first table from spike 012 in docs/model-routing.md by 261112-fds; stays open until a few real cascade nights recalibrate it) Calibrate the table from spike 012's `stats --run 'spike012-*'` per-bucket figures; revisit after a few real
   nights, since spike 012 has 20 picks and one attempt per arm.
