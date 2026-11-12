@@ -482,7 +482,8 @@ def test_codex_arms_load():
         assert (arm.harness, arm.backend, arm.model) == ("codex", "openai", name)
         assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, ())
         assert arm.prices == prices[name] and arm.coauthor == credit
-        assert arm.max_workers == 1 and arm.egress
+        # owner, 2026-11-12: Terra runs 3 at once on cascade nights; the others stay at 1
+        assert arm.max_workers == (3 if name == "gpt-6.1-terra" else 1) and arm.egress
         assert arm.billing == backends.SUBSCRIPTION
 
 

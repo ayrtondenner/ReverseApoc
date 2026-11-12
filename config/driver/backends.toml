@@ -110,7 +110,9 @@ model = "gpt-6.1-terra"
 sends_disassembly = true
 accepted_init = []
 coauthor = "GPT-6.1 Terra <noreply@openai.com>"
-max_workers = 1
+# Owner, 2026-11-12: raised from 1 to 3 for cascade nights (a session limited by a Plus 5-hour
+# window hands its attempt to the row's next arm, 261112-fdt).
+max_workers = 3
 
 # List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
 # `--land-held` ranking; confirm at setup. Source: OpenRouter's models list, which agrees with the
