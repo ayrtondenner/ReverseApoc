@@ -556,9 +556,10 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 
 **Goal:** Route each function to the cheapest arm likely to match it by size, and escalate to a stronger arm
 only when an attempt fails, so nights spend strong-model quota only where cheap models do not match.
-**Source:** spike 012 (owner, 2026-11-11). Cheap arms (Haiku 5.5, GPT-6 Luna, GLM-5.3) matched the same functions
-under 64 B that the strong ones did, wins thin out at 64-255 B (GPT-6 Astra held the largest, 208 B), and no arm
-matched 256 B and up. FNV routed by size up front (`docs/research/2026-11-09-fnv-decomp.md`); LLM cascades
+**Source:** spike 012 (owner, 2026-11-11). Under 64 B, Haiku 5.5 held 3 of 7, as many as Opus 5.5, at about 1/22
+of its list cost (GPT-6 Luna, the cheapest Codex arm, held 1 of 7); wins thin out at 64-255 B (seven arms held the
+largest, the 208 B `tacp func_00022140`, Haiku among them), and no arm matched 256 B and up
+(`docs/model-comparison.md`). FNV routed by size up front (`docs/research/2026-11-09-fnv-decomp.md`); LLM cascades
 (FrugalGPT, RouteLLM, AutoMix) escalate on a rejected answer, and here the scorer is exact (`attempt check`'s byte
 match), so escalation on failure has no false positives.
 **Target:** after spike 012 closes (its write-up gives the per-bucket numbers that calibrate the table).
