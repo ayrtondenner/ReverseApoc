@@ -249,9 +249,15 @@ def test_a_char4_and_an_int_beside_a_char2_stay_refused():
 # (probe/cg_slots.c pr_line_*, both cells).
 
 
-def _shape(*locals_: tuple[int, bool]) -> tuple[slots.Local, ...]:
-    """Locals named v0, v1, ... from (size, array) pairs in declaration order, all in one block."""
-    return tuple(slots.Local(f"v{n}", size, array=array) for n, (size, array) in enumerate(locals_))
+# (size, scope, array) in the probe's notation: | opens a later block, numbered by its scope.
+C2, H = (2, 0, True), (2, 0, False)
+C4, INT, INT1, INT2, C4_1 = (4, 0, True), (4, 0, False), (4, 1, False), (4, 2, False), (4, 1, True)
+
+
+def _shape(*specs: tuple[int, int, bool]) -> tuple[slots.Local, ...]:
+    """Locals named from a in declaration order, as the pr_line_ frames declare them."""
+    names = "abcdefghijkl"
+    return tuple(slots.Local(name, *spec) for name, spec in zip(names, specs, strict=False))
 
 
 @pytest.mark.parametrize("plain", [1, 3, 8, 11])
@@ -267,11 +273,43 @@ def test_one_two_byte_array_declared_first_keeps_the_rule(plain):
 @pytest.mark.parametrize(
     "shape",
     [
-        ((2, False), (2, True)),  # the sweep's h c2: it held, off the line
-        ((2, False), (2, False), (2, True)),  # pr_arr_one_two_small: it leaves
-        ((2, False), (2, False), (2, False), (2, True), (2, False)),  # the sweep: it leaves
-        ((2, True), (2, True), (2, False)),  # pr_arr_two_one_small: it leaves
+        (H, C2),  # the sweep's h c2: it held, off the line
+        (H, H, C2),  # pr_arr_one_two_small: it leaves
+        (H, H, H, C2, H),  # the sweep: it leaves
+        (C2, C2, H),  # pr_arr_two_one_small: it leaves
     ],
 )
 def test_a_two_byte_array_not_declared_first_stays_refused(shape):
+    assert slots.order_is_known(_shape(*shape)) is False
+
+
+@pytest.mark.parametrize(
+    ("shape", "layout"),
+    [
+        ((C4, C4, INT, INT1), {"a": 8, "b": 4, "c": 0, "d": 0xC}),  # pr_line_b_c4x2_i_blk
+        ((C4, C4, INT, INT, INT, INT1), {"a": 0x10, "b": 0xC, "c": 8, "d": 4, "e": 0, "f": 0x14}),
+        ((C4, C4, INT, INT1, INT1, INT1, INT1, INT1),
+         {"a": 8, "b": 4, "c": 0, "d": 0x1C, "e": 0x18, "f": 0x14, "g": 0x10, "h": 0xC}),
+        ((C4, C4, INT, INT1, INT2), {"a": 8, "b": 4, "c": 0, "d": 0xC, "e": 0x10}),
+    ],
+)  # fmt: skip
+def test_two_arrays_then_an_int_keep_the_rule_across_blocks(shape, layout):
+    """Line B: pr_line_b_c4x2_i_blk, _i3_blk, _i_blk5 and _i_blk_blk hold, as do the sweep's
+    c4 c4 i | i to c4 c4 i i | i i i and their s2 twins."""
+    declared = _shape(*shape)
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == layout
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (C4, C4, INT1),  # pr_arr_two_block: it leaves
+        (C4, C4, INT1, INT1),  # pr_arr_two_two_block: it holds, off the line
+        (INT, C4, C4, INT1),  # pr_arr_int_two_block: it leaves
+        (C4, INT, C4, INT1),
+        (C4, C4, INT, C4_1),
+    ],
+)
+def test_two_arrays_off_line_b_stay_refused(shape):
     assert slots.order_is_known(_shape(*shape)) is False
