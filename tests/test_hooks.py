@@ -1526,6 +1526,187 @@ def test_worktree_command_expansion_covers_braces_and_continuations(worktree):
     assert decision.deny and "needs shell expansion" in decision.reason
 
 
+# --- 261112-fdw: a script-naming worktree call passes only when every command has a listed shape
+
+CANNOT_TELL = "cannot tell which file runs"
+GSD_TOOLS = ".claude/gsd-core/bin/gsd-tools.cjs"
+CLEAN_FILES = ("x.py", "a.py", "x.sh", "a.sh", "x.mjs", "x.ps1", "a.ps1", "tools/x.py",
+               "tests/test_hooks.py", "tools/reverseapoc/hooks.py")  # fmt: skip
+
+
+def clean_scripts(worktree: Path) -> None:
+    """Clean scripts at every name the allowlist cases use, so their reads really happen."""
+    for file in CLEAN_FILES:
+        path = worktree / file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"W = '{RELATIVE_WATCOM}'\n", encoding="utf-8")
+
+
+ALLOWLIST_DENIED = [
+    ("Bash", "node -e \"require('./x.js')\""), ("Bash", "node --eval \"require('./x.js')\""),
+    ("Bash", "uv run --directory tools python x.py"),
+    ("Bash", "uv run --project tools python x.py"),
+    ("Bash", "env -C tools bash x.sh"), ("Bash", 'env -"C" tools bash x.sh'),
+    ("Bash", "git -C tools add x.py"), ("Bash", 'c""d tools && uv run python x.py'),
+    ("Bash", "'cd' tools && bash x.sh"), ("Bash", "\\cd tools; bash x.sh"),
+    ("Bash", 'e\\val "bash x.sh"'), ("Bash", "bash -\"c\" 'node x.mjs'"),
+    ("Bash", "PATH=. git add x.py"), ("Bash", "./git add x.py"), ("Bash", "bash a=b.sh"),
+    ("Bash", "cat x.py | bash"), ("Bash", "bash not_yet.sh"), ("Bash", "x.sh"),
+    ("Bash", '>log c""d tools; bash x.sh'),
+    ("PowerShell", "sl tools; & ./x.ps1"), ("PowerShell", "chdir tools; & ./x.ps1"),
+    ("PowerShell", "pwsh -e AAAA x.ps1"), ("PowerShell", "pwsh -ec AAAA x.ps1"),
+    ("PowerShell", "pwsh -enc AAAA x.ps1"),
+    ("PowerShell", "pwsh -WorkingDirectory tools -File x.ps1"),
+    ("PowerShell", "Start-Process pwsh -WorkingDirectory tools -ArgumentList x.ps1"),
+    ("PowerShell", "& 'cd' tools; & ./x.ps1"), ("PowerShell", "c`d tools; & ./x.ps1"),
+    ("PowerShell", "Set-Loc`ation tools; & ./x.ps1"), ("PowerShell", "i`ex './x.ps1'"),
+    ("PowerShell", "& x.ps1"), ("PowerShell", "$env:PATH = '.'; git add x.py"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), ALLOWLIST_DENIED)
+def test_worktree_command_allowlist_denies_unlisted_commands(worktree, name, command):
+    """261112-fdw: a directory change, inline code, a working-directory flag, a quoted or escaped
+    keyword, a steering variable, a path-qualified program, a bare script name or a bash with no
+    readable script is outside the allowlist, so the hook cannot tell which file runs."""
+    clean_scripts(worktree)
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and CANNOT_TELL in decision.reason, command
+
+
+# This plan's three verify lines, verbatim but for Task 3's grep word (so this file never holds it).
+TODO_DONE = ".planning/todos/completed/worktree-hook-residual-bypasses.md"
+TWO_FILES = "tools/reverseapoc/hooks.py tests/test_hooks.py"
+VERIFY_LINES = [
+    f"uv run pytest -q tests/test_hooks.py -k worktree_command && uv run ruff check {TWO_FILES} && "
+    "test \"$(grep -v '^\\s*#' tools/reverseapoc/hooks.py | grep -ciE 'push[d]|set-locatio[n]')\""
+    " = 0 && grep -q '261112-fdw' tools/reverseapoc/hooks.py",
+    f"uv run pytest -q tests/test_hooks.py -k worktree_command && uv run ruff check {TWO_FILES} && "
+    "test \"$(grep 'def test_worktree_command' tests/test_hooks.py | wc -l)\" -ge 40",
+    f"grep -q '261112-fdw' docs/workflow.md && test -f {TODO_DONE} && "
+    "test ! -e .planning/todos/pending/worktree-hook-residual-bypasses.md && "
+    f"grep -q '^## Result' {TODO_DONE} && ! git grep -q -i zz-no-such-word -- {TWO_FILES} "
+    'docs/workflow.md && git diff --exit-code "$(git merge-base HEAD main)" -- '
+    ".claude/settings.json config/driver/claude-settings.json && uv run ruff check .",
+]
+ORDINARY = [
+    ("Bash", "uv run python x.py"), ("Bash", "uv run --frozen python x.py"),
+    ("Bash", "python x.py"), ("Bash", "bash x.sh"), ("Bash", "node x.mjs"), ("Bash", "./x.sh"),
+    ("Bash", "uv run pytest -q tests/test_hooks.py -k worktree"),
+    ("Bash", f"REVERSEAPOC_WATCOM_DIR={RELATIVE_WATCOM} uv run pytest -q tests/test_hooks.py"),
+    ("Bash", f"REVERSEAPOC_WATCOM_DIR={RELATIVE_WATCOM} uv run python x.py"),
+    ("Bash", f"uv run ruff check {TWO_FILES}"),
+    ("Bash", f'git add {TWO_FILES} && git commit -m "fix: hooks.py"'),
+    ("Bash", "git diff tools/reverseapoc/hooks.py"),
+    ("Bash", "git log --oneline -- tools/reverseapoc/hooks.py"),
+    ("Bash", "cat tools/x.py | head -20"), ("Bash", "wc -l tools/x.py"),
+    ("Bash", "grep -n def tools/x.py"),
+    ("Bash", "uv run pytest -q tests/test_hooks.py 2>&1 | tail -5"),
+    ("Bash", "mkdir -p .planning/quick/q && "
+             "cp ../../../.planning/quick/q/x.py .planning/quick/q/x.py"),
+    ("Bash", "cat ../../../tools/reverseapoc/hooks.py"),
+    ("PowerShell", "& ./x.ps1"), ("PowerShell", "& ./x.ps1 > build/log.txt"),
+    ("PowerShell", "uv run python x.py"), ("PowerShell", "uv run pytest -q tests\\test_hooks.py"),
+    ("PowerShell", f"$env:REVERSEAPOC_WATCOM_DIR = '{RELATIVE_WATCOM}'; "
+                   "uv run pytest -q tests/test_hooks.py"),
+    ("PowerShell", 'git add tools/reverseapoc/hooks.py; git commit -m "fix hooks.py"'),
+    ("PowerShell", "Get-Content tools/x.py | Select-Object -First 20"),
+    ("PowerShell", "uv run pytest -q tests/test_hooks.py | Select-String passed"),
+    ("Bash", 'test "$(grep -c X tools/reverseapoc/hooks.py)" -ge 1'),
+    ("Bash", "git merge-base HEAD main"),
+    ("Bash", "git merge-base HEAD main && git diff --stat HEAD -- tools/reverseapoc/hooks.py"),
+    ("Bash", "git grep -n foo -- tools/x.py"),
+    ("Bash", "git rev-parse --show-toplevel && git ls-files tools/reverseapoc/hooks.py"),
+    ("Bash", "git branch --show-current && git add x.py"),
+    ("Bash", "git branch --list 'worktree-*' && git add x.py"),
+    ("Bash", "git worktree list && git add x.py"), ("Bash", "git stash list && git add x.py"),
+    ("Bash", "git show-ref --heads && git check-ignore x.py"),
+    ("Bash", "git diff --stat tools/x.py || true"),
+    ("Bash", "git diff --no-ext-diff x.py"), ("Bash", "git log --no-textconv -p -- x.py"),
+    ("Bash", "uv run reverseapoc causes --json build/driver/r"),
+    ("Bash", "uv run reverseapoc causes --json build/driver/r && "
+             "git diff tools/reverseapoc/causes.py"),
+    ("Bash", f"node {GSD_TOOLS} query frontmatter.get .planning/quick/x/y-PLAN.md"),
+    ("Bash", f"INIT=$(node {GSD_TOOLS} query init.quick)"),
+    ("Bash", "X=1; uv run python x.py"),
+    ("Bash", "TMPDIR=build/tmp uv run pytest -q tests/test_hooks.py"),
+    ("Bash", 'N=$(grep -c def tools/x.py); test "$N" -ge 1'),
+    ("Bash", "test -f tools/x.py && [ -f x.sh ]"), ("Bash", "diff tools/x.py x.py"),
+    ("Bash", "find tools -name x.py"), ("Bash", "grep -n def tools/x.py | sort"),
+    ("Bash", "sed -n 1,80p tools/x.py"), ("Bash", "sed -n '1,20p;40,60p' tools/x.py"),
+    *(("Bash", line) for line in VERIFY_LINES),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), ORDINARY)
+def test_worktree_command_allowlist_allows_ordinary_commands(worktree, name, command):
+    """261112-fdw, RULINGS fdw: ordinary worktree commands, the sanctioned relative forms, the
+    real GSD shapes and this plan's verify lines keep no opinion; their scripts are read."""
+    clean_scripts(worktree)
+    assert not always(shell(name, command, worktree)).deny, command
+
+
+FIND_REFUSED = ["-exec bash {} +", "-execdir bash {} +", "-ok rm {} +", "-okdir rm {} +",
+                "-delete", "-fls out.txt", "-fprint out.txt", "-fprint0 out.txt",
+                "-fprintf out.txt %p"]  # fmt: skip
+READ_ONLY_DENIED = [
+    "git branch -D x && git add x.py", "git branch -d x && git add x.py",
+    "git branch -m a b && git add x.py", "git branch -f x && git add x.py",
+    "git branch topic && git add x.py", "git worktree add ../w && git add x.py",
+    "git stash && git add x.py", "git grep -Obash foo -- x.py",
+    "git grep --open-files-in-pager=vim foo -- x.py", "git grep --op foo -- x.py",
+    "git --git-dir=../../../.git log -- x.py", "git --work-tree=tools add x.py",
+    "git -c core.pager=less log -- x.py",
+    # coordinator amendment (iteration 2): free subcommands refuse --output, --ext-diff, --textconv
+    "git diff --output=out.txt x.py", "git diff --output out.txt x.py",
+    "git log --outp=out.txt -- x.py", "git diff --ext-diff x.py", "git log -p --ext-diff -- x.py",
+    "git show --textconv HEAD -- x.py", "git grep --textconv foo -- x.py",
+    *(f"find tools -name x.py {flag}" for flag in FIND_REFUSED),
+    "sort --compress-program=./y x.py", "sort --comp=./y x.py",
+    "sed -i 1d x.py", "sed --in-place 1d x.py", "sed -n 1,80p x.py -i",
+    "sed -n '1e bash y.sh' x.py", "sed -n '1w out.txt' x.py", "sed -n '1r y.sh' x.py",
+    "sed -n '/def/p' x.py", "sed 1,80p x.py", "sed -e 1p x.py",
+    "awk '{print}' x.py",
+    f'GSD_TOOLS={GSD_TOOLS}; node "$GSD_TOOLS" query init.quick',
+    "HOME=. git log -- x.py", "Path=. git add x.py", "GIT_EXTERNAL_DIFF=./y git diff x.py",
+    "EDITOR=./y git commit x.py", "UV_PYTHON=./y uv run python x.py",
+    "NODE_OPTIONS=--require=./y node x.mjs", "PYTHONPATH=y uv run pytest tests/test_hooks.py",
+    "PYTEST_ADDOPTS=-py uv run pytest tests/test_hooks.py", "BASH_ENV=./y bash x.sh",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("command", READ_ONLY_DENIED)
+def test_worktree_command_allowlist_refuses_dangerous_flags(worktree, command):
+    """261112-fdw, coordinator ruling: each widened read-only command fails closed on the flags
+    that run a program or write, a variable script word is not a plain path, and an assignment
+    to a variable that steers a listed program is refused."""
+    clean_scripts(worktree)
+    decision = always(shell("Bash", command, worktree))
+    assert decision.deny and CANNOT_TELL in decision.reason, command
+
+
+@pytest.mark.parametrize(("name", "command", "word"), [
+    ("PowerShell", "sl tools; & ./x.ps1", "sl"), ("Bash", 'c""d tools && uv run python x.py', "cd"),
+])  # fmt: skip
+def test_worktree_command_allowlist_reason(worktree, name, command, word):
+    decision = always(shell(name, command, worktree))
+    assert decision.reason.startswith("reverseapoc hooks: ")
+    for part in (name, "agent-x", word, "261112-fdw", CANNOT_TELL):
+        assert part in decision.reason, part
+
+
+def test_worktree_command_allowlist_entry_point(worktree):
+    def run(payload: dict) -> subprocess.CompletedProcess[bytes]:
+        return _run_entry(json.dumps(payload).encode("utf-8"))
+
+    denied = run(shell("PowerShell", "sl tools; & ./x.ps1", worktree))
+    assert denied.returncode == 0, denied.stderr
+    assert json.loads(denied.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    clean_scripts(worktree)
+    allowed = run(shell("Bash", "bash x.sh", worktree))
+    assert (allowed.returncode, allowed.stdout) == (0, b""), allowed.stderr
+
+
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
 # A path include could pull an unscanned file (the attempt's notes.md under build/driver/, or any
 # other) into the compile, carrying a #pragma or inline asm past the scan.
