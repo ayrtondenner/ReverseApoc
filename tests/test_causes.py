@@ -269,6 +269,37 @@ def test_a_hex_address_folds_to_one_placeholder(tmp_path, capsys):
     assert got == {f"{_TAIL_KEY} (pop at N)": 3, f"{_TAIL_KEY} (ret at N)": 1, resolves: 1}
 
 
+def test_a_bare_hex_run_after_at_folds_to_one_placeholder(tmp_path):
+    config = _config(tmp_path)
+    # Made-up addresses: one bare hex run after "at", one in the 0x form.
+    _reloc_mismatches(tmp_path, (
+        "0x00012345: the original's tail is not alignment filler (add at 4A10C2)",
+        "0x00012345: the original's tail is not alignment filler (add at 0x0004A10C)",
+    ))  # fmt: skip
+    got = causes.collect(tmp_path, [], config=config).to_json()["mismatch_classes"]
+    assert got == {"reloc: the original's tail is not alignment filler (add at N)": 2}
+
+
+def test_the_hex_fold_keeps_words_and_identifiers(tmp_path):
+    config = _config(tmp_path)
+    attempt_dir = _attempt(tmp_path, "run-a")
+    # Made-up addresses; an identifier keeps its digits, a word after "at" stays.
+    entries = [
+        _entry(reloc_problems=("0x00012345: _D_000126F0: 0x000126F0 is in no data object and "
+                               "starts no data-in-code row",)),  # fmt: skip
+        _entry(reloc_problems=("0x00012345: a target at face value",)),
+        _entry(reloc_problems=("0x00012345: the fixup at a field edge",)),
+        {**_entry(), "reloc": {"ok": False, "problems": []}},
+    ]
+    _log(attempt_dir, [_line(n, 1) for n in range(1, len(entries) + 1)])
+    for n, entry in enumerate(entries, start=1):
+        _doc(attempt_dir, n, _check_doc([entry]))
+    got = causes.collect(tmp_path, [], config=config).to_json()["mismatch_classes"]
+    assert got == {"reloc: _D_000126F0: N is in no data object and starts no data-in-code row": 1,
+                   "reloc: a target at face value": 1, "reloc: the fixup at a field edge": 1,
+                   "reloc": 1}  # fmt: skip
+
+
 def test_header_gaps_ranked(tmp_path):
     foo = "v.c(4): Error! E1011: Symbol 'foo' has not been declared\n"
     bar = "v.c(5): Error! E1011: Symbol 'bar' has not been declared\n"
