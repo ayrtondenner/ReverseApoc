@@ -603,9 +603,20 @@ def test_deterministic(tmp_path, capsys):
 
 
 def test_committed_log_reads():
+    """Every committed record passes the driver's own validator (read_attempts) and is a kind one
+    of its schema tables defines. Spike 012: the first `drive --land-held` wrote schema-3
+    `landing` records, which a hard-coded kind list here did not know, and CI went red; the
+    kinds now come from the driver's tables, so a new record kind cannot be missed again."""
+    from reverseapoc import driver
+
+    known = {*driver.RECORD_FIELDS, *driver.RECORD_FIELDS_V2, *driver.RECORD_FIELDS_V3}
+    assert driver.KIND_LANDING in known
     records = reverseapoc.stats.read_attempts(REPO_ROOT / ATTEMPT_LOG)
     assert records, "the committed attempt log holds the Phase 6 pilot"
-    assert all(r["kind"] in ("attempt", "abort", "run", "limit", "rename") for r in records)
+    assert {r["kind"] for r in records} <= known
+    landings = [r for r in records if r["kind"] == driver.KIND_LANDING]
+    assert landings, "the committed attempt log holds spike 012's --land-held landings"
+    assert all(r["schema"] == 3 for r in landings)
 
 
 def test_stats_runs_on_the_committed_data(capsys):
