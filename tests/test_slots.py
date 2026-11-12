@@ -110,8 +110,8 @@ def test_three_arrays_beside_a_scalar_have_no_known_order():
 
 @pytest.mark.parametrize(("arrays", "plain"), [(1, 1), (1, 2), (2, 1), (2, 2), (1, 7)])
 def test_an_array_beside_plain_locals_of_two_bytes_has_no_known_order(arrays, plain):
-    declared = (*(slots.Local(f"v{n}", 2, array=True) for n in range(arrays)),
-                *(slots.Local(f"p{n}", 2) for n in range(plain)))  # fmt: skip
+    declared = (*(slots.Local(f"p{n}", 2) for n in range(plain)),
+                *(slots.Local(f"v{n}", 2, array=True) for n in range(arrays)))  # fmt: skip
     assert slots.order_is_known(declared) is False
 
 
@@ -243,3 +243,35 @@ def test_a_char4_and_an_int_beside_a_char2_stay_refused():
     assert slots.order_is_known(declared) is False
     with pytest.raises(ValueError, match="no known order"):
         slots.frame_layout(declared)
+
+
+# The lines quick 261112-fdx drew past the 07.1 sweep, each fixed before its frames were measured
+# (probe/cg_slots.c pr_line_*, both cells).
+
+
+def _shape(*locals_: tuple[int, bool]) -> tuple[slots.Local, ...]:
+    """Locals named v0, v1, ... from (size, array) pairs in declaration order, all in one block."""
+    return tuple(slots.Local(f"v{n}", size, array=array) for n, (size, array) in enumerate(locals_))
+
+
+@pytest.mark.parametrize("plain", [1, 3, 8, 11])
+def test_one_two_byte_array_declared_first_keeps_the_rule(plain):
+    """Line A: pr_line_a_c2_h to pr_line_a_c2_h11 and pr_arr_one_three_small hold."""
+    declared = (slots.Local("a", 2, array=True),
+                *(slots.Local(f"p{n}", 2) for n in range(plain)))  # fmt: skip
+    assert slots.order_is_known(declared) is True
+    expected = {"a": 4 * plain} | {f"p{n}": 4 * (plain - 1 - n) for n in range(plain)}
+    assert slots.frame_layout(declared) == expected
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        ((2, False), (2, True)),  # the sweep's h c2: it held, off the line
+        ((2, False), (2, False), (2, True)),  # pr_arr_one_two_small: it leaves
+        ((2, False), (2, False), (2, False), (2, True), (2, False)),  # the sweep: it leaves
+        ((2, True), (2, True), (2, False)),  # pr_arr_two_one_small: it leaves
+    ],
+)
+def test_a_two_byte_array_not_declared_first_stays_refused(shape):
+    assert slots.order_is_known(_shape(*shape)) is False

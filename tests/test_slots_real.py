@@ -46,6 +46,11 @@ def _arrays(size: int, *markers: int) -> tuple[Marked, ...]:
                  for name, marker in zip("abcd", markers, strict=False))  # fmt: skip
 
 
+def _shorts(names: str, first: int) -> tuple[Marked, ...]:
+    """Plain 2-byte locals, their markers counted up from `first` as the `pr_line_a_` frames do."""
+    return tuple(Marked(name, 2, first + n) for n, name in enumerate(names))
+
+
 DOUBLE = Marked("d", 8, 0x40040000, at=HIGH_DWORD)  # 2.5
 SAME_SIZE = (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 4, 0x33), Marked("d", 4, 0x44))
 MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBLE)
@@ -115,6 +120,16 @@ SHAPES = {
     "pr_arr_int1_x3_rev": INT1_X3[::-1],
     "pr_arr_c4_s2": C4_S2,  # a char[4] beside a short[2]: two arrays of one size (07.2-14)
     "pr_arr_c4_s2_rev": C4_S2[::-1],
+    # Line A (quick 261112-fdx): one 2-byte array declared first, then 2-byte plain locals.
+    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
+                               Marked("d", 2, 0x4B)),  # fmt: skip
+    "pr_line_a_c2_h": (*_arrays(2, 0x77), Marked("b", 2, 0x177)),
+    "pr_line_a_c2_h8": (*_arrays(2, 0x78), *_shorts("bcdefghi", 0x178)),
+    "pr_line_a_c2_h11": (*_arrays(2, 0x79), *_shorts("bcdefghijkl", 0x180)),
+    "pr_line_a_uc2_h3": (*_arrays(2, 0x7A), *_shorts("bcd", 0x18B)),
+    "pr_line_a_c2_mixed": (*_arrays(2, 0x7B), *_shorts("bcde", 0x18E)),
+    "pr_line_a_c2_h3_late": (*_arrays(2, 0x7C), *_shorts("bcd", 0x192)),
+    "pr_line_a_c2_h3_split": (*_arrays(2, 0x7D), *_shorts("bcd", 0x195)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -161,27 +176,11 @@ TIES = {
 # no count, so the refusal is wider than it, on the safe side.
 REFUSED_HOLDING = {
     "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
-    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
-                               Marked("d", 2, 0x4B)),  # fmt: skip
     "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
     "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
     "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
     "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
-    # Line A (quick 261112-fdx): one 2-byte array declared first, then 2-byte plain locals.
-    "pr_line_a_c2_h": (*_arrays(2, 0x77), Marked("b", 2, 0x177)),
-    "pr_line_a_c2_h8": (*_arrays(2, 0x78),
-                        *(Marked(name, 2, 0x178 + n) for n, name in enumerate("bcdefghi"))),  # fmt: skip
-    "pr_line_a_c2_h11": (*_arrays(2, 0x79),
-                         *(Marked(name, 2, 0x180 + n) for n, name in enumerate("bcdefghijkl"))),  # fmt: skip
-    "pr_line_a_uc2_h3": (*_arrays(2, 0x7A), Marked("b", 2, 0x18B), Marked("c", 2, 0x18C),
-                         Marked("d", 2, 0x18D)),  # fmt: skip
-    "pr_line_a_c2_mixed": (*_arrays(2, 0x7B), Marked("b", 2, 0x18E), Marked("c", 2, 0x18F),
-                           Marked("d", 2, 0x190), Marked("e", 2, 0x191)),  # fmt: skip
-    "pr_line_a_c2_h3_late": (*_arrays(2, 0x7C), Marked("b", 2, 0x192), Marked("c", 2, 0x193),
-                             Marked("d", 2, 0x194)),  # fmt: skip
-    "pr_line_a_c2_h3_split": (*_arrays(2, 0x7D), Marked("b", 2, 0x195), Marked("c", 2, 0x196),
-                              Marked("d", 2, 0x197)),  # fmt: skip
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
