@@ -2047,11 +2047,14 @@ def test_cascade_arm_runs_at_most_its_max_workers(tmp_path):
 
 def test_cascade_arm_cap_holds_the_function_for_tonight(tmp_path):
     """--arm-cap HAIKU=1: the second pick's attempt finds HAIKU at its cap, so its pass ends
-    ARM_CAPPED with one console line, and it gets no difficult-list entry."""
+    ARM_CAPPED with one console line, and it gets no difficult-list entry. Quick 261112-fdr
+    (WR-03): the large row's uncapped SONNET keeps the night open (with every arm capped it
+    would end ARMS_CAPPED instead)."""
     picks = (_wpick(0), _wpick(1))
     night = ArmNight(tmp_path, picks=picks)
     lines: list[str] = []
-    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU),
+    report = night.run(config={"attempts_per_function": 1,
+                               "routing": _rows((HAIKU,), (HAIKU,), (SONNET,)),
                                "arm_caps": ((HAIKU, 1),)}, say=lines.append)  # fmt: skip
     assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
     assert len(night.launched) == 1
@@ -2067,13 +2070,15 @@ def test_cascade_arm_cap_mid_pass_leaves_the_tier_queue(tmp_path):
     rung SONNET is capped, so the rotated row wraps to HAIKU). Every later pass, of F or of S,
     finds the whole row capped: it launches nothing, ends ARM_CAPPED with one ARM_CAP_LINE
     naming both arms and their caps, and leaves the tier queue for tonight. S gets no
-    difficult-list entry (F one, for its full capped pass), and the night ends."""
+    difficult-list entry (F one, for its full capped pass), and the night ends. Quick
+    261112-fdr (WR-03): the large row's uncapped OPUS keeps the night open past F's pass."""
     from test_driver_pick import _tier_night
 
     a, b = START, START + 0x10
     night, deps = _tier_night(tmp_path, (a, b), unit=UNIT, night_cls=ArmNight)
     lines: list[str] = []
-    report = night.run(config={"attempts_per_function": 3, "routing": _every(HAIKU, SONNET),
+    rows = _rows((HAIKU, SONNET), (HAIKU, SONNET), (driver.OPUS_MODEL,))
+    report = night.run(config={"attempts_per_function": 3, "routing": rows,
                                "arm_caps": ((HAIKU, 2), (SONNET, 1))},
                        queue=deps.queue, requeue=deps.requeue, say=lines.append)  # fmt: skip
     assert report.event == "ENDED", report.detail
@@ -2540,4 +2545,123 @@ def test_a_handed_off_attempt_sees_the_earlier_arms_work(tmp_path):
     (handoff,) = _handoff_lines(lines)
     assert f"arm {SONNET} pauses" in handoff and handoff.endswith(f"to {OPUS}"), handoff
     assert _wait_lines(lines) == [] and _skip_lines(lines) == [], lines
+    _validated(night)
+
+
+# ---- 261112-fdr review fixes (WR-01 to WR-03, IN-04) ----
+
+
+def _tier_of(*picks: Pick):
+    """A Deps.queue seam: one tier queue over `picks`, ranked in the order given, no callees."""
+    from reverseapoc import picker
+
+    items = [picker.TierItem(1, 0, (False, rank, pick.start), pick)
+             for rank, pick in enumerate(picks)]  # fmt: skip
+    return lambda difficult: picker.TierQueue(items, {})
+
+
+def test_a_tier_pick_waiting_on_a_busy_arm_leaves_its_unit_free(tmp_path):
+    """WR-01: two workers, SONNET (max_workers 1) the only arm of the large row. H (large, its
+    own unit) runs on SONNET first; F (large) waits for SONNET; G (small, F's unit) is next in
+    the tier order. While H runs, F is skipped by function, not by unit, so G runs on HAIKU
+    beside H: H's session is held open until G's has started (at most WAIT_S)."""
+    h, f = _sized(0, 300), _sized(1, 300)
+    g = Pick(EXE, f.start + 0x10, f"func_{f.start + 0x10:08X}", f.unit, 20, 100)
+    night = ArmNight(tmp_path, picks=(h, f, g))
+    seen: dict = {}
+
+    def before(unit, index):
+        if _run_of(night, night.launched[index]) == _arm_run(SONNET) and "g" not in seen:
+            seen["g"] = _poll(lambda: _runs_launched(night, _arm_run(HAIKU)) >= 1)
+
+    night.before = before
+    report = night.run(config={"workers": 2, "attempts_per_function": 1, "max_sessions": 2,
+                               "arm_table": _one_worker(SONNET),
+                               "routing": _rows((HAIKU,), (HAIKU,), (SONNET,))},
+                       queue=_tier_of(h, f, g))  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.MAX_SESSIONS), report.detail
+    assert seen["g"], "G never ran while F waited for the busy SONNET"
+    got = {r["function"]: r["model_requested"] for r in night.kinds("attempt")}
+    assert got == {h.name: SONNET, g.name: HAIKU}
+
+
+AGY_LIMIT = "gemini_quota_limit"  # tests/fixtures/agy: a result whose error names the quota
+
+
+def test_a_cascade_limit_launch_counts_against_its_arm_cap(tmp_path):
+    """WR-02: row (GEMINI, HAIKU) with --arm-cap gemini-flash=1. GEMINI's first launch ends
+    LIMIT and hands attempt 1 to HAIKU. Its backoff then runs out on the ticking clock, but that
+    LIMIT launch used GEMINI's one session: every later pick skips it as capped, so the night
+    launches agy once."""
+    picks = tuple(_wpick(i) for i in range(4))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=[AGY_LIMIT] * len(picks))
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(GEMINI, HAIKU),
+                               "arm_caps": ((GEMINI, 1),)},
+                       clock=_ticking(night), say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(GEMINI)) == 1
+    assert _runs_launched(night, _arm_run(HAIKU)) == len(picks)
+    assert [r["run"] for r in night.kinds("limit")] == [_arm_run(GEMINI)]
+    skips = _skip_lines(lines)
+    assert len(skips) == len(picks) - 1 and all(f"{GEMINI} (capped)" in s for s in skips), lines
+    _validated(night)
+
+
+def _cap_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if "has launched its cap" in line]
+
+
+def test_a_cascade_night_ends_once_every_arm_is_capped(tmp_path):
+    """WR-03: row (HAIKU, SONNET), each capped at 1, over four picks. p0 runs on HAIKU and p1
+    on SONNET (HAIKU capped); then every cascade arm has launched its cap, so the night ENDS
+    ARMS_CAPPED at once: p2 and p3 are never dispatched, no cap line is printed, and the
+    normal end of run follows (a valid ENDED run record, the attempt log commit)."""
+    picks = tuple(_wpick(i) for i in range(4))
+    night = ArmNight(tmp_path, picks=picks)
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 1, "routing": _every(HAIKU, SONNET),
+                               "arm_caps": ((HAIKU, 1), (SONNET, 1))},
+                       say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.ARMS_CAPPED), report.detail
+    assert [(r["function"], r["model_requested"]) for r in night.kinds("attempt")] == [
+        (picks[0].name, HAIKU), (picks[1].name, SONNET)]  # fmt: skip
+    assert _cap_lines(lines) == [], lines
+    assert [(r["event"], r["reason"]) for r in night.kinds("run")][-1] == (
+        "ENDED", driver.ARMS_CAPPED)  # fmt: skip
+    assert night.commits()[-1] == driver.LOG_SUBJECT
+    _validated(night)
+
+
+OWNER_CAPS = {HAIKU: 2, SONNET: 3, GEMINI: 1}  # the owner's run, scaled down: 30, 20, 1
+GUARD_LAUNCHES = 3 * sum(OWNER_CAPS.values())  # a night that polls forever passes this
+
+
+def test_the_owners_three_arm_night_ends_once_its_paused_arm_is_capped(tmp_path):
+    """IN-04: the owner's rows with SONNET in Terra's place (small: HAIKU, SONNET; medium:
+    HAIKU, SONNET, GEMINI; large: SONNET), over medium picks only. GEMINI's launch and every
+    SONNET launch end LIMIT (a used-up week). HAIKU and GEMINI reach their caps, then only the
+    paused SONNET can run: the night waits and probes it as a paused night does (no worker
+    sleeps), each probe spends a slot of SONNET's cap (WR-02), and once SONNET is capped too
+    the night ENDS ARMS_CAPPED (WR-03) instead of polling forever. Every arm launched exactly
+    its cap. A night past GUARD_LAUNCHES launches stops itself, so a regression fails, never
+    hangs."""
+    picks = tuple(_sized(i, 100) for i in range(4))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=[AGY_LIMIT] * GUARD_LAUNCHES,
+                        by_model={SONNET: [RATE_LIMIT] * GUARD_LAUNCHES})  # fmt: skip
+
+    def before(unit, index):
+        assert index < GUARD_LAUNCHES, "the night kept launching past every arm's cap"
+
+    night.before = before
+    sleeps: list[float] = []
+    report = night.run(config={"attempts_per_function": 3,
+                               "routing": _rows((HAIKU, SONNET), (HAIKU, SONNET, GEMINI),
+                                                (SONNET,)),
+                               "arm_caps": tuple(OWNER_CAPS.items())},
+                       clock=_ticking(night), sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.ARMS_CAPPED), report.detail
+    assert {arm: _runs_launched(night, _arm_run(arm)) for arm in OWNER_CAPS} == OWNER_CAPS
+    assert sleeps == []
+    assert len(night.kinds("limit")) >= 2
     _validated(night)

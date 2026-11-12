@@ -366,9 +366,10 @@ class TierQueue:
     def _done_once(self, key: Key) -> bool:
         return key in self._matched or self._passes.get(key, 0) > 0
 
-    def _eligible(self, item: TierItem, claimed: Container[tuple[str, str]]) -> bool:
+    def _eligible(self, item: TierItem, claimed: Container[tuple[str, str]],
+                  skip: Container[Key] = frozenset()) -> bool:  # fmt: skip
         key = item.key
-        if key in self._matched or key in self._flight or key in self._parked:
+        if key in self._matched or key in self._flight or key in self._parked or key in skip:
             return False
         if (item.pick.exe, item.pick.unit) in claimed:
             return False
@@ -382,19 +383,21 @@ class TierQueue:
         return (item.tier, item.hub, self._aborts[key], self._passes.get(key, 0), item.level,
                 item.rank, EXE_ORDER.index(item.pick.exe))  # fmt: skip
 
-    def next_item(self, claimed_units: Container[tuple[str, str]] = frozenset()) -> TierItem | None:
+    def next_item(self, claimed_units: Container[tuple[str, str]] = frozenset(), *,
+                  skip: Container[Key] = frozenset()) -> TierItem | None:  # fmt: skip
         """The eligible item with the least (tier, member before hub, aborted passes, finished
         passes, level, rank), its `pass_n` set; None when no item is eligible now.
         `claimed_units` holds the (EXE, unit) pairs other passes hold: their items are skipped,
-        not dropped."""
-        eligible = (item for item in self._items if self._eligible(item, claimed_units))
+        not dropped. Quick 261112-fdr (WR-01): so are the functions in `skip`, one by one."""
+        eligible = (item for item in self._items if self._eligible(item, claimed_units, skip))
         best = min(eligible, key=self._order, default=None)
         if best is None:
             return None
         return replace(best, pass_n=self._passes.get(best.key, 0) + 1)
 
-    def next_eligible(self, claimed_units: Container[tuple[str, str]] = frozenset()) -> Pick | None:
-        item = self.next_item(claimed_units)
+    def next_eligible(self, claimed_units: Container[tuple[str, str]] = frozenset(), *,
+                      skip: Container[Key] = frozenset()) -> Pick | None:  # fmt: skip
+        item = self.next_item(claimed_units, skip=skip)
         return None if item is None else item.pick
 
     def preview(self, count: int) -> list[TierItem]:

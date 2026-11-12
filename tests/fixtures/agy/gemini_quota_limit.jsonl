@@ -1,0 +1,2 @@
+{"event": "init", "init": {"cwd": "@cwd", "model": "@model", "tools": ["run_command", "read_file", "write_file"], "permission_mode": "default"}}
+{"event": "result", "result": {"conversation_id": "made-up-2", "status": "ERROR", "response": "", "error": "made-up: the weekly quota is used up", "duration_seconds": 3.5, "num_turns": 1, "usage": {"input_tokens": 4000, "output_tokens": 10, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 4010}, "denied_actions": []}}

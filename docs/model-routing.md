@@ -825,7 +825,9 @@ hands the same attempt on.
   night keeps one drive lock, one audit under the gate lock and one commit queue.
 - **Caps.** Each arm launches at most `--arm-cap NAME=N` sessions tonight, else its
   `max_sessions`, else only `--max-sessions` caps it. An `--arm-cap` above the arm's
-  `max_sessions` is refused. A capped arm is skipped for the attempt (see "The skip").
+  `max_sessions` is refused. A capped arm is skipped for the attempt (see "The skip"). A
+  launch that ends in a usage limit counts against its arm's own cap too, though not against
+  `--max-sessions`, so `--arm-cap gemini-flash=1` means one agy launch, whatever it ends in.
 - **The skip.** An attempt runs on the first arm of its row that can launch now. It tries the
   row from the attempt's rung, then the later arms, then the row's start. An arm that is capped
   or paused is skipped for that attempt only, so the next attempt's rung is still the ladder's.
@@ -846,6 +848,10 @@ hands the same attempt on.
   and the other arms' work keeps the workers. When every arm of the row is capped, the pass
   ends for tonight with one line naming each arm's cap. The function is not offered again
   tonight, gets no difficult-list entry, and comes back on a later night.
+- **The end.** Once every cascade arm has launched its cap, the night ENDS `arms capped`: the
+  passes still running finish, nothing more is dispatched, and the normal end of run follows
+  (ninja verify, `gate --all`, the attempt-log commit). The cap line above is for a row that is
+  capped while another row still has an arm that can run.
 - **The carried work.** The next arm's context pack holds the earlier attempts' notes, give-up
   lines and best C, through the same earlier-notes path every night uses (07.2-02). A held
   night keeps arms apart, and a cascade is never held.
@@ -867,8 +873,12 @@ hands the same attempt on.
   and the arm of each of its three attempts at its next pass, for example
   ` bucket [0, 64) attempts claude-haiku-5-5, gpt-6.1-terra, gpt-6.1-terra`. With `--json`,
   each pick document gains `cascade` {`bucket`, `pass`, `attempts`}. The dry run needs the
-  same `--allow-egress` flags as the night, because the arm checks run first. The preview shows
-  each attempt's rung; a skip at run time is printed as it happens.
+  same `--allow-egress` flags as the night, because the arm checks run first. The preview
+  applies the caps (`--arm-cap`, else `max_sessions`): pick after pick, each attempt it shows
+  counts one launch of its arm, an attempt whose rung is capped shows the arm the routing would
+  take instead, for example `claude-haiku-5-5 (gemini-flash capped)`, and an attempt whose
+  whole row is capped shows `every arm capped` and ends that pick's list. Pauses and busy arms
+  are not previewed; a skip for either is printed at run time as it happens.
 - **Console.** The night prints one `cascade:` line naming each row and each arm's cap, and each
   attempt line names its arm. A usage limit prints one routing line, the hand-off line or the
   wait line, beside the attempt's own outcome line (`arm waiting after N s`). The templates:
@@ -890,6 +900,14 @@ reverseapoc drive --cascade --workers 3 \
   --arm-cap claude-haiku-5-5=30 --arm-cap gpt-6.1-terra=20 --arm-cap gemini-flash=1 \
   --allow-egress gpt-6.1-terra --allow-egress gemini-flash
 ```
+
+The caps add up to 51 sessions, under `--max-sessions` 60, so this night normally ends
+`arms capped`. Every row holds Terra, so once Haiku and Gemini are capped and Terra hits a
+usage limit, the night waits and probes Terra as a paused night does (60, 120, 240 s, then
+300 s polls). Each probe that ends in a limit uses one of Terra's 20, so the night still ends
+`arms capped` once Terra is capped too. When Terra's week is used up, that takes at most its
+remaining launches, under two hours of polls. Each is a Codex launch that sends the context
+pack (`--allow-egress`) and writes one limit record.
 
 ### The evidence for each default row
 
