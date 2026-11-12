@@ -2416,8 +2416,8 @@ def test_cascade_arm_caps_reach_the_night(tmp_path, capsys, monkeypatch):
     config = seen[0]
     assert (config.routing, config.arm_caps, config.workers, config.arms) == (
         rows, ((HAIKU, 5),), 2, ())  # fmt: skip
-    cascade = [line for line in out.splitlines() if line.startswith("cascade:")]
-    assert len(cascade) == 1, out
+    cascade = [line for line in err.splitlines() if "cascade: " in line]  # console: stderr
+    assert len(cascade) == 1, err
     for row in rows:
         assert f"{row.label} {HAIKU} > {SONNET}" in cascade[0]
     assert f"{HAIKU}=5" in cascade[0]
