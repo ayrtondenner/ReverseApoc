@@ -2951,8 +2951,9 @@ class _Coordinator:
         """A worker's pass ended: its unit and its number are free again. 07.2-06 (D-17): a
         hold run's function that had its attempt leaves the tier queue as a parked one does,
         so it is attempted once. 07.2-16: a function one arm matched is no work for the others
-        (`_Lane.drop`). Quick 261112-fds: an ARM_CAPPED pass leaves the tier queue for tonight
-        as a parked one does; an ARM_WAITING pass is a pass cut short (the tier queue keeps it
+        (`_Lane.drop`). Quick 261112-fds: an ARM_CAPPED pass (261112-fdt: every arm of its row
+        capped) leaves the tier queue for tonight as a parked one does; an ARM_WAITING pass (a
+        busy arm, or no arm of its row free) is a pass cut short (the tier queue keeps it
         eligible; a pool queue's pick goes back on `deferred`). Neither counts a pass."""
         hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
         lane, key = worker.lane, (worker.pick.exe, worker.pick.start)
@@ -3017,8 +3018,9 @@ class _Coordinator:
 
     def _ready(self, pick: Pick) -> bool:
         """The pick may be dispatched now: its unit is free and (quick 261112-fds, a cascade
-        night) its next attempt's arm is not ARM_WAITING (an ARM_CAPPED one is dispatched, so
-        that its pass ends ARM_CAPPED with its one line)."""
+        night) its next attempt's row is not ARM_WAITING (an ARM_CAPPED one is dispatched, so
+        that its pass ends ARM_CAPPED with its one line; 261112-fdt: `_arm_state` reads the
+        whole row)."""
         if (pick.exe, pick.unit) in self.busy:
             return False
         return not self.night.config.routing or self.night._arm_state(pick) != ARM_WAITING
@@ -3717,12 +3719,10 @@ class _Night:
                         return self._cascade_end(pick, n, slot)
                 elif not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                     return None
-                try:
-                    outcome = self._announced(pick, n)
-                finally:
-                    self._release()  # not counted (a stop): a slot still held goes back
-                    self._hand_back()
-                if outcome == ARM_WAITING:
+                outcome = self._settled(pick, n)
+                if outcome == ARM_WAITING:  # 261112-fdt: a usage limit; the row takes it on
+                    outcome = self._handed_off(pick, n)
+                if outcome in (ARM_WAITING, ARM_CAPPED):
                     return self._cascade_end(pick, n, outcome)
                 if readability or outcome in (MATCHED, ABORTED, None):
                     return outcome
@@ -3740,6 +3740,45 @@ class _Night:
             save_difficult(self.repo / DIFFICULT, difficult)
             self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         return CAPPED
+
+    def _settled(self, pick: Pick, n: int) -> str | None:
+        """Attempt `n` on its reserved slot; a slot it did not count goes back (a stop, a LIMIT)
+        and an unjudged probe is handed back (261112-fds)."""
+        try:
+            return self._announced(pick, n)
+        finally:
+            self._release()  # not counted (a stop): a slot still held goes back
+            self._hand_back()
+
+    def _handed_off(self, pick: Pick, n: int) -> str | None:
+        """Quick 261112-fdt (backlog 999.12b): attempt `n` ended LIMIT on the bound arm, whose
+        pause `_cascade_limited` started (or found holding) and whose limit record names its
+        run; its slot went back with arm_lane still on it. Route the same attempt over its row
+        again (`_route_slot`): RESERVED prints HANDOFF_LINE and runs it on that arm, never
+        advancing `n` or counting anything, until an attempt ends otherwise; ARM_WAITING (a
+        busy arm, or no arm of the row free) prints the one ARM_WAIT_LINE, naming the arm that
+        paused; ARM_CAPPED and None are returned as they are. Each round follows a real session
+        that ended LIMIT, which paused its arm, so the rounds end."""
+        outcome: str | None = ARM_WAITING
+        while outcome == ARM_WAITING:
+            label, (arm, seconds) = self._label(pick, n), self.local.limited
+            state, _ = self._route_slot(pick, n)
+            if state != RESERVED:
+                if state == ARM_WAITING:
+                    self.deps.say(self._wait_line(label, arm, seconds, n))
+                return state
+            self.deps.say(HANDOFF_LINE.format(label=label, arm=arm, to=self.arm_lane.arm))
+            outcome = self._settled(pick, n)
+        return outcome
+
+    @staticmethod
+    def _wait_line(label: str, arm: str, seconds: int | None, n: int) -> str:
+        """The console line of a LIMIT whose attempt no arm of the row can take now (fds'):
+        ARM_WAIT_LINE, or with no new pause (`seconds` None) the already-paused line."""
+        if seconds is None:
+            return (f"{label}: usage limit, arm {arm} is already paused; the function goes "
+                    f"back to the queue at attempt {n}")  # fmt: skip
+        return ARM_WAIT_LINE.format(label=label, arm=arm, seconds=seconds, n=n)
 
     def _cascade_end(self, pick: Pick, n: int, state: str | None) -> str | None:
         """Quick 261112-fds: end a cascade pass at attempt `n` that `_cascade_slot` or the
@@ -3885,7 +3924,9 @@ class _Night:
         it (`local.probe`), never a wait; a LIMIT starts (or renews) its arm's pause, is
         recorded and ends the attempt ARM_WAITING at once, with no backoff slept (a salvaged
         match is still MATCHED); a transient retry takes its slot through `_cascade_slot`, and
-        any answer but RESERVED aborts it as a cap that leaves no slot does."""
+        any answer but RESERVED aborts it as a cap that leaves no slot does. Quick 261112-fdt:
+        ARM_WAITING is this method's LIMIT answer only, and `_function` hands that attempt to
+        the row's next arm that can launch (`_handed_off`)."""
         transient = 0
         cascade = bool(self.config.routing)
         while True:
@@ -3910,7 +3951,7 @@ class _Night:
                 self._after_session(session)
                 matched = self._salvage(session)
                 if cascade:
-                    self._cascade_limited(pick, n, probe)
+                    self._cascade_limited(probe)
                     return MATCHED if matched else ARM_WAITING
                 self._limited(pick, n, probe)
                 if matched:
@@ -3937,21 +3978,19 @@ class _Night:
             return self._cascade_slot() == RESERVED
         return self._reserve()
 
-    def _cascade_limited(self, pick: Pick, n: int, probe: bool) -> None:
+    def _cascade_limited(self, probe: bool) -> None:
         """Quick 261112-fds: a cascade attempt's LIMIT starts (or, for the probe, renews) its
         arm's pause and records it (DEC-06), and no worker sleeps the backoff: it runs out on
-        the clock and the first launch after it is the probe (`_Pause.try_launch`)."""
+        the clock and the first launch after it is the probe (`_Pause.try_launch`). Quick
+        261112-fdt: the record still names this arm's run, and `local.limited` keeps (arm, the
+        backoff's seconds, None with no new pause) for `_handed_off`, which prints the one line
+        of this LIMIT (HANDOFF_LINE when the row takes the attempt on, else ARM_WAIT_LINE)."""
         lane = self.arm_lane
         limited = lane.pause.on_limit(probe)
         self.local.probe = False  # the verdict is in
-        label = self._label(pick, n)
-        if limited is None:
-            self.deps.say(f"{label}: usage limit, arm {lane.arm} is already paused; the "
-                          f"function goes back to the queue at attempt {n}")  # fmt: skip
-            return
-        seconds, streak = limited
-        self._record_limit(seconds, streak)
-        self.deps.say(ARM_WAIT_LINE.format(label=label, arm=lane.arm, seconds=seconds, n=n))
+        self.local.limited = (lane.arm, None if limited is None else limited[0])
+        if limited is not None:
+            self._record_limit(*limited)
 
     def _claim(self, pick: Pick, n: int) -> _Claim:
         """07-30 (D-09, D-25): attempt `n` of the function's pass tonight, on the model
@@ -6246,7 +6285,8 @@ class _Night:
 
     def _record_limit(self, seconds: int, streak: int) -> None:
         """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker of its arm;
-        07.2-16: the record names the arm's run id)."""
+        07.2-16: the record names the arm's run id; quick 261112-fdt: on a cascade hand-off it
+        is the paused arm's run, and the attempt goes on under the next arm's)."""
         record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.arm_lane.run,
                   "worker": self.worker, "seconds": seconds, "streak": streak,
                   "date": self.deps.today()}  # fmt: skip
