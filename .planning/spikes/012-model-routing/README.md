@@ -83,6 +83,9 @@ the last (each match commit carries a Co-Authored-By line for every arm that hel
 
 `gate --all` exits 0 with both SHA-1s identical after the landing (UFO2P 83 landed, TACP 62).
 
+Every metric per arm and size bucket (tokens by class, per-try rates, ratios, quota readings,
+canary history) is in [docs/model-comparison.md](../../../docs/model-comparison.md).
+
 ## Findings
 
 - **A held match can still fail the gate.** Haiku's `func_0005DB80` is objdiff 100% with relocs

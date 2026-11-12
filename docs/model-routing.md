@@ -5,7 +5,8 @@ function once, and no arm's match lands before every arm has run. The landing th
 the arm with the lowest API-equivalent cost and credits every arm that matched. Phase 07.2
 plan 06 built the flags below (D-17). Plans 12, 13,
 15 and 16 add their own sections to this page: the backends file, the Codex and Antigravity
-harnesses, and several arms in one drive.
+harnesses, and several arms in one drive. What the arms measured in spike 012 (per arm and size
+bucket: matches, tokens, cost, quota, canary failures) is in [model-comparison.md](model-comparison.md).
 
 ## The flags
 
@@ -147,16 +148,22 @@ prices per million tokens and its credit line. The file holds no key. The ids, e
 prices of the hosted arms were read on 2026-11-09 and are marked in the file where they are
 assumptions to confirm at setup.
 
-| Arm | Backend | Model id | Key variable |
-|---|---|---|---|
-| `claude-opus-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`, `claude-sonnet-5-5` | anthropic | the arm name | none (the Claude Code login) |
-| `deepseek-flash` | openrouter | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY` |
-| `glm-5.3` | openrouter | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
-| `glm-4.7-flash` | openrouter | `z-ai/glm-4.7-flash` | `OPENROUTER_API_KEY` |
-| `gpt-oss-20b` | openrouter | `openai/gpt-oss-20b` | `OPENROUTER_API_KEY` |
-| `muse-spark-open` | openrouter | `meta/muse-spark-open` | `OPENROUTER_API_KEY` |
-| `qwen-hosted` | openrouter | `qwen/qwen3.6-35b-a3b` | `OPENROUTER_API_KEY` |
-| `qwen-local` | local | `qwen3.6-35b-a3b` (the llama-server `--alias`) | none (loopback only) |
+| Arm | Harness | Backend | Model id | Key variable |
+|---|---|---|---|---|
+| `claude-opus-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`, `claude-sonnet-5-5` | claude | anthropic | the arm name | none (the Claude Code login) |
+| `gpt-6-luna`, `gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra` | codex | openai | the arm name | none (the Codex CLI's ChatGPT Plus login) |
+| `gemini-flash` | agy | google | `gemini-3.8-flash-medium` | none (the agy Google AI Plus sign-in) |
+| `gpt-oss` | agy | google | `gpt-oss-120b-medium` | none (the agy sign-in) |
+| `agy-sonnet-4-6` | agy | google | `claude-sonnet-4-6` | none (the agy sign-in) |
+| `agy-opus-4-6` | agy | google | `claude-opus-4-6-thinking` | none (the agy sign-in) |
+| `deepseek-flash` | claude | openrouter | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY` |
+| `glm-5.3` | claude | openrouter | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
+| `glm-4.7-flash` | claude | openrouter | `z-ai/glm-4.7-flash` | `OPENROUTER_API_KEY` |
+| `gpt-oss-20b` | claude | openrouter | `openai/gpt-oss-20b` | `OPENROUTER_API_KEY` |
+| `muse-spark-open` | claude | openrouter | `meta/muse-spark-open` | `OPENROUTER_API_KEY` |
+| `qwen-hosted` | claude | openrouter | `qwen/qwen3.6-35b-a3b` | `OPENROUTER_API_KEY` |
+| `gemini-3.8-flash-openrouter` | claude | openrouter | `google/gemini-3.8-flash` (D-21's fallback for agy) | `OPENROUTER_API_KEY` |
+| `qwen-local` | claude | local | `qwen3.6-35b-a3b` (the llama-server `--alias`) | none (loopback only) |
 
 A hosted arm runs in the same Claude Code harness as the Claude arms, with the same hooks and
 audit, against OpenRouter's Anthropic-compatible endpoint. Since 2026-11-10 the owner runs
@@ -184,7 +191,12 @@ total parameters), which is not the Antigravity `gpt-oss` arm (GPT-OSS 120B).
   Code's default, since a GLM-5.3 reply ran past 32000 in spike012; every OpenRouter provider in
   use allows at least 117964, and a local llama-server keeps the default. A session that still
   overruns ends with the CLI's "response exceeded the N output token maximum" error, which is
-  counted as an attempt like a turn cap, not a reason to stop the night. Under it the
+  counted as an attempt like a turn cap, not a reason to stop the night. A 429 that Claude
+  Code retried and recovered from is not a usage limit either: OpenRouter gives short rate
+  limits, and when the session then ends cleanly or on its turn or budget cap it is counted
+  and gated (`streamjson.classify`; spike012 had set aside 11 such sessions, 7 with an exit-0
+  check). A 429 error result, a rejected rate_limit_event or a session with no result after
+  the retry stays a limit. Under it the
   hook denies any Read, Glob or Grep that can reach `orig/` or `third_party/`, of this
   checkout or of a worktree in it: by any path form, by a wildcard that fits either name, by
   a `**` or a slash-free Glob pattern from the top level, and any Grep from the top level. A
@@ -194,10 +206,12 @@ total parameters), which is not the Antigravity `gpt-oss` arm (GPT-OSS 120B).
   hosted arm whose key variable is missing, empty or blank, because Claude Code would
   otherwise send the claude.ai login to that endpoint. The message names the variable and the
   endpoint, never a value.
-- **Keys.** The owner sets the three variables once as Windows user environment variables,
-  as [toolchain.md](toolchain.md#model-api-keys-and-sign-ins) shows, and opens a new shell.
-  Run the canary of each hosted arm through the clean-environment launcher before its first
-  night.
+- **Keys.** Every hosted arm names one variable, `OPENROUTER_API_KEY`. The owner sets it once
+  as a Windows user environment variable, as
+  [toolchain.md](toolchain.md#model-api-keys-and-sign-ins) shows, and opens a new shell. Run
+  the canary of each hosted arm through the clean-environment launcher before its first night.
+  The pass gate below covers only the Codex and agy harnesses; a Claude Code arm, hosted or
+  not, is not refused for a missing canary file, so this canary is the owner's step.
 - **Init, cost and credit.** A hosted session's init must name one of its arm's
   `accepted_init` ids, or the night stops. Its `cost_usd` is estimated from its tokens and the
   arm's prices, `cost_source: "estimate"`; the CLI's own figure for a model it does not know is
@@ -215,6 +229,8 @@ The model ids are assumptions to confirm at setup. On 2026-11-11 the owner added
 `gpt-6.1-terra` (GPT-6.1 Terra) and `gpt-6-astra` (GPT-6 Astra), both in the owner's
 `codex debug models` catalog; Terra answered a one-word `codex exec` that day. They run like
 Luna and Sol, one worker each, priced from OpenRouter's models list for the comparison only.
+All four ids ran in spike 012: each arm's canary passed on codex-cli 0.167.0
+(`build/driver/canary/<arm>.json`).
 
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
@@ -235,10 +251,20 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   read_file tool inside its attempt dir; the note also says to create and edit files only with
   the file-edit tool, Codex's apply_patch, never with a shell command or redirection, since the
   audit reads that tool's `file_change` items and a shell write is a stray command) and the
-  session rules. Codex streams no event that names the
+  session rules. The note ends with the wait instruction (`session.WAIT_NOTE`): a wrapper
+  command, `attempt check` above all, can run for minutes; if the shell tool hands it back
+  while it still runs, keep polling it until it exits, and never end the turn while one runs.
+  Codex's unified exec hands a long command back while it runs, and in spike 012 round 5
+  Luna, Sol and Terra replied DONE there, so the session's end killed the check the broker was
+  running and no check was logged (Astra waited and passed). The agy prompt and the Codex
+  canary prompt carry the same instruction. Codex streams no event that names the
   model: the record keeps `model_requested` and a null `model`, and there is no init check.
   Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
-  added to output); the cost is 0 on Plus, recorded as an estimate. `stats --run`'s
+  added to output); the cost is 0 on Plus, recorded as an estimate. Known fault, not fixed
+  yet: Codex's `input_tokens` already include its `cached_input_tokens`, and `codexjson.usage`
+  records both, so the cached tokens count twice (as input and as cache read) and
+  `stats --run` prices them twice; [model-comparison.md](model-comparison.md) gives spike 012's
+  figures recomputed with the cached part once. `stats --run`'s
   comparison prices the tokens at the arm's list price in backends.toml (marked confirm at
   setup) as its API-equivalent figure.
 - **The login.** No key is read. The session loses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, every
@@ -308,7 +334,8 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   in the workspace (Codex reads project rules from `<--cd>/.codex/rules/`), so if Codex re-read
   a session-edited rules file within the same session, only the audit would catch it.
 - **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
-  (and the same for `gpt-6.1-sol`) asks the session, in order, to run these exact commands:
+  (and the same for `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-astra`) asks the session, in
+  order, to run these exact commands:
   `whoami /all`, `Set-Content -Path '<one directory above the workspace>' -Value canary`
   (under build/, never under TEMP, which workspace-write allows),
   `Invoke-WebRequest -Uri https://example.com/ -UseBasicParsing`, and the wrapper's context
@@ -342,8 +369,11 @@ Luna and Sol, one worker each, priced from OpenRouter's models list for the comp
   the canary command) unless that file says PASS for the CLI version `codex --version` reports
   now. Upgrading the CLI therefore means running the canary again.
 - **The Plus windows.** Plus allows about 350 to 3,000 local Luna messages and 15 to 160 Sol
-  messages per 5 hours (owner plan). Each arm runs with `max_workers = 1`; the owner may raise
-  it in backends.toml. A Codex failure that says a usage limit was hit pauses the night like a
+  messages per 5 hours (owner plan); the Terra and Astra limits are unmeasured. In spike 012 a
+  Codex canary took about 2% of the 5-hour window and a small-pick session about 0.5% of the
+  week, and the 22 sessions of the 64-255 B picks filled a 5-hour window (owner screenshots;
+  [model-comparison.md](model-comparison.md#quota-and-spend)). Each arm runs with
+  `max_workers = 1`; the owner may raise it in backends.toml. A Codex failure that says a usage limit was hit pauses the night like a
   Claude usage limit; any other failure stops it.
 - **Windows sandbox caveats** (RESEARCH Pitfall 11). Elevated and unelevated sandbox modes have
   open issues, `apply_patch` has been reported at 13 to 20 s per patch, and some setups run
@@ -381,8 +411,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
 (spike 012's picks under 64 B), since agy charges quota by token cost.
 
 - **Install and sign in (owner).** Install agy 1.1.8 or later (`--output-format stream-json`
-  arrived in 1.1.8; the owner has 1.5.3), sign in with the AI Plus account, and run
-  `agy models`. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
+  arrived in 1.1.8), sign in with the AI Plus account, and run `agy models`. The owner set up
+  with 1.5.3; spike 012's rounds 3 to 5 ran 1.5.5, and agy updated itself to 1.5.6 on
+  2026-11-11. The pass gate below compares the canary's `cli_version` with `agy --version`, so
+  that update refused every agy arm until it passed its canary again on 1.5.6:
+  `gemini-flash` did (its pass file says PASS for 1.5.6); `gpt-oss`, `agy-sonnet-4-6` and
+  `agy-opus-4-6` hold FAIL for 1.5.6. The `schedule` timer below first appeared under 1.5.6. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
   vary per account, and agy exits 1 on an unknown one, so a wrong id fails the canary. For an
   effort comparison, set `gemini-3.8-flash-high` or `-low` as the `gemini-flash` model.
 - **The session.** `agy --output-format stream-json --model <slug> --sandbox --add-dir <attempt
@@ -390,7 +424,8 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   <prompt>`, with the attempt dir as its working directory. The timeout is a Go duration
   (`1800s`): agy 1.5.5 exits on a bare number. The flag that skips permissions is
   never passed. agy loads no skill and runs no hook, so the prompt is the Codex prompt (goal,
-  skill body, session rules). The init event must name the attempt dir as cwd, the requested
+  skill body, the harness note with its wait instruction, session rules), plus one sentence
+  that its read_file tool may read inside the attempt dir. The init event must name the attempt dir as cwd, the requested
   slug and no bypass permission mode, else the night stops (reason init). Tokens come from the
   result's `usage` (thinking tokens added to output), turns from `num_turns`, and the duration
   from `duration_seconds`. The cost is 0 on AI Plus, recorded as an estimate; `stats --run`'s
@@ -420,7 +455,8 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   agy's docs, not a captured run: the deny rules are **unconfirmed** until the owner's agy
   canary has tried its four probe reads (a `../` read and a different-case read of `orig/`, a
   `..` read behind the attempt-dir prefix, and a `THIRD_~1` short-name read) and all four were
-  denied.
+  denied. The `gemini-flash` canary passed all four on agy 1.5.6 (spike 012); a canary of
+  each other agy arm proves them again for that arm's model.
   The post-session audit stays the backstop either way. The wrapper ledger is the Codex one
   (`REVERSEAPOC_WRAPPER_LEDGER`).
 - **The audit: detection after the fact.** agy runs no Claude hook. No sandbox read restriction
@@ -477,10 +513,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   the tool, and the target must be the step's own request: the command as written, or the
   path as agy canonicalizes it (slashes forward, `..` folded, case kept). Anything less exact
   counts as run, and an unknown or subagent step stays a stray whatever state it ends in. The
-  result's `denied_actions` count as hook blocks and never stand for a step. The owner's
-  ruling that a denied write stops its arm only does not reach agy arms yet: the arm-stop
-  split receives write strays from the Claude transcript only, so an agy denied write is a
-  hook block. What a session sent to Google before it ended has left the machine.
+  result's `denied_actions` count as hook blocks and never stand for a step. A `write_file`
+  step that agy's permission check refused in that exact shape, for the step's own request
+  (`agyjson.denied_writes`), counts as a denied write, so on a night of several arms a session
+  whose only strays are such writes stops its arm only, as a Claude hook-denied write does
+  (see "Several arms in one drive"); with one arm it stops the night. What a session sent to
+  Google before it ended has left the machine.
 - **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
   gemini-flash --run canary-gemini` (and the same for `gpt-oss`) runs eight short agy
   sessions in one attempt dir, under the night's settings file and ledger. Spike 012 showed why:
@@ -541,13 +579,20 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   gemini-3.8-flash-openrouter` (OpenRouter in the Claude Code harness, paid, needs
   `OPENROUTER_API_KEY`). If `/usage` prints nothing machine-readable (RESEARCH A8), the canary
   says the quota was estimated, not measured, and records the allowed session's tokens and 20 times
-  them, so the owner can compare a 20-session arm with the bucket the app shows.
+  them, so the owner can compare a 20-session arm with the bucket the app shows. In spike 012
+  it printed nothing machine-readable, so every agy pass file holds an estimate
+  (`"measured": false`); the owner read the real meters with `/usage` in an interactive agy.
 - **The pass gate.** The canary writes `build/driver/canary/<arm>.json` (`arm`, `harness`,
   `cli_version` from `agy --version`, `date`, `result`, `tokens`, `quota`). A night of an agy
   arm is refused (exit 2, before any session, naming the canary command) unless that file says
   PASS for the version installed now. An arm on any harness without a canary is always refused.
-- **Sizing.** Each arm runs with `max_workers = 1`. AI Plus gives Gemini 3.8 Flash only, on a
-  weekly quota (Gemini 4 Argon needs AI Pro or Ultra). A failure that names a quota or rate
+- **Sizing.** Each arm runs with `max_workers = 1`. On AI Plus agy offers two weekly groups:
+  "Gemini models" (Gemini 3.8 Flash; Gemini 4 Argon needs AI Pro or Ultra) and "Claude and GPT
+  models" (Claude Sonnet and Opus 4.6, GPT-OSS 120B). Both are charged by token cost: in spike
+  012 one Gemini Flash session took about 22% of its group's week, and the two agy Claude 4.6
+  canaries about 63% of theirs (owner screenshots;
+  [model-comparison.md](model-comparison.md#quota-and-spend)), so `max_sessions` 20 does not
+  fit the Gemini week. A failure that names a quota or rate
   limit pauses the night like a usage limit; "authentication required" or any other failure
   stops it. A paid Gemini Pro arm is not built (D-25).
 - **If `--settings` cannot restrict tools** (RESEARCH A9; the canary's wrapper check is then
@@ -575,8 +620,8 @@ weights early through OpenRouter as a fast check.
 - **No egress flag.** `sends_disassembly = false`: nothing leaves the machine, so the arm takes
   no `--allow-egress` and one naming it is refused. Its cost is 0, recorded as an estimate.
 - **Gated on its hosted twin (owner, 2026-11-10).** The hosted arms run first, through
-  OpenRouter. Only then does the owner decide what runs locally, because local runs on his
-  machine (GTX 1660 6 GB, 32 GB RAM) are slow. `qwen-hosted` is the twin of `qwen-local`, and
+  OpenRouter. Only then does the owner decide what runs locally, because local runs on the
+  owner's machine (GTX 1660 6 GB, 32 GB RAM) are slow. `qwen-hosted` is the twin of `qwen-local`, and
   `glm-4.7-flash` and `gpt-oss-20b` are the twins of possible later local GLM-4.7-Flash and
   GPT-OSS 20B arms. If the twin matches
   about nothing on the frozen picks, the local arm is skipped: no llama.cpp setup and no model
@@ -609,13 +654,38 @@ need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an
   night without `--hold`, a function one arm matches is dropped from the other arms' queues.
 - **Workers and caps.** The night's workers are the sum of the arms' WORKERS. Each arm's
   WORKERS must stay within its `max_workers`, which is checked before any command. An arm may
-  also carry `max_sessions` in backends.toml, which caps that arm's launches for the night. The
-  Antigravity arms carry 20, the canary's planning estimate; the owner sets it from the quota
-  the agy canary measures. When an arm reaches its cap, it stops launching while the others go
-  on. `--max-sessions` still caps the night's total.
+  also carry `max_sessions` in backends.toml, which caps that arm's launches for the night.
+  `gemini-flash` and `gpt-oss` carry 20, the canary's planning estimate; `agy-sonnet-4-6` and
+  `agy-opus-4-6` carry 7, the spike's picks under 64 B; the owner sets it from the agy quota.
+  No Claude Code or Codex arm carries one. When an arm reaches its cap, it stops launching
+  while the others go on. `--max-sessions` still caps the night's total (default 60), so
+  spike 012's drives passed `--max-sessions 200`.
 - **Usage pauses.** Each arm has its own usage-limit pause. A LIMIT session of one arm (a Codex
   Plus window, the Antigravity quota, an Anthropic limit) starts that arm's backoff only. The
-  other arms keep launching, and the arm's own probe clears its pause.
+  other arms keep launching, and the arm's own probe clears its pause. A paused arm with picks
+  left keeps the drive open, so a quota-bound arm gets a short pick list (spike 012 ran its
+  Codex and agy arms on `spike012-picks-small.txt` and `-medium.txt`, the frozen list's picks
+  under 64 B and at 64-255 B).
+- **One arm stops, or the whole drive.** On a night of several arms, a session whose only
+  strays are writes that were denied stops its arm only (owner ruling 2026-11-10): for a Claude
+  Code arm, a transcript write whose tool_use id is the only one of its kind and has a
+  `permission_denials` entry naming the same tool and target; for an agy arm, a `write_file`
+  that agy's permission check refused (above). The attempt is reset and recorded GAVE_UP
+  guardrail, the arm launches nothing more (a LIMIT relaunch included), its sessions in flight
+  finish, and a console line and the run record's detail name the arm, the attempt and the
+  path; the other arms go on. A Codex session has no denied writes. Everything else still
+  stops the whole drive: any other stray (an undenied or unprovable write, a command that is
+  not an exact wrapper form, such as Luna's `uv run --frozen reverseapoc context` in spike 012,
+  an unknown Codex or agy item, a read outside what is allowed), a write stray together with
+  another stray or a containers note, a reset or check that fails or still finds a change, a
+  night of one arm, a STOP from the stream (`streamjson.classify`), an init problem, a Codex or
+  agy failure that is not a limit, an error, and Ctrl+C.
+- **Resuming a hold run.** Running the same `--hold --run <run>` drive again resumes it (owner
+  approval 2026-11-10, `driver.hold_progress`): per arm, a function with a counted hold
+  attempt in the committed log (no abort reason, or `timeout`) is skipped; one cut short (a
+  GAVE_UP guardrail or tool record, a transient abort, or no record) is attempted again, under
+  the next attempt number so its directory is fresh. Spike 012 resumed its drive this way after
+  each stop, dropping or adding `--arm` entries between runs.
 - **Every per-arm gate still holds.** Each arm resolves through backends.toml. A Codex or agy
   arm needs its own canary PASS for the installed CLI. An arm that sends the pack off the
   machine needs its own `--allow-egress NAME`, and an `--allow-egress` naming an arm the night
@@ -644,7 +714,8 @@ reverseapoc drive --picks build/driver/spike012-picks.txt --hold --run spike012 
 ```
 
 `qwen-local` is not in it: it runs later, and only if `qwen-hosted` did well (see
-[The local arm](#the-local-arm)).
+[The local arm](#the-local-arm)). The drives spike 012 really ran, their stops and what each
+arm measured are in [model-comparison.md](model-comparison.md).
 
 Then compare the arms with `reverseapoc stats --run spike012-*`, which splits by arm (below),
 and land the exact results once each, from the lowest API-equivalent cost, with
