@@ -46,6 +46,16 @@ def _arrays(size: int, *markers: int) -> tuple[Marked, ...]:
                  for name, marker in zip("abcd", markers, strict=False))  # fmt: skip
 
 
+def _shorts(names: str, first: int) -> tuple[Marked, ...]:
+    """Plain 2-byte locals, their markers counted up from `first` as the `pr_line_a_` frames do."""
+    return tuple(Marked(name, 2, first + n) for n, name in enumerate(names))
+
+
+def _ints(names: str, first: int, scope: int = 0) -> tuple[Marked, ...]:
+    """Plain 4-byte locals, their markers counted up from `first` as the `pr_line_` frames do."""
+    return tuple(Marked(name, 4, first + n, scope) for n, name in enumerate(names))
+
+
 DOUBLE = Marked("d", 8, 0x40040000, at=HIGH_DWORD)  # 2.5
 SAME_SIZE = (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 4, 0x33), Marked("d", 4, 0x44))
 MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBLE)
@@ -115,6 +125,42 @@ SHAPES = {
     "pr_arr_int1_x3_rev": INT1_X3[::-1],
     "pr_arr_c4_s2": C4_S2,  # a char[4] beside a short[2]: two arrays of one size (07.2-14)
     "pr_arr_c4_s2_rev": C4_S2[::-1],
+    # Line A (quick 261112-fdx): one 2-byte array declared first, then 2-byte plain locals.
+    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
+                               Marked("d", 2, 0x4B)),  # fmt: skip
+    "pr_line_a_c2_h": (*_arrays(2, 0x77), Marked("b", 2, 0x177)),
+    "pr_line_a_c2_h8": (*_arrays(2, 0x78), *_shorts("bcdefghi", 0x178)),
+    "pr_line_a_c2_h11": (*_arrays(2, 0x79), *_shorts("bcdefghijkl", 0x180)),
+    "pr_line_a_uc2_h3": (*_arrays(2, 0x7A), *_shorts("bcd", 0x18B)),
+    "pr_line_a_c2_mixed": (*_arrays(2, 0x7B), *_shorts("bcde", 0x18E)),
+    "pr_line_a_c2_h3_late": (*_arrays(2, 0x7C), *_shorts("bcd", 0x192)),
+    "pr_line_a_c2_h3_split": (*_arrays(2, 0x7D), *_shorts("bcd", 0x195)),
+    # The known side past the sweep (quick 261112-fdx): frames the model already calls known.
+    "pr_line_k_c4_s2_i": (*_arrays(4, 0x7E, 0x198), Marked("c", 4, 0x199)),
+    "pr_line_k_c4x2_i10": (*_arrays(4, 0x7F, 0x80), *_ints("cdefghijkl", 0x19A)),
+    "pr_line_k_i_c4_i2_c4_i": (Marked("a", 4, 0x1A4), Marked("b", 4, 0x81, array=True),
+                               *_ints("cd", 0x1A5), Marked("e", 4, 0x82, array=True),
+                               Marked("f", 4, 0x1A7)),  # fmt: skip
+    "pr_line_k_c4x2_i_late": (*_arrays(4, 0x83, 0x84), Marked("c", 4, 0x1A8)),
+    # Line B (quick 261112-fdx): two 4-byte arrays first, then ints, beside later blocks of ints.
+    "pr_line_b_c4x2_i_blk": (*_arrays(4, 0x85, 0x86), Marked("c", 4, 0x1A9),
+                             Marked("d", 4, 0x1AA, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i3_blk": (*_arrays(4, 0x87, 0x88), *_ints("cde", 0x1AB),
+                              Marked("f", 4, 0x1AE, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk5": (*_arrays(4, 0x89, 0x8A), Marked("c", 4, 0x1AF),
+                              *_ints("defgh", 0x1B0, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk_blk": (*_arrays(4, 0x8B, 0x8C), Marked("c", 4, 0x1B5),
+                                 Marked("d", 4, 0x1B6, 1), Marked("e", 4, 0x1B7, 2)),  # fmt: skip
+    "pr_line_b_c4_s2_i_blk": (*_arrays(4, 0x8D, 0x1B8), Marked("c", 4, 0x1B9),
+                              Marked("d", 4, 0x1BA, 1)),  # fmt: skip
+    "pr_line_b_c4x2_i_blk_late": (*_arrays(4, 0x8E, 0x8F), Marked("c", 4, 0x1BB),
+                                  Marked("d", 4, 0x1BC, 1)),  # fmt: skip
+    # Line C (quick 261112-fdx): three or more 4-byte arrays first, then ints, in one block.
+    "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
+    "pr_line_c_c4x2_s2_i": (*_arrays(4, 0x90, 0x91, 0x1BD), Marked("d", 4, 0x1BE)),
+    "pr_line_c_c4x3_i2": (*_arrays(4, 0x92, 0x93, 0x94), *_ints("de", 0x1BF)),
+    "pr_line_c_c4x4_i": (*_arrays(4, 0x95, 0x96, 0x97, 0x98), Marked("e", 4, 0x1C1)),
+    "pr_line_c_c4x3_i_late": (*_arrays(4, 0x99, 0x9A, 0x9B), Marked("d", 4, 0x1C2)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -156,18 +202,27 @@ TIES = {
                          Marked("d", 4, 0x60, array=True)),  # fmt: skip
     "pr_arr_c4x2_s2": C4X2_S2,  # three arrays of 4 bytes, a short[2] among them (07.2-14)
     "pr_arr_c4x2_s2_rev": C4X2_S2[::-1],
+    # Line D's frames that broke it (quick 261112-fdx): an int and a char[4] beside a 2-byte local.
+    "pr_line_d_c4_i_c2": (*_arrays(4, 0x9D), Marked("b", 4, 0x1C8),
+                          Marked("c", 2, 0x9E, array=True)),  # fmt: skip
+    "pr_line_d_i_c4_h": (Marked("a", 4, 0x1CB), Marked("b", 4, 0xA0, array=True),
+                         Marked("c", 2, 0x1CC)),  # fmt: skip
 }
 # Frames the model refuses though they keep declaration order: the compiler's line runs through
 # no count, so the refusal is wider than it, on the safe side.
 REFUSED_HOLDING = {
     "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
-    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
-                               Marked("d", 2, 0x4B)),  # fmt: skip
-    "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
     "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
     "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
     "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
+    # Line D (quick 261112-fdx): a 4-byte array and an int beside one 2-byte local, one block.
+    "pr_line_d_i2_h": (*_ints("ab", 0x1C3), Marked("c", 2, 0x1C5)),  # the control, off line D
+    "pr_line_d_c4_i_h": (*_arrays(4, 0x9C), Marked("b", 4, 0x1C6), Marked("c", 2, 0x1C7)),
+    "pr_line_d_h_i_c4": (Marked("a", 2, 0x1C9), Marked("b", 4, 0x1CA),
+                         Marked("c", 4, 0x9F, array=True)),  # fmt: skip
+    "pr_line_d_c4_c2_i_late": (*_arrays(4, 0xA1), Marked("b", 2, 0xA2, array=True),
+                               Marked("c", 4, 0x1CD)),  # fmt: skip
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -184,6 +239,8 @@ ARRAY_TIES = {
     "pr_arr_int_three": {"a": 4, "b": 0xC, "c": 8, "d": 0},
     "pr_arr_c4x2_s2": {"a": 4, "b": 8, "c": 0},
     "pr_arr_c4x2_s2_rev": {"c": 4, "b": 8, "a": 0},
+    "pr_line_d_c4_i_c2": {"a": 0, "b": 4, "c": 8},
+    "pr_line_d_i_c4_h": {"a": 0, "b": 4, "c": 8},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {
@@ -213,6 +270,7 @@ FALLBACK_TWINS = (
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
 _MEMORY_STORE = re.compile(r"\w+ ptr \[esp[^\]]*\], (?P<source>\w+)$")
+_RETURNED = "ax"  # the register family a call returns an int or a pointer in
 
 
 @pytest.fixture(scope="module")
@@ -257,12 +315,14 @@ def _family(register: str) -> str:
 def _stores(code: bytes) -> Iterator[tuple[int, int]]:
     """(value, slot) of each constant stored in a slot. -oneatx loads a marker into a register
     first and may store it after pushes, so register constants are followed and each slot comes
-    from batch._frame_slots, which keeps track of the depth."""
+    from batch._frame_slots, which keeps track of the depth. A call keeps every register but eax,
+    the only one the probe's externs return in (a double comes back in st0), and -oneatx loads a
+    marker before a call to store it after (pr_line_a_c2_h3_split)."""
     frame_slots, _ = batch._frame_slots(code, 0)
     constants: dict[str, int] = {}
     for insn, slot in zip(x86.decode(code, 0), frame_slots, strict=True):
         if insn.is_call:
-            constants.clear()
+            constants.pop(_RETURNED, None)
         if insn.mnemonic != "mov":
             continue
         target, source = insn.op_str.split(", ", 1)

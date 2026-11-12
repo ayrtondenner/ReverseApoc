@@ -23,14 +23,22 @@ Offsets count from esp after the prologue. What the probe measured, the same in 
 M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
 pr_tie_three, and its three arrays take other offsets. Local.array carries the shapes that leave
-M2 or M4 in a frame of one size: three or more multi-element arrays alone (pr_arr_char4_x3), an
-array of 2 bytes beside plain locals (pr_arr_two_one_small, pr_arr_one_two_small), and two arrays
-beside a later block (pr_arr_two_block). No standard sort reproduces these orders and a table by
-count would not hold either, so the model refuses them, and some frames it refuses hold.
+M2 or M4 in a frame of one size: three or more multi-element arrays unless they are declared
+first and a plain local follows them in one block (line C of quick 261112-fdx; alone they leave,
+pr_arr_char4_x3, as after an int, pr_arr_int_three), an array of 2 bytes beside plain locals
+unless it is the only one and declared first (line A; pr_arr_two_one_small, pr_arr_one_two_small
+leave), and two arrays beside a later block unless they are declared first and a plain local
+follows them in the top block (line B; pr_arr_two_block, pr_arr_int_two_block leave). No
+standard sort reproduces these orders and a table by count would not hold either, so the model
+refuses them, and some frames it refuses hold.
 07.2-14 measured past the 07.1 sweep and moved nothing: a `char[4]` beside a `short[2]` keeps M2
 (pr_arr_c4_s2), two `char[4]` beside a `short[2]` leave it (pr_arr_c4x2_s2), a `char[4]` and an
 `int` beside a `char[2]` hold though refused (pr_arr_c4_c2_int), and three `int[1]` keep M2
-(pr_arr_int1_x3), which is why the lifter declares a 4-byte address-taken slot that way.
+(pr_arr_int1_x3), which is why the lifter declares a 4-byte address-taken slot that way. Quick
+261112-fdx measured the pr_line_ frames past the sweep against four lines fixed beforehand, and
+drew A, B and C above. Line D, a 4-byte array and an int beside one 2-byte local, broke on
+pr_line_d_c4_i_c2 and pr_line_d_i_c4_h, which leave, so a tie beside another size stays refused
+and pr_arr_c4_c2_int holds though refused. The pr_line_k_ frames, called known, sit as modelled.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
@@ -45,6 +53,8 @@ SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
 _ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
 _MEASURED_ARRAYS = 2  # the most multi-element arrays the model calls known at one size
 _BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
+_LEADING_SMALL_ARRAYS = 1  # line A: the arrays under 4 bytes keep M2 beside plain locals, if first
+_TOP_SCOPE = 0  # the function's own block, as search.memory_locals numbers it
 
 
 @dataclass(frozen=True)
@@ -59,11 +69,15 @@ class Local:
 
 def order_is_known(locals_: Sequence[Local]) -> bool:
     """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
-    and no more than _MEASURED_ARRAYS of them are arrays. Only size 4 keeps its order across
-    blocks, with at most one array, and under size 4 the locals are all arrays or none. Measured
-    in both cells: two arrays of 4 bytes of any element type hold (pr_arr_char4_x2,
-    pr_arr_short2_x2, pr_arr_c4_s2), three do not (pr_arr_char4_x3, pr_arr_c4x2_s2), and `int[1]`
-    is no array (pr_arr_int1_x3)."""
+    and no more than _MEASURED_ARRAYS of them are arrays, or more that _arrays_then_ints admits
+    at size 4 (line C). Only size 4 keeps its order across
+    blocks: with at most one array, or with two that _two_arrays_then_ints admits (line B).
+    Under size 4 the locals sit in one block and are all arrays or none, or one array is declared
+    first (line A: pr_line_a_c2_h to pr_line_a_c2_h11 and pr_arr_one_three_small, from 1 to 11
+    shorts after it; measured as `char[2]` and, in pr_line_a_uc2_h3, `unsigned char[2]`, beside
+    `short`, `unsigned short` and `short[1]`). Measured in both cells: two arrays of 4 bytes of
+    any element type hold (pr_arr_char4_x2, pr_arr_short2_x2, pr_arr_c4_s2), three do not
+    (pr_arr_char4_x3, pr_arr_c4x2_s2), and `int[1]` is no array (pr_arr_int1_x3)."""
     sizes = {local.size for local in locals_}
     if len(sizes) == len(locals_):
         return True
@@ -72,10 +86,35 @@ def order_is_known(locals_: Sequence[Local]) -> bool:
     arrays = sum(local.array for local in locals_)
     one_block = len({local.scope for local in locals_}) == 1
     if arrays > _MEASURED_ARRAYS:
-        return False
+        return sizes == {_BLOCK_ORDERED_SIZE} and one_block and _arrays_then_ints(locals_, arrays)
     if sizes == {_BLOCK_ORDERED_SIZE}:
-        return one_block or arrays < 2
-    return one_block and arrays in (0, len(locals_))
+        return one_block or arrays < 2 or _two_arrays_then_ints(locals_)
+    leading = arrays == _LEADING_SMALL_ARRAYS and locals_[0].array
+    return one_block and (arrays in (0, len(locals_)) or leading)
+
+
+def _two_arrays_then_ints(locals_: Sequence[Local]) -> bool:
+    """Line B, for a frame of 4-byte locals with at most _MEASURED_ARRAYS arrays: the first two
+    declared are arrays in the function's own block, and a plain local follows them there. Every
+    local after them is plain. Measured in both cells as two `char[4]` (pr_line_b_c4x2_i_blk,
+    _i3_blk, _i_blk5, _i_blk_blk and _i_blk_late, and the 07.1 sweep's c4 c4 i | i to
+    c4 c4 i i | i i i), two `short[2]` (the sweep's s2 twins of those only) and one of each
+    (pr_line_b_c4_s2_i_blk alone), beside `int`: 1 to 3 ints in the top block, 1 to 5 in a later
+    one, and up to two later blocks. Without the int in the top block it leaves (pr_arr_two_block),
+    and so does an int before the arrays (pr_arr_int_two_block)."""
+    first, second, *rest = locals_
+    in_top = [local for local in rest if local.scope == _TOP_SCOPE]
+    arrays_lead = first.array and second.array and first.scope == second.scope == _TOP_SCOPE
+    return arrays_lead and bool(in_top) and not any(local.array for local in rest)
+
+
+def _arrays_then_ints(locals_: Sequence[Local], arrays: int) -> bool:
+    """Line C, for a frame of 4-byte locals in one block with more than _MEASURED_ARRAYS arrays:
+    the arrays are the first declared, and a plain local follows them. Measured in both cells as
+    `char[4]` (pr_arr_three_int, pr_line_c_c4x3_i2, _c4x4_i and _c4x3_i_late) and two `char[4]`
+    then a `short[2]` (pr_line_c_c4x2_s2_i), beside `int`: 3 or 4 arrays, then 1 or 2 ints.
+    Arrays alone leave (pr_arr_char4_x3), and so does an int before them (pr_arr_int_three)."""
+    return arrays < len(locals_) and all(local.array for local in locals_[:arrays])
 
 
 def _padded(size: int) -> int:

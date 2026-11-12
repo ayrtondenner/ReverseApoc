@@ -1296,6 +1296,467 @@ void pr_arr_c4x2_s2_rev(void)
     pr_take(a, b, c);
 }
 
+/*
+ * Frames past the 07.1 sweep (quick 261112-fdx). Each tests one of four lines fixed before
+ * anything was measured: A, one 2-byte array declared first beside shorts; B, two 4-byte arrays
+ * then an int, beside later blocks of ints; C, three or more 4-byte arrays then ints; D, an
+ * array and an int beside one 2-byte local. The pr_line_k_ frames check the side the model
+ * already calls known. A _late frame stores and passes its top block's locals in reverse, and a
+ * _split frame passes its array in a call of its own.
+ */
+void pr_line_a_c2_h(void)
+{
+    char a[2];
+    short b;
+
+    a[0] = 0x77;
+    b = 0x177;
+    pr_take(a, &b);
+}
+
+void pr_line_a_c2_h8(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+    short h;
+    short i;
+
+    a[0] = 0x78;
+    b = 0x178;
+    c = 0x179;
+    d = 0x17a;
+    e = 0x17b;
+    f = 0x17c;
+    g = 0x17d;
+    h = 0x17e;
+    i = 0x17f;
+    pr_take(a, &b, &c, &d, &e, &f, &g, &h, &i);
+}
+
+void pr_line_a_c2_h11(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+    short h;
+    short i;
+    short j;
+    short k;
+    short l;
+
+    a[0] = 0x79;
+    b = 0x180;
+    c = 0x181;
+    d = 0x182;
+    e = 0x183;
+    f = 0x184;
+    g = 0x185;
+    h = 0x186;
+    i = 0x187;
+    j = 0x188;
+    k = 0x189;
+    l = 0x18a;
+    pr_take(a, &b, &c, &d, &e, &f, &g, &h, &i, &j, &k, &l);
+}
+
+void pr_line_a_uc2_h3(void)
+{
+    unsigned char a[2];
+    short b;
+    short c;
+    short d;
+
+    a[0] = 0x7a;
+    b = 0x18b;
+    c = 0x18c;
+    d = 0x18d;
+    pr_take(a, &b, &c, &d);
+}
+
+void pr_line_a_c2_mixed(void)
+{
+    char a[2];
+    short b;
+    short c[1];
+    unsigned short d;
+    short e[1];
+
+    a[0] = 0x7b;
+    b = 0x18e;
+    c[0] = 0x18f;
+    d = 0x190;
+    e[0] = 0x191;
+    pr_take(a, &b, c, &d, e);
+}
+
+void pr_line_a_c2_h3_late(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+
+    d = 0x194;
+    c = 0x193;
+    b = 0x192;
+    a[0] = 0x7c;
+    pr_take(&d, &c, &b, a);
+}
+
+void pr_line_a_c2_h3_split(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+
+    a[0] = 0x7d;
+    pr_take(a);
+    b = 0x195;
+    c = 0x196;
+    d = 0x197;
+    pr_take(&b, &c, &d);
+}
+
+void pr_line_k_c4_s2_i(void)
+{
+    char a[4];
+    short b[2];
+    int c;
+
+    a[0] = 0x7e;
+    b[0] = 0x198;
+    c = 0x199;
+    pr_take(a, b, &c);
+}
+
+void pr_line_k_c4x2_i10(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+    int d;
+    int e;
+    int f;
+    int g;
+    int h;
+    int i;
+    int j;
+    int k;
+    int l;
+
+    a[0] = 0x7f;
+    b[0] = 0x80;
+    c = 0x19a;
+    d = 0x19b;
+    e = 0x19c;
+    f = 0x19d;
+    g = 0x19e;
+    h = 0x19f;
+    i = 0x1a0;
+    j = 0x1a1;
+    k = 0x1a2;
+    l = 0x1a3;
+    pr_take(a, b, &c, &d, &e, &f, &g, &h, &i, &j, &k, &l);
+}
+
+void pr_line_k_i_c4_i2_c4_i(void)
+{
+    int a;
+    char b[4];
+    int c;
+    int d;
+    char e[4];
+    int f;
+
+    a = 0x1a4;
+    b[0] = 0x81;
+    c = 0x1a5;
+    d = 0x1a6;
+    e[0] = 0x82;
+    f = 0x1a7;
+    pr_take(&a, b, &c, &d, e, &f);
+}
+
+void pr_line_k_c4x2_i_late(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    c = 0x1a8;
+    b[0] = 0x84;
+    a[0] = 0x83;
+    pr_take(&c, b, a);
+}
+
+void pr_line_b_c4x2_i_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x85;
+    b[0] = 0x86;
+    c = 0x1a9;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1aa;
+        pr_take(&d);
+    }
+}
+
+void pr_line_b_c4x2_i3_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+    int d;
+    int e;
+
+    a[0] = 0x87;
+    b[0] = 0x88;
+    c = 0x1ab;
+    d = 0x1ac;
+    e = 0x1ad;
+    pr_take(a, b, &c, &d, &e);
+    if (x) {
+        int f;
+
+        f = 0x1ae;
+        pr_take(&f);
+    }
+}
+
+void pr_line_b_c4x2_i_blk5(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x89;
+    b[0] = 0x8a;
+    c = 0x1af;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+        int e;
+        int f;
+        int g;
+        int h;
+
+        d = 0x1b0;
+        e = 0x1b1;
+        f = 0x1b2;
+        g = 0x1b3;
+        h = 0x1b4;
+        pr_take(&d, &e, &f, &g, &h);
+    }
+}
+
+void pr_line_b_c4x2_i_blk_blk(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x8b;
+    b[0] = 0x8c;
+    c = 0x1b5;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1b6;
+        pr_take(&d);
+    }
+    if (x > 1) {
+        int e;
+
+        e = 0x1b7;
+        pr_take(&e);
+    }
+}
+
+void pr_line_b_c4_s2_i_blk(int x)
+{
+    char a[4];
+    short b[2];
+    int c;
+
+    a[0] = 0x8d;
+    b[0] = 0x1b8;
+    c = 0x1b9;
+    pr_take(a, b, &c);
+    if (x) {
+        int d;
+
+        d = 0x1ba;
+        pr_take(&d);
+    }
+}
+
+void pr_line_b_c4x2_i_blk_late(int x)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    c = 0x1bb;
+    b[0] = 0x8f;
+    a[0] = 0x8e;
+    pr_take(&c, b, a);
+    if (x) {
+        int d;
+
+        d = 0x1bc;
+        pr_take(&d);
+    }
+}
+
+void pr_line_c_c4x2_s2_i(void)
+{
+    char a[4];
+    char b[4];
+    short c[2];
+    int d;
+
+    a[0] = 0x90;
+    b[0] = 0x91;
+    c[0] = 0x1bd;
+    d = 0x1be;
+    pr_take(a, b, c, &d);
+}
+
+void pr_line_c_c4x3_i2(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    int d;
+    int e;
+
+    a[0] = 0x92;
+    b[0] = 0x93;
+    c[0] = 0x94;
+    d = 0x1bf;
+    e = 0x1c0;
+    pr_take(a, b, c, &d, &e);
+}
+
+void pr_line_c_c4x4_i(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    char d[4];
+    int e;
+
+    a[0] = 0x95;
+    b[0] = 0x96;
+    c[0] = 0x97;
+    d[0] = 0x98;
+    e = 0x1c1;
+    pr_take(a, b, c, d, &e);
+}
+
+void pr_line_c_c4x3_i_late(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    int d;
+
+    d = 0x1c2;
+    c[0] = 0x9b;
+    b[0] = 0x9a;
+    a[0] = 0x99;
+    pr_take(&d, c, b, a);
+}
+
+void pr_line_d_i2_h(void)
+{
+    int a;
+    int b;
+    short c;
+
+    a = 0x1c3;
+    b = 0x1c4;
+    c = 0x1c5;
+    pr_take(&a, &b, &c);
+}
+
+void pr_line_d_c4_i_h(void)
+{
+    char a[4];
+    int b;
+    short c;
+
+    a[0] = 0x9c;
+    b = 0x1c6;
+    c = 0x1c7;
+    pr_take(a, &b, &c);
+}
+
+void pr_line_d_c4_i_c2(void)
+{
+    char a[4];
+    int b;
+    char c[2];
+
+    a[0] = 0x9d;
+    b = 0x1c8;
+    c[0] = 0x9e;
+    pr_take(a, &b, c);
+}
+
+void pr_line_d_h_i_c4(void)
+{
+    short a;
+    int b;
+    char c[4];
+
+    a = 0x1c9;
+    b = 0x1ca;
+    c[0] = 0x9f;
+    pr_take(&a, &b, c);
+}
+
+void pr_line_d_i_c4_h(void)
+{
+    int a;
+    char b[4];
+    short c;
+
+    a = 0x1cb;
+    b[0] = 0xa0;
+    c = 0x1cc;
+    pr_take(&a, b, &c);
+}
+
+void pr_line_d_c4_c2_i_late(void)
+{
+    char a[4];
+    char b[2];
+    int c;
+
+    c = 0x1cd;
+    b[0] = 0xa2;
+    a[0] = 0xa1;
+    pr_take(&c, b, a);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {
