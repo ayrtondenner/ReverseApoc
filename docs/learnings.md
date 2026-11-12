@@ -11,6 +11,12 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-11: cheap models match the small functions too (spike 012)
+
+- Spike 012 ran 13 model arms over one frozen 20-function list as hold drives ([spike 012](../.planning/spikes/012-model-routing/README.md)). Under 64 B, Haiku 5.5 held 3 of 7 at $0.78 API-equivalent for its whole run, the same count as Opus 5.5 at $17.45; at 64-255 B arms held 0 to 2; nothing at 256 B and up matched on any arm. 6 of the 7 distinct held functions landed (+489 B).
+- A held match is not a landed one: Haiku's `ufo2p func_0005DB80` matched exactly but turned the unit's matched `func_0005E550` back into `INCLUDE_ASM`, and the gate refused the unit. `attempt check` judges only the claimed function and the splice; it should also flag a matched function of its unit that is no longer C.
+- Each new harness adds its own failure modes (Codex hands long commands back while they run and splits `-c` keys on dots; agy backgrounds commands, polls them with `manage_task` or `schedule`, and reads its own output folder; models rewrite paths or refuse probes), and every subscription quota binds before money does. What we do: route by size, cheapest arm first, escalate on failure (backlog 999.12); give quota-bound arms short pick lists; keep every new harness behind its own canary.
+
 ## 2026-11-09: our per-try rates beside FNV's (Phase 7.2, 07.2-10, D-19 9d)
 
 - **Our tries end in a mismatch, not a failed build.** `uv run reverseapoc causes 20261107-030004 20261107-170844` on the main checkout, as build failure / mismatch / match over plain checks (sweeps apart): run 20261107-030004, 388 checks, 0.3% / 96.6% / 3.1% (75 sweeps); run 20261107-170844, 665 checks, 0.2% / 98.2% / 1.7% (369 sweeps); both, 1053 checks, 0.2% / 97.6% / 2.2%. FNV reports 42/55/3 per 100 tries over 96,537 tries ([FNV research](research/2026-11-09-fnv-decomp.md#measured-lessons-fnvdecomphowhtml)).
