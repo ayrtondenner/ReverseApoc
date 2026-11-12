@@ -34,7 +34,11 @@ refuses them, and some frames it refuses hold.
 07.2-14 measured past the 07.1 sweep and moved nothing: a `char[4]` beside a `short[2]` keeps M2
 (pr_arr_c4_s2), two `char[4]` beside a `short[2]` leave it (pr_arr_c4x2_s2), a `char[4]` and an
 `int` beside a `char[2]` hold though refused (pr_arr_c4_c2_int), and three `int[1]` keep M2
-(pr_arr_int1_x3), which is why the lifter declares a 4-byte address-taken slot that way.
+(pr_arr_int1_x3), which is why the lifter declares a 4-byte address-taken slot that way. Quick
+261112-fdx measured the pr_line_ frames past the sweep against four lines fixed beforehand, and
+drew A, B and C above. Line D, a 4-byte array and an int beside one 2-byte local, broke on
+pr_line_d_c4_i_c2 and pr_line_d_i_c4_h, which leave, so a tie beside another size stays refused
+and pr_arr_c4_c2_int holds though refused. The pr_line_k_ frames, called known, sit as modelled.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
