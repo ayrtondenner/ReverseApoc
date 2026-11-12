@@ -43,5 +43,7 @@ Closed by the allowlist form plus normalisation, in batch 261112-fdr, RED first 
 - `5ea6d907` RED (review finding 1, test strings written by the owner) and `f2c4347e` GREEN: a script-naming call
   holding `$'` or a word-initial `#` outside quotes is refused, and so is a PowerShell call with a `$(` after a direct
   script run.
+- `2a3b20fe` RED and `aefe2452` GREEN (automated review of `f2c4347e`): substitution contents are checked too, and
+  any `#` outside quotes is refused, not only a word-initial one.
 
 The rule is still a guard against our own agents, not a sandbox; docs/workflow.md Known limits lists what stays open.
