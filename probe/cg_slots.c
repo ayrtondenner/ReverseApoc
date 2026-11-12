@@ -1685,6 +1685,78 @@ void pr_line_c_c4x3_i_late(void)
     pr_take(&d, c, b, a);
 }
 
+void pr_line_d_i2_h(void)
+{
+    int a;
+    int b;
+    short c;
+
+    a = 0x1c3;
+    b = 0x1c4;
+    c = 0x1c5;
+    pr_take(&a, &b, &c);
+}
+
+void pr_line_d_c4_i_h(void)
+{
+    char a[4];
+    int b;
+    short c;
+
+    a[0] = 0x9c;
+    b = 0x1c6;
+    c = 0x1c7;
+    pr_take(a, &b, &c);
+}
+
+void pr_line_d_c4_i_c2(void)
+{
+    char a[4];
+    int b;
+    char c[2];
+
+    a[0] = 0x9d;
+    b = 0x1c8;
+    c[0] = 0x9e;
+    pr_take(a, &b, c);
+}
+
+void pr_line_d_h_i_c4(void)
+{
+    short a;
+    int b;
+    char c[4];
+
+    a = 0x1c9;
+    b = 0x1ca;
+    c[0] = 0x9f;
+    pr_take(&a, &b, c);
+}
+
+void pr_line_d_i_c4_h(void)
+{
+    int a;
+    char b[4];
+    short c;
+
+    a = 0x1cb;
+    b[0] = 0xa0;
+    c = 0x1cc;
+    pr_take(&a, b, &c);
+}
+
+void pr_line_d_c4_c2_i_late(void)
+{
+    char a[4];
+    char b[2];
+    int c;
+
+    c = 0x1cd;
+    b[0] = 0xa2;
+    a[0] = 0xa1;
+    pr_take(&c, b, a);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {
