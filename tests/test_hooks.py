@@ -1515,6 +1515,8 @@ def test_worktree_command_denies_scripts_beside_indirection(worktree, name, comm
 def test_worktree_command_allows_plain_output_redirection(worktree, name, command):
     """Ruling 2 item 3: a script's stdout redirected to a file stays allowed, and a heredoc or a
     cd with no script named says nothing."""
+    # 261112-fdw: `bash x.sh` needs x.sh in the cwd (else bash searches PATH for it).
+    (worktree / "x.sh").write_text(f"W = '{RELATIVE_WATCOM}'\n", encoding="utf-8")
     assert not always(shell(name, command, worktree)).deny, command
 
 

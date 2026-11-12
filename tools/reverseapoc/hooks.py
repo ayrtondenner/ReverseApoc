@@ -21,7 +21,10 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   worktree cwd (.claude/worktrees/<name>/) it denies a Bash or PowerShell command, or a script
   the command names, that spells the main checkout's absolute path, and a script it cannot scan
   (named through shell expansion, not one text, written and run by the same command, or named
-  beside a heredoc marker, cd, inline code or eval). Every other shell call gets no opinion.
+  beside a heredoc marker or a backslash-newline). A call that names a script passes only when
+  every command in it has a listed shape, judged on its words as the shell resolves them
+  (261112-fdw: a plain interpreter and a plain script path, the uv forms, listed git
+  subcommands, read and print commands, assignments). Every other shell call gets no opinion.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
@@ -711,17 +714,12 @@ _PYTHON_SUFFIX = re.compile(r"\.py$", re.IGNORECASE)
 # ($, $env:, %VAR%), a command substitution or PowerShell escape (`), a glob, a brace, a
 # backslash-newline continuation, a leading ~.
 _EXPANSION = re.compile(r"[$`%*?\[{]|\\\n|^~")
-# Ruling 2: a command that names a script (anywhere in its text) and holds one of these is
-# denied, since the hook cannot tell which file runs: a heredoc or here-string marker, a
-# directory change, inline code or eval, a backslash-newline continuation.
+# Ruling 2, as 261112-fdw leaves it (A4): a command that names a script (anywhere in its text)
+# and holds a heredoc or here-string marker or a backslash-newline continuation is denied, since
+# the hook cannot tell which file runs. Both are operators, so a raw match can only over-deny;
+# directory changes, inline code and eval are refused by the allowlist instead.
 _SCRIPT_MENTION = re.compile(r"\.(?:py|sh|bash|js|mjs|cjs|ps1)(?![A-Za-z0-9_])", re.IGNORECASE)
-_INDIRECTION = re.compile(
-    r"<<"
-    r"|(?<![\w-])(?:cd|pushd|set-location|push-location|eval|invoke-expression|iex)(?![\w-])"
-    r"|(?<![\w-])-(?:c|command|encodedcommand)(?![\w-])"
-    r"|\\\r?\n",
-    re.IGNORECASE,
-)
+_INDIRECTION = re.compile(r"<<|\\\r?\n")
 _SCRIPT_CAP = 1 << 20  # 1 MiB, more than three times the largest tracked tool (driver.py, ~300 KB)
 # UTF-32 first: its little-endian BOM (FF FE 00 00) starts with UTF-16's.
 _UTF32_BOMS = (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)
@@ -744,6 +742,40 @@ _WRITERS = frozenset({
     "out-file", "set-content", "add-content", "new-item", "copy-item", "move-item", "tee-object",
     "invoke-webrequest", "ni", "sc", "ac", "copy", "move", "cpi", "mi", "iwr",
 })  # fmt: skip
+# 261112-fdw: the shapes every simple command of a script-naming worktree call must have (A6).
+_RUNNERS = frozenset({"bash", "node", "python"})  # a plain interpreter, then a plain script path
+_UV_FLAGS = frozenset({"--frozen"})
+_UV_PROGRAMS = frozenset({"pytest", "reverseapoc", "ruff"})  # `uv run python` is a runner
+_GIT_FREE = frozenset({
+    "add", "cat-file", "check-ignore", "checkout", "commit", "diff", "log", "ls-files", "merge",
+    "merge-base", "mv", "restore", "rev-list", "rev-parse", "rm", "show", "show-ref", "status",
+})  # fmt: skip
+# Options that write a file or run a program (coordinator amendment 2), refused in every
+# abbreviation git accepts; `--no-ext-diff` and `--no-textconv` pass.
+_GIT_REFUSED = ("--output", "--ext-diff", "--textconv")
+_GIT_BRANCH_FLAGS = frozenset({"--show-current", "--list", "-l", "-a", "--all", "-r", "--remotes",
+                               "-v", "-vv", "--verbose"})  # fmt: skip
+_GIT_BRANCH_LIST = frozenset({"--list", "-l"})  # patterns may follow these, never a new name
+_GIT_LISTINGS = frozenset({"worktree", "stash"})  # only as `git <sub> list`
+# Commands that read, copy, compare or print and run nothing.
+_DATA_VERBS = frozenset({
+    "[", "cat", "cp", "diff", "echo", "grep", "head", "ls", "mkdir", "tail", "tee", "test", "true",
+    "wc", "get-content", "select-object", "select-string",
+})  # fmt: skip
+_FIND_REFUSED = frozenset({"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fls", "-fprint",
+                           "-fprint0", "-fprintf"})  # fmt: skip
+_SED_ADDRESS = r"(?:\d+|\$)(?:,(?:\d+|\$))?p"  # N, N,M or $ addresses, each printed
+_SED_PRINT = re.compile(rf"{_SED_ADDRESS}(?:;{_SED_ADDRESS})*")
+# Variables that steer which program a listed command runs, or the code or configuration it
+# loads (compared uppercased, as Windows does); setting one is refused (A6 b).
+_STEERING_NAMES = frozenset({
+    "PATH", "PATHEXT", "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "IFS", "CDPATH", "ENV", "SHELL",
+    "COMSPEC", "EDITOR", "VISUAL", "PAGER",
+})  # fmt: skip
+_STEERING_PREFIXES = ("BASH_", "DYLD_", "GIT_", "LD_", "NODE_", "PYTEST_", "PYTHON", "UV_")
+_BASH_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+_POWERSHELL_ASSIGNMENT = re.compile(r"\$env:REVERSEAPOC_[A-Za-z0-9_]+ *= *'[^']*'", re.IGNORECASE)
+_BASH_REDIRECTIONS = frozenset({"<", ">", ">>", ">&", "&>", "&>>", "<&", ">|", "<>"})
 
 
 def _worktree_pairs(cwd: str) -> list[tuple[str, str]]:
@@ -811,13 +843,20 @@ def _bash_tokens(command: str) -> list[tuple[str, bool]]:
 
 
 def _powershell_tokens(command: str) -> list[tuple[str, bool]]:
-    """(token, is an operator) for a PowerShell command, each word with its quotes removed; a
-    word that needed them for `$` or a backtick escape is caught by _EXPANSION."""
+    """(token, is an operator) for a PowerShell command, each word as written (_reading strips
+    its quotes)."""
     tokens = []
     for found in _POWERSHELL_TOKEN.finditer(command):
         op = found.group("op")
-        tokens.append((op, True) if op is not None else (_QUOTES.sub("", found.group()), False))
+        tokens.append((op, True) if op is not None else (found.group(), False))
     return tokens
+
+
+def _reading(tool: str, text: str) -> str:
+    """The form of a word the hook reads a script by: a Bash token as shlex gave it, a
+    PowerShell word with its quotes removed (a word that needed them for `$` or a backtick
+    escape is caught by _EXPANSION)."""
+    return _QUOTES.sub("", text) if tool == "PowerShell" else text
 
 
 def _redirection(op: str) -> bool:
@@ -828,11 +867,16 @@ def _command_name(word: str) -> str:
     return posixpath.basename(word.replace("\\", "/")).casefold().removesuffix(".exe")
 
 
-def _segment_words(segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, bool]]:
-    """(word, written) for the words of one simple command: written after an output redirection,
-    or every word when the command is one of _WRITERS."""
+def _plain(tool: str, text: str) -> str:
+    """The detection form of a word, what the shell runs it as (A2): for now its reading form."""
+    return _reading(tool, text)
+
+
+def _segment_words(tool: str, segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, bool]]:
+    """(raw word, written) for the words of one simple command: written after an output
+    redirection, or every word when the command is one of _WRITERS."""
     verb = next((text for text, op in segment if not op and "=" not in text), "")
-    writer = _command_name(verb) in _WRITERS
+    writer = _command_name(_plain(tool, verb)) in _WRITERS
     for index, (text, op) in enumerate(segment):
         if op:
             continue
@@ -840,19 +884,36 @@ def _segment_words(segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, b
         yield text, writer or (before_op and ">" in before)
 
 
-def _script_words(tool: str, command: str) -> list[tuple[str, bool]]:
-    """(script word, written) for every word of the command that names a script, split by
-    commands at each separator (a redirection stays in its command)."""
+def _segment_scripts(tool: str, segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, bool]]:
+    """(reading tail, written) for each word of one simple command whose detection form, after
+    its last `=`, ends with a script suffix. The reader gets the reading form, so a word that
+    needs a backtick to show its suffix reaches _EXPANSION."""
+    for text, written in _segment_words(tool, segment):
+        if _SCRIPT_SUFFIX.search(_plain(tool, text).rsplit("=", 1)[-1]):
+            yield _reading(tool, text).rsplit("=", 1)[-1], written
+
+
+def _simple_commands(tool: str, command: str) -> list[list[tuple[str, bool]]]:
+    """The command's simple commands, each a list of (raw token, is an operator), split at
+    every separator (a redirection stays in its command). A Bash command shlex cannot split
+    blocks (exit 2)."""
     tokens = _bash_tokens(command) if tool == "Bash" else _powershell_tokens(command)
-    words, segment = [], []
+    commands, segment = [], []
     for text, op in [*tokens, (";", True)]:
         if op and not _redirection(text):
-            words.extend(_segment_words(segment))
+            commands.append(segment)
             segment = []
             continue
         segment.append((text, op))
-    tails = ((text.rsplit("=", 1)[-1], written) for text, written in words)
-    return [(tail, written) for tail, written in tails if _SCRIPT_SUFFIX.search(tail)]
+    return commands
+
+
+def _script_words(tool: str, command: str) -> list[tuple[str, bool]]:
+    """(script word, written) for every word of the command that names a script."""
+    words = []
+    for segment in _simple_commands(tool, command):
+        words.extend(_segment_scripts(tool, segment))
+    return words
 
 
 def _script_bytes(path: str) -> bytes | None:
@@ -933,18 +994,215 @@ def _scripts_denial(
     return ""
 
 
+# --- 261112-fdw: the allowlist of simple-command shapes (A5-A7) ---
+
+
+def _plain_script(word: str) -> bool:
+    """A7: a word that ends with a script suffix, holds no `=` and is no option."""
+    return bool(_SCRIPT_SUFFIX.search(word)) and "=" not in word and not word.startswith("-")
+
+
+def _qualified(word: str) -> bool:
+    return "/" in word or "\\" in word
+
+
+def _verb(word: str) -> str:
+    """A bare program name, casefolded with `.exe` dropped; '' for a path (only a direct run may
+    be one, so `./git` is not git)."""
+    return "" if _qualified(word) else word.casefold().removesuffix(".exe")
+
+
+def _steering(name: str) -> bool:
+    upper = name.upper()
+    return upper in _STEERING_NAMES or upper.startswith(_STEERING_PREFIXES)
+
+
+def _first(words: Sequence[str], refused: Callable[[str], bool]) -> str:
+    return next((word for word in words if refused(word)), "")
+
+
+def _shape(tool: str, segment: Sequence[tuple[str, bool]]) -> tuple[list[str], str]:
+    """A5: the raw words of one simple command with each redirection and its target removed (a
+    PowerShell `N>&M` takes none), and the operator that leaves it unreadable, or '': a Bash
+    process substitution or other unknown redirection, or one with no target."""
+    words, target = [], False
+    for text, op in segment:
+        if not op:
+            if not target:
+                words.append(text)
+            target = False
+            continue
+        if target or (tool == "Bash" and text not in _BASH_REDIRECTIONS):
+            return words, text
+        target = tool == "Bash" or not text[-1].isdigit()
+    return (words, segment[-1][0]) if target else (words, "")
+
+
+def _assignments(words: Sequence[str]) -> tuple[int, str]:
+    """A6 b: how many leading Bash words are NAME=value assignments, and the first one that sets
+    a steering variable ('' when none does)."""
+    for index, word in enumerate(words):
+        found = _BASH_ASSIGNMENT.match(word)
+        if found is None:
+            return index, ""
+        if _steering(found.group(1)):
+            return index, word
+    return len(words), ""
+
+
+def _runner_offender(verb: str, rest: Sequence[str], cwd: str) -> str:
+    """A6 e: '' when `rest` starts with a plain script path, else the offending word. For bash a
+    bare name must be a file in the cwd, since bash searches PATH for one it cannot find."""
+    if not rest or not _plain_script(rest[0]):
+        return rest[0] if rest else verb
+    if verb == "bash" and not _qualified(rest[0]) and not Path(canonical(rest[0], cwd)).is_file():
+        return rest[0]
+    return ""
+
+
+def _uv_offender(rest: Sequence[str], cwd: str) -> str:
+    """A6 f: `uv run`, any `--frozen`, then python and a plain script path, or a listed program."""
+    if rest[:1] != ["run"]:
+        return rest[0] if rest else "uv"
+    index = 1
+    while index < len(rest) and rest[index] in _UV_FLAGS:
+        index += 1
+    words = rest[index:]
+    if not words:
+        return "run"
+    program = _verb(words[0])
+    if program == "python":
+        return _runner_offender(program, words[1:], cwd)
+    return "" if program in _UV_PROGRAMS else words[0]
+
+
+def _git_refused(word: str) -> bool:
+    """An option of _GIT_REFUSED, or an abbreviation of one (`--outp`, `--ext`)."""
+    option = word.split("=", 1)[0]
+    if len(option) <= len("--") or not option.startswith("--"):
+        return False
+    return any(name.startswith(option) or option.startswith(name) for name in _GIT_REFUSED)
+
+
+def _git_grep_refused(word: str) -> bool:
+    """`git grep -O` (also inside a bundle of short options) and `--op...` run a pager program."""
+    bundle = word.startswith("-") and not word.startswith("--") and "O" in word
+    return bundle or word.startswith("--op") or _git_refused(word)
+
+
+def _git_branch_offender(args: Sequence[str]) -> str:
+    """Only listing: the listed flags, and patterns after --list or -l (a bare name creates)."""
+    listing = False
+    for word in args:
+        if word in _GIT_BRANCH_FLAGS:
+            listing = listing or word in _GIT_BRANCH_LIST
+            continue
+        if not listing or word.startswith("-"):
+            return word
+    return ""
+
+
+def _git_offender(rest: Sequence[str]) -> str:
+    """A6 g: a listed subcommand right after `git` (a global option before it is refused)."""
+    if not rest:
+        return "git"
+    sub, args = rest[0], rest[1:]
+    if sub in _GIT_FREE:
+        return _first(args, _git_refused)
+    if sub == "grep":
+        return _first(args, _git_grep_refused)
+    if sub == "branch":
+        return _git_branch_offender(args)
+    if sub in _GIT_LISTINGS and args[:1] == ["list"]:
+        return _first(args[1:], _git_refused)
+    return sub
+
+
+def _find_offender(args: Sequence[str]) -> str:
+    return _first(args, _FIND_REFUSED.__contains__)
+
+
+def _sort_offender(args: Sequence[str]) -> str:
+    """Any long option: `--compress-program` runs a program, and GNU takes it abbreviated."""
+    return _first(args, lambda word: word.startswith("--"))
+
+
+def _sed_offender(args: Sequence[str]) -> str:
+    """Only `sed -n <line-number prints> <files>`, with no option after the script."""
+    if args[:1] != ["-n"]:
+        return args[0] if args else "sed"
+    if len(args) < 2 or not _SED_PRINT.fullmatch(args[1]):
+        return args[1] if len(args) > 1 else "-n"
+    return _first(args[2:], lambda word: word.startswith("-"))
+
+
+_DATA_CHECKS = {"find": _find_offender, "sed": _sed_offender, "sort": _sort_offender}
+
+
+def _shape_offender(words: Sequence[str], cwd: str) -> str:
+    """A6 d-h on a command's detection-form words, assignments removed: '' or the offender."""
+    head, rest = words[0], words[1:]
+    if _plain_script(head) and _qualified(head):
+        return ""  # d: a direct run by a path
+    verb = _verb(head)
+    if verb in _RUNNERS:
+        return _runner_offender(verb, rest, cwd)
+    if verb == "uv":
+        return _uv_offender(rest, cwd)
+    if verb == "git":
+        return _git_offender(rest)
+    if verb in _DATA_CHECKS:
+        return _DATA_CHECKS[verb](rest)
+    return "" if verb in _DATA_VERBS else head
+
+
+def _command_offender(tool: str, raw: Sequence[str], cwd: str) -> str:
+    """The word that puts one simple command (its raw words, redirections removed) outside the
+    allowlist (A6), or '' when it fits."""
+    if tool == "PowerShell" and _POWERSHELL_ASSIGNMENT.fullmatch(" ".join(raw)):
+        return ""  # c: $env:REVERSEAPOC_<NAME> = '<literal>'
+    words = [_plain(tool, word) for word in raw]
+    if tool == "Bash":
+        words = words[1:] if words[:1] == ["!"] else words
+        count, steering = _assignments(words)
+        if steering:
+            return steering
+        words = words[count:]
+    return _shape_offender(words, cwd) if words else ""
+
+
+def _unlisted(tool: str, name: str, word: str) -> str:
+    return (f"a {tool} command from the harness worktree {name} names a script and holds "
+            f"{word!r}, which is not a plain interpreter followed by a plain script path nor a "
+            "listed command (261112-fdw), so the hook cannot tell which file runs (261109-gzy); "
+            "run the script as `uv run python <path>`, `bash <path>`, `node <path>` or "
+            "`& <path>` from the worktree root, in a call of its own")  # fmt: skip
+
+
+def _allowlist_denial(tool: str, command: str, cwd: str, name: str) -> str:
+    """Why a simple command of a script-naming call has no listed shape (A5, A6), or ''."""
+    for segment in _simple_commands(tool, command):
+        raw, bad = _shape(tool, segment)
+        offender = bad or _command_offender(tool, raw, cwd)
+        if offender:
+            return _unlisted(tool, name, offender)
+    return ""
+
+
 def _indirect(tool: str, name: str, trigger: str) -> str:
     return (f"a {tool} command from the harness worktree {name} names a script and also holds "
-            f"{trigger!r} (a heredoc marker, a directory change, inline code or eval, or a "
-            "backslash-newline), so the hook cannot tell which file runs (261109-gzy); run the "
-            "script by a plain path from the worktree root, in a call of its own")  # fmt: skip
+            f"{trigger!r} (a heredoc or here-string marker, or a backslash-newline), so the hook "
+            "cannot tell which file runs (261109-gzy); run the script by a plain path from the "
+            "worktree root, in a call of its own")  # fmt: skip
 
 
 def _worktree_command(payload: Mapping) -> Decision:
     """A Bash or PowerShell call from a harness worktree (the payload cwd under
     .claude/worktrees/<name>/) is denied when its command, or a script file it names, spells
-    the main checkout's absolute path, or when such a script cannot be scanned (_scripts_denial);
-    every other shell call gets no opinion, decided before tool_input is read."""
+    the main checkout's absolute path, or when such a script cannot be scanned (_scripts_denial).
+    A call that names a script passes only when every command in it has a listed shape
+    (_allowlist_denial, 261112-fdw). Every other shell call gets no opinion, decided before
+    tool_input is read."""
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         raise HookError("the payload has no cwd string, so the hook cannot tell a worktree "
@@ -960,13 +1218,13 @@ def _worktree_command(payload: Mapping) -> Decision:
     main, name = pairs[0]
     if _spells_main(command, pairs):
         return _deny(f"a {tool} command from the harness worktree {name} {_spells(main)}")
-    trigger = _INDIRECTION.search(command)
-    if trigger is not None and _SCRIPT_MENTION.search(command):
-        return _deny(_indirect(tool, name, trigger.group()))
     words = _script_words(tool, command)
-    if trigger is not None and words:
+    if not words and not _SCRIPT_MENTION.search(command):
+        return NO_OPINION
+    trigger = _INDIRECTION.search(command)
+    if trigger is not None:
         return _deny(_indirect(tool, name, trigger.group()))
-    reason = _scripts_denial(words, cwd, tool, pairs)
+    reason = _scripts_denial(words, cwd, tool, pairs) or _allowlist_denial(tool, command, cwd, name)
     return _deny(reason) if reason else NO_OPINION
 
 
