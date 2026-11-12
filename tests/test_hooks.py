@@ -1765,7 +1765,7 @@ def test_worktree_command_reads_powershell_quotes_as_powershell_does(repo, workt
         assert not always(shell(name, "git commit -m 'fix `hooks.py`'", worktree)).deny, name
     assert not always(shell("PowerShell", "g`it add x.py", worktree)).deny
     (worktree / "x.ps1").write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
-    decision = always(shell("PowerShell", "& ./x.p‘’s1", worktree))
+    decision = always(shell("PowerShell", "& ./x.p\u2018\u2019s1", worktree))
     assert decision.deny and SPELLS_MAIN in decision.reason
 
 

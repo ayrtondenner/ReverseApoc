@@ -736,6 +736,17 @@ _POWERSHELL_TOKEN = re.compile(
     r"""|(?P<word>(?:'[^']*'|"(?:`.|[^"`])*"|`.|[^\s'";|&<>(){}`])+)"""
 )
 _QUOTES = re.compile(r"['\"]")
+# 261112-fdw A2: PowerShell takes U+2018-U+201B for ' and U+201C-U+201E for ".
+_POWERSHELL_QUOTES = str.maketrans({**dict.fromkeys("\u2018\u2019\u201a\u201b", "'"),
+                                    **dict.fromkeys("\u201c\u201d\u201e", '"')})  # fmt: skip
+# A PowerShell word in runs: a single-quoted run is literal; a double-quoted run and bare text
+# decode backtick escapes (`u{HEX} up to U+10FFFF, else only the backtick is dropped; `X is X).
+_POWERSHELL_RUN = re.compile(
+    r"""'(?P<single>[^']*)'|"(?P<double>(?:`.|[^"`])*)"|(?P<bare>(?:`.|[^'"`])+|.)""", re.DOTALL
+)
+_BACKTICK_ESCAPE = re.compile(r"`(?:u\{([0-9A-Fa-f]{1,6})\}|(.))", re.DOTALL)
+_MAX_CODE_POINT = 0x10FFFF
+_HERE_STRING = re.compile(r"@(['\"])[ \t]*\r?\n")  # a PowerShell here-string opens
 # Commands that write the files they name; every word of such a command counts as written.
 _WRITERS = frozenset({
     "tee", "cp", "mv", "install", "ln", "touch", "dd", "curl", "wget",
@@ -827,10 +838,14 @@ def _spells(main: str) -> str:
     return f"spells the main checkout's absolute path {main} (261109-gzy); {_RELATIVE_HINT}"
 
 
+def _heredocs_dropped(command: str) -> str:
+    return _HEREDOC.sub(r"<<\1\2\1\3", command)
+
+
 def _bash_tokens(command: str) -> list[tuple[str, bool]]:
     """(token, is an operator) as Bash splits the command: quotes removed, escapes resolved,
     here-document bodies dropped. A command it cannot split blocks (exit 2)."""
-    lexer = shlex.shlex(_HEREDOC.sub(r"<<\1\2\1\3", command), posix=True,
+    lexer = shlex.shlex(_heredocs_dropped(command), posix=True,
                         punctuation_chars=_BASH_OPERATORS)  # fmt: skip
     lexer.whitespace = " \t\r"  # a newline separates commands, like `;`
     lexer.whitespace_split = True
@@ -867,9 +882,29 @@ def _command_name(word: str) -> str:
     return posixpath.basename(word.replace("\\", "/")).casefold().removesuffix(".exe")
 
 
+def _escaped(found: re.Match[str]) -> str:
+    code = found.group(1)
+    if code is None:
+        return found.group(2)
+    value = int(code, 16)
+    return chr(value) if value <= _MAX_CODE_POINT else found.group()[1:]
+
+
+def _powershell_run(found: re.Match[str]) -> str:
+    single = found.group("single")
+    if single is not None:
+        return single
+    double = found.group("double")
+    return _BACKTICK_ESCAPE.sub(_escaped, double if double is not None else found.group("bare"))
+
+
 def _plain(tool: str, text: str) -> str:
-    """The detection form of a word, what the shell runs it as (A2): for now its reading form."""
-    return _reading(tool, text)
+    """The detection form of a word, what the shell runs it as (A2): a Bash token as it is, a
+    PowerShell word with its quotes removed and its backtick escapes decoded outside
+    single-quoted runs. Decoding a special letter (`n) to the letter can only over-detect."""
+    if tool != "PowerShell":
+        return text
+    return "".join(_powershell_run(found) for found in _POWERSHELL_RUN.finditer(text))
 
 
 def _segment_words(tool: str, segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, bool]]:
@@ -906,6 +941,114 @@ def _simple_commands(tool: str, command: str) -> list[list[tuple[str, bool]]]:
             continue
         segment.append((text, op))
     return commands
+
+
+def _unterminated(tool: str) -> HookError:
+    return HookError(f"the {tool} command holds an unterminated command substitution, so the "
+                     "hook cannot judge it (261112-fdw)")  # fmt: skip
+
+
+def _quote_end(text: str, index: int) -> int:
+    """The index of the `'` closing the single-quoted run opened at `index` (the last index when
+    none does: the shell refuses that command, and an open substitution still raises)."""
+    end = text.find("'", index + 1)
+    return len(text) - 1 if end < 0 else end
+
+
+def _backtick_end(tool: str, text: str, index: int) -> int:
+    """The index of the next unescaped backtick: the end of a Bash backtick substitution."""
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == "`":
+            return index
+        index += 1
+    raise _unterminated(tool)
+
+
+def _bash_walk(tool: str, text: str, index: int, *, closing: bool) -> tuple[list[str], int]:
+    """Walk Bash text from `index`: the contents of the substitutions found at this level, and,
+    when `closing`, the index of the `)` that closes the substitution the walk started in.
+    Outside single quotes a backslash escapes the next character, and `$(` and a backtick open a
+    substitution; parentheses count outside quotes."""
+    found, depth, quoted = [], 1, False
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        opener = 2 if text.startswith("$(", index) else int(char == "`")
+        if opener:
+            end = (_bash_walk(tool, text, index + 2, closing=True)[1] if opener == 2
+                   else _backtick_end(tool, text, index + 1))  # fmt: skip
+            found.append(text[index + opener : end])
+            index = end + 1
+            continue
+        if char == "'" and not quoted:
+            index = _quote_end(text, index) + 1
+            continue
+        if char == '"':
+            quoted = not quoted
+        elif closing and not quoted and char in "()":
+            depth += 1 if char == "(" else -1
+            if depth == 0:
+                return found, index
+        index += 1
+    if closing:
+        raise _unterminated(tool)
+    return found, index
+
+
+def _powershell_walk(tool: str, text: str, index: int, *, closing: bool) -> tuple[list[str], int]:
+    """_bash_walk for PowerShell: `$(` opens a subexpression in bare text, in double-quoted runs
+    and in double-quoted here-strings; a backtick escapes the next character; single-quoted runs
+    and here-strings are literal; parentheses count in bare text."""
+    found, depth, mode = [], 1, ""  # mode: "" bare, '"' a double-quoted run, "@" a here-string
+    while index < len(text):
+        char = text[index]
+        here = _HERE_STRING.match(text, index) if mode == "" else None
+        if char == "`":
+            index += 2
+        elif text.startswith("$(", index):
+            end = _powershell_walk(tool, text, index + 2, closing=True)[1]
+            found.append(text[index + 2 : end])
+            index = end + 1
+        elif here is not None and here.group(1) == "'":
+            end = text.find("\n'@", here.end() - 1)
+            index = len(text) if end < 0 else end + 3
+        elif here is not None:
+            mode, index = "@", here.end() - 1  # at its newline, so an empty one closes too
+        elif mode == "@" and text.startswith('\n"@', index):
+            mode, index = "", index + 3
+        elif mode == "" and char == "'":
+            index = _quote_end(text, index) + 1
+        elif char == '"' and mode != "@":
+            mode, index = ("" if mode else '"'), index + 1
+        elif closing and mode == "" and char in "()":
+            depth += 1 if char == "(" else -1
+            if depth == 0:
+                return found, index
+            index += 1
+        else:
+            index += 1
+    if closing:
+        raise _unterminated(tool)
+    return found, index
+
+
+def _substitutions(tool: str, command: str) -> list[str]:
+    """A10: the contents of every command substitution the command holds, nested ones included
+    (each content is scanned again). An unterminated one blocks (exit 2)."""
+    walk = _bash_walk if tool == "Bash" else _powershell_walk
+    pending = walk(tool, _heredocs_dropped(command) if tool == "Bash" else command, 0,
+                   closing=False)[0]  # fmt: skip
+    found = []
+    while pending:
+        content = pending.pop()
+        found.append(content)
+        pending.extend(walk(tool, content, 0, closing=False)[0])
+    return found
 
 
 def _script_words(tool: str, command: str) -> list[tuple[str, bool]]:
@@ -1004,6 +1147,11 @@ def _plain_script(word: str) -> bool:
 
 def _qualified(word: str) -> bool:
     return "/" in word or "\\" in word
+
+
+def _direct_run(word: str) -> bool:
+    """A6 d: a verb that is a plain script path (a bare name is looked up in PATH, not here)."""
+    return _plain_script(word) and _qualified(word)
 
 
 def _verb(word: str) -> str:
@@ -1142,8 +1290,8 @@ _DATA_CHECKS = {"find": _find_offender, "sed": _sed_offender, "sort": _sort_offe
 def _shape_offender(words: Sequence[str], cwd: str) -> str:
     """A6 d-h on a command's detection-form words, assignments removed: '' or the offender."""
     head, rest = words[0], words[1:]
-    if _plain_script(head) and _qualified(head):
-        return ""  # d: a direct run by a path
+    if _direct_run(head):
+        return ""
     verb = _verb(head)
     if verb in _RUNNERS:
         return _runner_offender(verb, rest, cwd)
@@ -1179,13 +1327,30 @@ def _unlisted(tool: str, name: str, word: str) -> str:
             "`& <path>` from the worktree root, in a call of its own")  # fmt: skip
 
 
-def _allowlist_denial(tool: str, command: str, cwd: str, name: str) -> str:
-    """Why a simple command of a script-naming call has no listed shape (A5, A6), or ''."""
+def _runspace(name: str, word: str) -> str:
+    return (f"a PowerShell command from the harness worktree {name} runs the script {word!r} in "
+            "this shell, where it can move the location every later command runs in, so the "
+            "hook cannot tell which file runs (261109-gzy, 261112-fdw); run each script in a "
+            "call of its own")  # fmt: skip
+
+
+def _allowlist_denial(tool: str, command: str, cwd: str, name: str, *, nested: bool = False) -> str:
+    """Why a simple command of a script-naming call (or of a substitution in it, `nested`) has no
+    listed shape (A5, A6), or why it names a script after a PowerShell direct script run, or
+    runs one inside a subexpression (A8: the script runs in the caller's runspace); else ''."""
+    direct = ""
     for segment in _simple_commands(tool, command):
+        if direct and any(_segment_scripts(tool, segment)):
+            return _runspace(name, direct)
         raw, bad = _shape(tool, segment)
         offender = bad or _command_offender(tool, raw, cwd)
         if offender:
             return _unlisted(tool, name, offender)
+        if tool != "PowerShell" or not raw or not _direct_run(_plain(tool, raw[0])):
+            continue
+        if nested:
+            return _runspace(name, raw[0])
+        direct = direct or raw[0]
     return ""
 
 
@@ -1218,13 +1383,19 @@ def _worktree_command(payload: Mapping) -> Decision:
     main, name = pairs[0]
     if _spells_main(command, pairs):
         return _deny(f"a {tool} command from the harness worktree {name} {_spells(main)}")
-    words = _script_words(tool, command)
+    text = command.translate(_POWERSHELL_QUOTES) if tool == "PowerShell" else command
+    words = _script_words(tool, text)
+    contents = _substitutions(tool, text)
+    for content in contents:
+        words.extend(_script_words(tool, content))
     if not words and not _SCRIPT_MENTION.search(command):
         return NO_OPINION
     trigger = _INDIRECTION.search(command)
     if trigger is not None:
         return _deny(_indirect(tool, name, trigger.group()))
-    reason = _scripts_denial(words, cwd, tool, pairs) or _allowlist_denial(tool, command, cwd, name)
+    reason = _scripts_denial(words, cwd, tool, pairs) or _allowlist_denial(tool, text, cwd, name)
+    judged = (_allowlist_denial(tool, content, cwd, name, nested=True) for content in contents)
+    reason = reason or next((found for found in judged if found), "")
     return _deny(reason) if reason else NO_OPINION
 
 
