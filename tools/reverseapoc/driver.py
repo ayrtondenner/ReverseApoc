@@ -3050,14 +3050,15 @@ class _Coordinator:
     def _tier_pick(self, lane: _Lane) -> Pick | None:
         """07-26: the lane's tier queue's best eligible pick outside the busy units, now in
         flight. Quick 261112-fds: on a cascade night a pick whose next attempt's arm cannot
-        launch now is skipped for this round (its unit with it) and sets `waiting`."""
-        skipped: set[tuple[str, str]] = set()
+        launch now is skipped for this round and sets `waiting`; quick 261112-fdr (WR-01): by
+        its function only, so the other functions of its unit stay eligible."""
+        skipped: set[Key] = set()
         while True:
-            pick = lane.tiers.next_eligible(frozenset(self.busy) | skipped)
+            pick = lane.tiers.next_eligible(frozenset(self.busy), skip=skipped)
             if pick is None:
                 return None
             if self.night.config.routing and self.night._arm_state(pick) == ARM_WAITING:
-                skipped.add((pick.exe, pick.unit))
+                skipped.add((pick.exe, pick.start))
                 self.waiting = True
                 continue
             lane.tiers.take((pick.exe, pick.start))
