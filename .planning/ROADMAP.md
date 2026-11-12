@@ -533,7 +533,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 **Target phase:** 7 (success criterion 4, DEC-04)
 **Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
 **Follow-ups:**
-- [ ] Test 1: readlint must also reject our own placeholders `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit, not only Ghidra's `FUN_`/`sub_`/`DAT_`; Phase 7 success criterion 4 as worded would let src/ufo2p/u_000a34f0.c and src/tacp/u_00054f20.c through unnamed (deferred 2026-10-24)
+- [x] Test 1 (closed by plan 07-27, 5f627932, 0687da7a; RL01 rejects `func_`/`D_` + 8 upper-case hex, tools/reverseapoc/readlint.py): readlint must also reject our own placeholders `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit, not only Ghidra's `FUN_`/`sub_`/`DAT_`; Phase 7 success criterion 4 as worded would let src/ufo2p/u_000a34f0.c and src/tacp/u_00054f20.c through unnamed (deferred 2026-10-24)
 
 ### Phase 999.3: Follow-up — Phase 05 deferred UAT follow-up: Test 5 (BACKLOG)
 
@@ -550,7 +550,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 **Source phase:** 06
 **Deferred at:** 2026-10-26 during /gsd-verify-work 06 session completion
 **Follow-ups:**
-- [ ] Test 3: on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
+- [x] Test 3 (closed by plan 07-06, 229d8a93, f172243d, 8fc106b7, aca3665c): on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
 
 ### Phase 999.12: Size-routed model cascade for nights (BACKLOG)
 

@@ -36,8 +36,9 @@ Last activity: 2026-11-10 - Completed quick task 261110-f30: spike 012 compariso
 Progress: [████████░░] 78%
 
 Next steps:
-1. Phases 1-6 complete (Phase 6: VERIFICATION.md passed, UAT passed 3/3 by the owner on 2026-10-26; pilot 3/10 accepted as partial, AGT-11 carries to Phase 7).
-2. Phase 7: `/gsd-discuss-phase 7`, then `/gsd-plan-phase 7`. Carry in: the 10-match pilot target (AGT-11), backlog 999.2 (readlint rejects `func_`/`D_` placeholders) and 999.4 (phone mosaic legibility and the 06-UI-REVIEW.md fixes).
+1. Phase 07.2: all 16 plans complete, VERIFICATION 19/19 `human_needed`; owner UAT 6 tests pending (`/gsd-verify-work 07.2`).
+2. Quick batch (2026-11-12): backlog 999.12 (size-routed cascade) and the five pending todos, then a Haiku + GPT-6.1 Terra + Gemini Flash cascade drive.
+3. Backlog 999.1-999.4 closed (999.2 by plan 07-27, 999.4 by plan 07-06). Then Phase 8.
 
 ## Performance Metrics
 
