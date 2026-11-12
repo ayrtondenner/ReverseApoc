@@ -11,11 +11,11 @@ You make one claimed function byte-identical to the original, proven by `attempt
 
 | Question | Answer |
 |---|---|
-| Your file | the private view unit at `$REVERSEAPOC_UNIT_FILE`. The /goal names its path, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`. It is the only C you edit. |
+| Your file | the private view unit at `$REVERSEAPOC_UNIT_FILE`. The goal you were given names its path, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`. It is the only C you edit. |
 | What you may write | that view unit, and in this attempt's directory notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr) and, beside it, `plan.json`, `check-note.json` and `giveup.json` (under "The attempt wrapper" and "When to give up"). No header anywhere. The hooks also allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`), but a matching session writes none: nothing applies a matching session's proposals (the driver's rename step runs after readability sessions only). A name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl. Nothing else. |
 | Types you need | declared in the view unit, at file scope (see "Replacing INCLUDE_ASM"). |
 | Names | placeholders stay: `func_XXXXXXXX`, `D_XXXXXXXX` and your own function's name. A name idea goes in notes.md. |
-| The only Bash | the seven wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Look around with Read, Grep and Glob. |
+| The only commands | the seven wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Read and search files with your harness's own file tools wherever it lets them read, never with a command; anywhere else, or with no file tools, read through the wrapper: `attempt context`, `attempt asm`, `attempt asm <NAME>` and `attempt check` print what you need. |
 | Check exit codes | under "The attempt wrapper" below. |
 | Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. |
 | Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/25, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
@@ -29,9 +29,9 @@ Never:
 - write a header, in `include/` or in the view's `view/include/`;
 - edit `config/cflags.txt` or anything else in `config/`, the view's copies under `view/config/` included, or `include/common.h`, `include/watcom_compat.h`, tools, tests or build files;
 - rename a `func_`/`D_` placeholder or your own function, in the unit or anywhere else;
-- run a check with `run_in_background`, or start a second check while one runs: checks run one at a time, in the foreground.
+- send a check to the background yourself (`run_in_background` or any other way), or start a second check while one runs: checks run one at a time, in the foreground, each waited on until it exits.
 
-A write or Bash call the hooks deny costs a turn and counts as a hook block: never try one "just to see". A changed path that got past the hooks is worse: the driver's audit after the session finds it, the night stops on a guardrail and nothing is committed.
+A write or command the hooks deny costs a turn and counts as a hook block: never try one "just to see". A changed path or a command that got past the hooks is worse: the driver's audit after the session finds it, the night stops on a guardrail and nothing is committed.
 
 ## Calling convention and linker names
 
@@ -123,7 +123,7 @@ struct unk_002C {
 | `uv run --frozen reverseapoc attempt check --sweep` | the flag matrix for the claimed function (stage 1, and stage 2 after a near miss); a diagnostic, never a match |
 | `uv run --frozen reverseapoc attempt asm` | prints the claimed function's original listing, with the converter's notes (no check run) |
 | `uv run --frozen reverseapoc attempt asm <NAME>` | the listing of another function of the same EXE, e.g. a callee, with its notes |
-| `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes); it is printed, so no Read of context.md is needed |
+| `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes); it is printed, so you need not open context.md |
 | `uv run --frozen reverseapoc attempt plan` | checks your `plan.json` against the function's size and prints its regions (no check used) |
 | `uv run --frozen reverseapoc attempt giveup` | checks your `giveup.json` (no check used); see "When to give up" |
 
@@ -142,7 +142,7 @@ The pack's "Earlier give-ups" and "Earlier best C" sections say where earlier at
 
 At 256 B and up each check's summary shows the region board after the claimed function's window, one line per 0x100 bytes from the function's start: `exact in NNNN` names the plain check of this attempt whose bytes match there, `closest NNNN (k differ)` the nearest one. A region exact in an earlier check is solved: carry that check's C (`checks/NNNN.c`) for it, and work on the regions that still differ.
 
-- Run every `attempt check`, plain or `--sweep`, with the Bash tool's `timeout` set to 600000. The wrapper stops a run at 580 s and logs it as exit `2`.
+- Run every `attempt check`, plain or `--sweep`, in the foreground and wait until it exits. If your command tool takes a timeout, set it to 600000 (milliseconds, its longest); if it hands the command back still running, poll it until it exits and never end your turn while it runs. The wrapper stops a run at 580 s and logs it as exit `2`.
 - "another check is running in this attempt" means a check is still running, or one was killed. Do not retry. Work from the last result, then stop.
 - The arguments are fixed: the wrapper takes the unit, function and flags from the driver, and refuses anything else with exit `2`.
 
