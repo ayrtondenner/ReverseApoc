@@ -1756,6 +1756,27 @@ def test_worktree_command_finds_backtick_hidden_scripts(worktree, command):
     decision = always(shell("PowerShell", command, worktree))
     assert decision.deny and "needs shell expansion" in decision.reason, command
 
+QUOTING_DENIED = [
+    ("Bash", "bash x.sh $'a'"),          # names a script and contains $'...'
+    ("Bash", "bash x.sh # a note"),      # names a script and has a word starting with #
+]
+QUOTING_ALLOWED = [
+    ("Bash", 'git commit -m "fix #12 in hooks.py"'),   # '#' inside quotes is not a comment
+    ("Bash", "echo $'a'"),                             # names no script: unchanged
+]
+
+
+def test_worktree_command_refuses_ansi_c_quotes_and_comments(worktree):
+    """261112-fdw review finding 1: a script-naming call with $'...' or a word-initial #
+    is denied (fail closed); quoted '#' and calls that name no script are unchanged."""
+    clean_scripts(worktree)
+    for name, command in QUOTING_DENIED:
+        decision = always(shell(name, command, worktree))
+        assert decision.deny and CANNOT_TELL in decision.reason, command
+    for name, command in QUOTING_ALLOWED:
+        assert not always(shell(name, command, worktree)).deny, command
+
+
 
 def test_worktree_command_reads_powershell_quotes_as_powershell_does(repo, worktree):
     """261112-fdw A2: a single-quoted backtick stays literal, an escaped verb is the verb
@@ -1770,7 +1791,8 @@ def test_worktree_command_reads_powershell_quotes_as_powershell_does(repo, workt
 
 
 RUNSPACE_DENIED = ["& ./a.ps1; & ./x.ps1", "& ./a.ps1; uv run pytest -q tests/test_hooks.py",
-                   "& ./a.ps1 | & ./x.ps1", "./a.ps1; git add x.py"]  # fmt: skip
+                   "& ./a.ps1 | & ./x.ps1", "./a.ps1; git add x.py",
+                   '& ./a.ps1; git commit -m "$(git status)"']  # fmt: skip
 RUNSPACE_ALLOWED = [("PowerShell", "& ./a.ps1; git status"),
                     ("PowerShell", "uv run python a.py; uv run python x.py"),
                     ("Bash", "bash a.sh; bash x.sh"), ("Bash", "./a.sh; ./x.sh")]  # fmt: skip
