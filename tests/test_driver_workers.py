@@ -2631,3 +2631,37 @@ def test_a_cascade_night_ends_once_every_arm_is_capped(tmp_path):
         "ENDED", driver.ARMS_CAPPED)  # fmt: skip
     assert night.commits()[-1] == driver.LOG_SUBJECT
     _validated(night)
+
+
+OWNER_CAPS = {HAIKU: 2, SONNET: 3, GEMINI: 1}  # the owner's run, scaled down: 30, 20, 1
+GUARD_LAUNCHES = 3 * sum(OWNER_CAPS.values())  # a night that polls forever passes this
+
+
+def test_the_owners_three_arm_night_ends_once_its_paused_arm_is_capped(tmp_path):
+    """IN-04: the owner's rows with SONNET in Terra's place (small: HAIKU, SONNET; medium:
+    HAIKU, SONNET, GEMINI; large: SONNET), over medium picks only. GEMINI's launch and every
+    SONNET launch end LIMIT (a used-up week). HAIKU and GEMINI reach their caps, then only the
+    paused SONNET can run: the night waits and probes it as a paused night does (no worker
+    sleeps), each probe spends a slot of SONNET's cap (WR-02), and once SONNET is capped too
+    the night ENDS ARMS_CAPPED (WR-03) instead of polling forever. Every arm launched exactly
+    its cap. A night past GUARD_LAUNCHES launches stops itself, so a regression fails, never
+    hangs."""
+    picks = tuple(_sized(i, 100) for i in range(4))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=[AGY_LIMIT] * GUARD_LAUNCHES,
+                        by_model={SONNET: [RATE_LIMIT] * GUARD_LAUNCHES})  # fmt: skip
+
+    def before(unit, index):
+        assert index < GUARD_LAUNCHES, "the night kept launching past every arm's cap"
+
+    night.before = before
+    sleeps: list[float] = []
+    report = night.run(config={"attempts_per_function": 3,
+                               "routing": _rows((HAIKU, SONNET), (HAIKU, SONNET, GEMINI),
+                                                (SONNET,)),
+                               "arm_caps": tuple(OWNER_CAPS.items())},
+                       clock=_ticking(night), sleep=sleeps.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.ARMS_CAPPED), report.detail
+    assert {arm: _runs_launched(night, _arm_run(arm)) for arm in OWNER_CAPS} == OWNER_CAPS
+    assert sleeps == []
+    assert len(night.kinds("limit")) >= 2
+    _validated(night)
