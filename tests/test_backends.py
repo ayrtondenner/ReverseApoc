@@ -700,3 +700,52 @@ def test_routing_rows_use_the_stats_buckets():
     for row in rows:
         if len(row.buckets) == 1:
             assert row.label == stats._bucket_label(row.buckets[0])
+
+
+_TWO_CLAUDE_ARMS = """\
+[arms."claude-haiku-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-haiku-5-5"
+sends_disassembly = true
+max_workers = 10
+
+[arms."claude-sonnet-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-sonnet-5-5"
+sends_disassembly = true
+max_workers = 10
+"""
+_SMALL = '"[0, 64)" = ["claude-haiku-5-5"]\n'
+_MEDIUM = '"[64, 256)" = ["claude-sonnet-5-5"]\n'
+_LARGE = '"[256, inf)" = ["claude-sonnet-5-5"]\n'
+
+
+@pytest.mark.parametrize(("before", "routing", "named"), [
+    ("", '[routing]\n"[0, 64)" = ["claude-haiku-9-9"]\n' + _MEDIUM + _LARGE, "claude-haiku-9-9"),
+    ("", '[routing]\n"[0, 64)" = []\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", '[routing]\n"[0, 100)" = ["claude-haiku-5-5"]\n' + _MEDIUM + _LARGE, "[0, 100)"),
+    ("", '[routing]\n"under 64" = ["claude-haiku-5-5"]\n' + _MEDIUM + _LARGE, "under 64"),
+    ("", "[routing]\n" + _SMALL + '"[0, 256)" = ["claude-sonnet-5-5"]\n' + _LARGE, "[0, 256)"),
+    ("", "[routing]\n" + _SMALL + _MEDIUM, "[256, 1024)"),
+    ("", '[routing]\n"[0, 64)" = "claude-haiku-5-5"\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", '[routing]\n"[0, 64)" = [5]\n' + _MEDIUM + _LARGE, "[0, 64)"),
+    ("", "", "[routing]"),
+    ("routing = 5\n", "", "[routing]"),
+], ids=["unknown-arm", "empty-row", "unknown-bucket", "not-a-label", "bucket-twice",
+        "bucket-in-no-row", "a-string", "a-number", "no-table", "not-a-table"])  # fmt: skip
+def test_a_bad_routing_table_is_refused(tmp_path, before, routing, named):
+    """T-261112-fds-05: load_routing fails loudly, naming the file, the routing table and the
+    offending key or arm."""
+    path = _table(tmp_path, before + _TWO_CLAUDE_ARMS + "\n" + routing)
+    with pytest.raises(ArmError) as exc:
+        backends.load_routing(path)
+    text = str(exc.value)
+    assert str(path) in text and "routing" in text and named in text, text
+
+
+def test_load_arms_refuses_any_other_top_level_table(tmp_path):
+    path = _table(tmp_path, _TWO_CLAUDE_ARMS + "\n[other]\nx = 1\n")
+    with pytest.raises(ArmError, match="routing"):
+        load_arms(path)

@@ -1465,3 +1465,80 @@ def test_night_model_becomes_one_arm(monkeypatch):
 
 def test_arm_flag_in_help(capsys):
     assert "--arm NAME=WORKERS" in _drive_help(capsys)
+
+
+# ---- quick 261112-fds (backlog 999.12a): drive --cascade, --arm-cap NAME=N ----
+
+TERRA = "gpt-6.1-terra"
+GEMINI = "gemini-flash"
+_EGRESS = ["--allow-egress", TERRA, "--allow-egress", GEMINI]
+
+
+def test_cascade_flag(monkeypatch):
+    """`--cascade` loads the committed [routing] rows into DriveOptions.routing; a drive without
+    it has no rows and no arm caps."""
+    from reverseapoc import backends
+
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--cascade", *_EGRESS]) == 0
+    assert seen[-1].routing == backends.load_routing()
+    assert seen[-1].allow_egress == (TERRA, GEMINI)
+    assert main(["drive"]) == 0
+    assert (seen[-1].routing, seen[-1].arm_caps) == ((), ())
+
+
+def test_arm_cap_flag(monkeypatch):
+    """The owner's run: `--arm-cap NAME=N`, repeatable, reaches DriveOptions.arm_caps in order."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--cascade", "--arm-cap", f"{HAIKU}=30", "--arm-cap", f"{TERRA}=20",
+                 "--arm-cap", f"{GEMINI}=1", *_EGRESS]) == 0  # fmt: skip
+    assert seen[-1].arm_caps == ((HAIKU, 30), (TERRA, 20), (GEMINI, 1))
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--arm-cap", f"{HAIKU}=3"], "--arm-cap"),
+    (["--cascade", "--arm-cap", f"{HAIKU}=3", "--arm-cap", f"{HAIKU}=4", *_EGRESS],
+     f"--arm-cap {HAIKU}"),
+    (["--cascade", "--arm-cap", f"{DEEPSEEK}=3", *_EGRESS], f"--arm-cap {DEEPSEEK}"),
+], ids=["no-cascade", "twice", "not-a-cascade-arm"])  # fmt: skip
+def test_arm_cap_flag_refusals(argv, conflict, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+@pytest.mark.parametrize("value", ["x", HAIKU, f"{HAIKU}=0", f"{HAIKU}=two", "gpt-x=1"])
+def test_arm_cap_flag_refuses_a_bad_spec(value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--arm-cap", value])
+    assert exc.value.code == 2
+    assert "--arm-cap" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--hold"], "--hold"),
+    (["--arm", f"{HAIKU}=1"], "--arm"),
+    (["--night-model", HAIKU], "--night-model"),
+    (["--fable-trial"], "--fable-trial"),
+    (["--canary"], "--canary"),
+    (["--land-held", "spike012-*"], "--land-held"),
+    (["--session", "readability"], "--session readability"),
+    (["--allow-egress", DEEPSEEK], DEEPSEEK),
+])  # fmt: skip
+def test_cascade_refusals(argv, conflict, capsys, monkeypatch):
+    """Each flag --cascade cannot run with exits 2 naming it, before any preflight; the --hold
+    refusal says held comparisons keep using --arm."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--cascade", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    if argv == ["--hold"]:
+        assert "--arm" in err
+    assert seen == []
+
+
+def test_cascade_in_help(capsys):
+    text = _drive_help(capsys)
+    assert "--cascade" in text and "--arm-cap NAME=N" in text

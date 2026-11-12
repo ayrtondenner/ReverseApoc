@@ -2438,3 +2438,71 @@ def test_a_cascade_arm_cap_above_max_sessions_is_refused(tmp_path, capsys, caps,
     detail = _refusal(out)["detail"]
     assert all(word in detail for word in words), detail
     _no_session_ran(rig)
+
+
+# ---- 261112-fds Task 3: the other modes refused, and the cascade's dry run ----
+
+
+@pytest.mark.parametrize(("clash", "word"), [
+    ({"arms": ((HAIKU, 1), (SONNET, 1))}, "arms"),
+    ({"night_model": HAIKU}, "night_model"),
+    ({"hold": True}, "hold"),
+    ({"session": driver.READABILITY}, "readability"),
+    ({"fable_trial": True}, "fable_trial"),
+], ids=["arms", "night-model", "hold", "readability", "fable-trial"])  # fmt: skip
+def test_a_cascade_config_refuses_the_other_modes(tmp_path, clash, word):
+    """A DriveConfig with routing and any other mode is refused before any lane is built."""
+    from test_driver_workers import _every
+
+    config = driver.DriveConfig(run_id=RUN, repo_root=tmp_path, tested_major=2,
+                                min_cli_version=(2, 1, 240), routing=_every(HAIKU), **clash)
+    with pytest.raises(driver.DriverError, match="cascade") as exc:
+        driver._lanes(config)
+    assert word in str(exc.value)
+
+
+def _expected_cascade(rig: Rig, rows, exe: str, start: int, size: int) -> tuple[str, int, list]:
+    from reverseapoc import session
+
+    passes = driver.pass_index(rig.repo / driver.ATTEMPT_LOG)
+    row = driver.backends.route_for(rows, size)
+    p = passes.get((exe, start), 0) + 1
+    arms = [session.model_for_pass(p, row=row.arms, attempt=n, attempts=3) for n in (1, 2, 3)]
+    return row.label, p, arms
+
+
+def test_cascade_dry_run_prints_each_picks_bucket_and_attempts(tmp_path, capsys):
+    """`--dry-run --cascade`: each pick's line ends with its bucket and the arm of each of its
+    three attempts; each pick document gains `cascade` {bucket, pass, attempts}."""
+    rows = driver.backends.load_routing()
+    egress = (TERRA, GEMINI)
+    rig = Rig(tmp_path / "text")
+    code, out, _ = rig.drive(capsys, dry_run=True, routing=rows, allow_egress=egress)
+    assert code == 0
+    lines = [line for line in out.splitlines() if line.startswith(("ufo2p", "tacp"))]
+    assert lines
+    for line in lines:
+        words = line.split()
+        size = int(words[words.index("size") + 1])
+        label, _, arms = _expected_cascade(rig, rows, words[0], int(words[1], 16), size)
+        assert line.endswith(f" bucket {label} attempts {', '.join(arms)}"), line
+    rig = Rig(tmp_path / "json")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, routing=rows, allow_egress=egress)
+    assert code == 0
+    for pick in json.loads(out)["picks"]:
+        label, p, arms = _expected_cascade(rig, rows, pick["exe"], int(pick["start"], 16),
+                                           pick["size"])  # fmt: skip
+        assert pick["cascade"] == {"bucket": label, "pass": p, "attempts": arms}
+
+
+def test_a_dry_run_without_cascade_is_unchanged(tmp_path, capsys):
+    rig = Rig(tmp_path / "text")
+    code, out, _ = rig.drive(capsys, dry_run=True)
+    assert code == 0 and " bucket " not in out
+    rig = Rig(tmp_path / "json")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    picks = json.loads(out)["picks"]
+    assert all("cascade" not in pick for pick in picks)
+    assert set(picks[0]) == {"exe", "start", "name", "unit", "size", "score", "pack",
+                             "pack_bytes"}  # fmt: skip
