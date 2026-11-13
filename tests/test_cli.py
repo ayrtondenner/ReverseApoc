@@ -1546,3 +1546,64 @@ def test_cascade_in_help(capsys):
     text = _drive_help(capsys)
     assert "--cascade" in text and "--arm-cap NAME=N" in text
     assert "a paused or capped arm passes the attempt to the row's next arm" in text
+
+
+# ---- todo budget-runs-and-contributors: drive --arm-budget NAME=BUDGET ----
+
+
+def _budget(text: str):
+    from reverseapoc import quota
+
+    return quota.parse_budget(text)
+
+
+@pytest.mark.parametrize(("argv", "budgets"), [
+    (["--arm", f"{HAIKU}=2", "--arm-budget", f"{HAIKU}=5%week"], ((HAIKU, "5%week"),)),
+    (["--night-model", HAIKU, "--arm-budget", f"{HAIKU}=1%week"], ((HAIKU, "1%week"),)),
+    (["--arm", f"{HAIKU}=1", "--arm", f"{DEEPSEEK}=1", "--allow-egress", DEEPSEEK,
+      "--arm-budget", f"{HAIKU}=5%week", "--arm-budget", f"{DEEPSEEK}=$10"],
+     ((HAIKU, "5%week"), (DEEPSEEK, "$10"))),
+    (["--cascade", *_EGRESS, "--arm-budget", f"{TERRA}=100%5h", "--arm-cap", f"{HAIKU}=3"],
+     ((TERRA, "100%5h"),)),
+], ids=["arm", "night-model", "two-arms", "cascade"])  # fmt: skip
+def test_arm_budget_flag(argv, budgets, monkeypatch):
+    """`--arm-budget NAME=BUDGET`, repeatable, reaches DriveOptions.arm_budgets in order, each
+    a parsed quota.Budget; a drive without it has none."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 0
+    assert seen[-1].arm_budgets == tuple((name, _budget(text)) for name, text in budgets)
+    assert main(["drive"]) == 0
+    assert seen[-1].arm_budgets == ()
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--arm-budget", f"{HAIKU}=5%week"], f"--arm-budget {HAIKU} names no arm of this run"),
+    (["--arm", f"{SONNET}=1", "--arm-budget", f"{HAIKU}=5%week"], f"--arm-budget {HAIKU}"),
+    (["--arm", f"{HAIKU}=1", "--arm-budget", f"{HAIKU}=5%week", "--arm-budget",
+      f"{HAIKU}=1%week"], f"--arm-budget {HAIKU} is given twice"),
+    (["--cascade", *_EGRESS, "--arm-budget", f"{QWEN}=$1"], f"--arm-budget {QWEN}"),
+    (["--cascade", *_EGRESS, "--arm-budget", f"{HAIKU}=5%week", "--arm-cap", f"{HAIKU}=3"],
+     f"--arm-budget {HAIKU} and --arm-cap {HAIKU}"),
+    (["--canary", "--night-model", HAIKU, "--arm-budget", f"{HAIKU}=5%week"], "--canary"),
+], ids=["default-night", "other-arm", "twice", "not-a-cascade-arm", "with-arm-cap",
+        "canary"])  # fmt: skip
+def test_arm_budget_flag_refusals(argv, conflict, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+@pytest.mark.parametrize("value", ["x", HAIKU, f"{HAIKU}=5", f"{HAIKU}=5%day", f"{HAIKU}=$0",
+                                   f"{HAIKU}=101%week", "gpt-x=5%week"])  # fmt: skip
+def test_arm_budget_flag_refuses_a_bad_spec(value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--arm-budget", value])
+    assert exc.value.code == 2
+    assert "--arm-budget" in capsys.readouterr().err
+
+
+def test_arm_budget_in_help(capsys):
+    text = _drive_help(capsys)
+    assert "--arm-budget NAME=BUDGET" in text and "config/driver/quota.toml" in text

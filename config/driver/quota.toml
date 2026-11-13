@@ -1,0 +1,90 @@
+# The quota one session of each arm takes from its plan, read by tools/reverseapoc/quota.py for
+# `drive --arm-budget NAME=BUDGET` (todo budget-runs-and-contributors). A budget becomes the
+# arm's session cap tonight: floor(budget / per session), and never above the arm's
+# backends.toml max_sessions. The dry run prints each arm's budget, its quota per session with
+# the source and date below, the sessions it buys and the expected matches.
+#
+# [plans.<id>]: a plan a contributor pays for, named here and nowhere in the code. `name` is
+# what the dry run prints; `credit_usd` (optional) is the dollar value of one plan credit, so a
+# `$` budget and a `credits` budget convert into each other on that plan.
+#
+# [arms.<name>]: an arm's quota per session on its `plan`, in any of the budget units:
+#   week_percent       percent of the plan's weekly meter one session moves (`<p>%week`)
+#   five_hour_percent  percent of the plan's 5-hour window one session moves (`<p>%5h`)
+#   usd                dollars one session spends (`$<usd>`)
+#   credits            plan credits one session spends (`<n>credits`)
+# `source` and `read` (a date) say where and when the figure was read; `estimate = true` marks
+# a placeholder nobody measured yet. `matched` of `sessions` is the arm's measured match rate,
+# from `rate_source`; without it the dry run says "unmeasured".
+#
+# An arm here need not be in backends.toml, and an arm of backends.toml need not be here: only
+# an arm given an --arm-budget must have an entry. Re-measure these figures when the usage
+# meters land (todo usage-meters-per-subscription). The figures: docs/model-routing.md "Quota
+# per session" (S: owner's meter screenshot, A: OpenRouter credits API) and
+# docs/model-comparison.md "Cascade nights" (recorded sessions, which undercount some arms).
+
+[plans."claude-ultra"]
+name = "Claude Code Ultra"
+
+[plans."chatgpt-plus"]
+name = "ChatGPT Plus (Codex CLI)"
+
+[plans."google-ai-plus"]
+name = "Google AI Plus (Antigravity CLI, agy)"
+
+[plans."openrouter"]
+name = "OpenRouter credits"
+
+[plans."copilot-pro"]
+name = "GitHub Copilot Pro (AI credits)"
+credit_usd = 0.01
+
+[arms."claude-haiku-5-5"]
+plan = "claude-ultra"
+week_percent = 0.03
+source = "owner's meter (S): 30 sessions moved the weekly bar 93% to 94%"
+read = 2026-11-13
+matched = 4
+sessions = 78
+rate_source = "cascade nights 2026-11-12 to 2026-11-13"
+
+[arms."claude-opus-5-5"]
+plan = "claude-ultra"
+week_percent = 0.1
+source = "owner's meter (S): 100 sessions moved the weekly bar 17% to 27%"
+read = 2026-11-07
+
+[arms."gpt-6.1-terra"]
+plan = "chatgpt-plus"
+five_hour_percent = 1.35
+week_percent = 0.22
+source = "owner's meter (S): 74 sessions filled one 5-hour window, the week 50% to 66%"
+read = 2026-11-13
+matched = 1
+sessions = 91
+rate_source = "cascade nights 2026-11-12 to 2026-11-13 (recorded sessions undercount)"
+
+[arms."gemini-flash"]
+plan = "google-ai-plus"
+week_percent = 15.0
+source = "owner's meter (S): one session took about 15% of the agy week"
+read = 2026-11-13
+matched = 0
+sessions = 1
+rate_source = "cascade nights 2026-11-12 to 2026-11-13 (one session)"
+
+[arms."deepseek-flash"]
+plan = "openrouter"
+usd = 0.30
+source = "OpenRouter credits API (A)"
+read = 2026-11-13
+matched = 2
+sessions = 5
+rate_source = "cascade nights 2026-11-12 to 2026-11-13 (small sample)"
+
+[arms."copilot-haiku-5-5"]
+plan = "copilot-pro"
+credits = 4
+source = "estimate, re-measure: no session measured on Copilot yet"
+read = 2026-11-13
+estimate = true

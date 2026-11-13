@@ -33,6 +33,7 @@ from . import (
     mechanics,
     meters,
     probe,
+    quota,
     search,
     session,
     splits,
@@ -1755,6 +1756,18 @@ def _arm_cap(value: str) -> tuple[str, int]:
     return _name_count(value, "NAME=N")
 
 
+def _arm_budget(value: str) -> tuple[str, quota.Budget]:
+    """Todo budget-runs-and-contributors: `--arm-budget NAME=BUDGET`, an arm of
+    config/driver/backends.toml and a quota.parse_budget amount."""
+    name, sep, budget = value.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"{value!r} is not NAME=BUDGET")
+    try:
+        return _arm_name(name), quota.parse_budget(budget)
+    except quota.QuotaError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 class _Cascade(argparse.Action):
     """Quick 261112-fds (backlog 999.12a): `--cascade` stores backends.load_routing()'s rows;
     a malformed [routing] table exits 2 here, as a bad --arm does."""
@@ -1827,7 +1840,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   land_held=tuple(args.land_held or ()),
                                   allow_egress=tuple(args.allow_egress or ()),
                                   arms=arms, routing=tuple(args.cascade),
-                                  arm_caps=tuple(args.arm_cap or ()))  # fmt: skip
+                                  arm_caps=tuple(args.arm_cap or ()),
+                                  arm_budgets=tuple(args.arm_budget or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1909,6 +1923,36 @@ def _arm_cap_conflict(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _arm_budget_conflict(args: argparse.Namespace) -> str | None:
+    """Todo budget-runs-and-contributors: an `--arm-budget` on a canary or a --land-held run
+    (which launch no night), an arm budgeted twice, one that is no arm of this run (an --arm,
+    the --night-model arm, or an arm of the --cascade rows), or one also given an --arm-cap
+    (each is that arm's cap), or None."""
+    names = [name for name, _ in args.arm_budget or ()]
+    if not names:
+        return None
+    clash = [flag for name, flag in (("canary", "--canary"), ("land_held", "--land-held"))
+             if getattr(args, name)]  # fmt: skip
+    if clash:
+        return f"--arm-budget cannot be used with {', '.join(clash)}"
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        return f"--arm-budget {twice[0]} is given twice; budget each arm once"
+    if args.cascade:
+        night = list(backends.routing_arms(args.cascade))
+    else:
+        night = [name for name, _ in args.arm or ()] or [args.night_model]
+    stray = [name for name in names if name not in night]
+    if stray:
+        shown = ", ".join(name for name in night if name) or "no --arm, --night-model or --cascade"
+        return f"--arm-budget {stray[0]} names no arm of this run ({shown})"
+    capped = [name for name, _ in args.arm_cap or () if name in names]
+    if capped:
+        return (f"--arm-budget {capped[0]} and --arm-cap {capped[0]}: each is that arm's cap "
+                "tonight; give one")  # fmt: skip
+    return None
+
+
 def _harness_conflict(args: argparse.Namespace) -> str | None:
     """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
     model is for a matching night that is no Fable trial; a hold run is a matching night that
@@ -1916,7 +1960,8 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
     and launches nothing. 07.2-12 (D-11): each --allow-egress names an arm of the night (07.2-16:
     the --night-model arm or an --arm; quick 261112-fds: an arm of the --cascade rows), and
     that arm sends the context pack to a non-Anthropic backend."""
-    for conflict in (_cascade_conflict(args), _arm_cap_conflict(args)):
+    for conflict in (_cascade_conflict(args), _arm_cap_conflict(args),
+                     _arm_budget_conflict(args)):  # fmt: skip
         if conflict is not None:
             return conflict
     readability = args.session == driver.READABILITY
@@ -2002,6 +2047,16 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--arm-cap", type=_arm_cap, action="append", default=None, metavar="NAME=N",
                    help="repeatable, with --cascade: arm NAME launches at most N sessions "
                    "tonight (at most its backends.toml max_sessions)")  # fmt: skip
+    p.add_argument("--arm-budget", type=_arm_budget, action="append", default=None,
+                   metavar="NAME=BUDGET",
+                   help="repeatable, with --arm, --night-model or --cascade: spend at most "
+                   "BUDGET of arm NAME's plan tonight, as <p>%%week, <p>%%5h, $<usd> or "
+                   "<n>credits (quote a $); its session cap becomes floor(BUDGET / its quota "
+                   "per session in config/driver/quota.toml), at most its backends.toml "
+                   "max_sessions, and the arm stops early once a wired meter reads the budget "
+                   "spent; --dry-run prints each budget's sessions and expected matches; "
+                   "refused for an arm with no quota entry and beside its own "
+                   "--arm-cap")  # fmt: skip
     p.add_argument("--allow-egress", action="append", default=None, metavar="ARM",
                    help="the owner's opt-in for --night-model or --arm ARM to send context "
                    "packs to its non-Anthropic backend (D-11); without it such an arm is "

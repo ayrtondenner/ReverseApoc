@@ -998,3 +998,33 @@ be read gives a reading with an `error` instead. A drive sized to a budget calls
 
 A window whose `resets_at` is before the read is marked `reset since` in the text report: its
 figure predates the reset.
+
+### Budget-sized drives
+
+`--arm-budget NAME=BUDGET` (repeatable, with `--arm`, `--night-model` or `--cascade`) does the
+division above for you. BUDGET is `<p>%week`, `<p>%5h`, `$<usd>` or `<n>credits`; quote a `$`
+in the shell. The figures this table gives live in
+[config/driver/quota.toml](../config/driver/quota.toml): the plans by name, each arm's quota per
+session with its source and date, and its measured matches per session. Re-measure them there.
+
+- The arm's cap tonight is floor(budget / per session), at most its backends.toml max_sessions.
+  The line says which bound won. A plan's `credit_usd` converts `$` and `credits` budgets.
+- Refused (exit 2, before any command): an arm with no quota.toml entry, a unit its entry has no
+  figure for, a budget below one session, an arm of no lane of the run, and a budget beside
+  the same arm's `--arm-cap`.
+- `--dry-run` prints, per arm, budget, quota per session (source, date), sessions and expected
+  matches, and says when the budgets add up to more than `--max-sessions`.
+- Mid-night, the driver asks a meter seam (`Deps.meter`) about each budgeted arm before each
+  launch. Once the meter has moved by the budget since the night's first reading (a drop
+  counts as a window that reset), that arm stops launching and the others go on. A reading in
+  another unit than the budget's is named once on the console and changes nothing. Until the usage meters are wired, the seam reads
+  nothing and the session cap is the only bound.
+
+```
+reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=5%week \
+  --arm deepseek-flash=1 --arm-budget 'deepseek-flash=$10' --allow-egress deepseek-flash \
+  --max-sessions 200
+```
+
+The project skill `drive-budget` turns a plain request ("5% of my Claude plan via Haiku and $10
+of OpenRouter") into this command, shows the dry run and asks before it launches anything.
