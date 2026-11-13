@@ -25,7 +25,6 @@ int func_00041EF0(void)
     return r_eax;
 }
 
-INCLUDE_ASM(func_00041F30);
 INCLUDE_ASM(func_00042120);
 INCLUDE_ASM(func_000425F0);
 INCLUDE_ASM(func_00042790);
@@ -36,6 +35,13 @@ INCLUDE_ASM(func_00046840);
 INCLUDE_ASM(func_000469C0);
 INCLUDE_ASM(func_00046F30);
 INCLUDE_ASM(func_00047340);
+
+extern volatile short D_00183AF2;
+extern short D_000D4CE0, D_000D4CE2;
+extern int D_000E0E80;
+extern char D_000D2264[], D_000D2268[], D_000D2270[], D_000D2278[];
+signed char func_000B7800(char *);
+int func_000B76D0(int);
 
 struct unk_0006 {
     /* 0x00 */ u8 * volatile ptr;
@@ -58,4 +64,52 @@ void func_00046800(void)
     }
     D_000D4D4C = n;
     D_00182CC0++;
+}
+
+int func_00041F30(void)
+{
+    int direction, a, b, c, d;
+    direction = 0;
+    a = 0;
+    b = 0;
+    c = 0;
+    d = 0;
+    if (D_00183AF2 || D_000E0E80) {
+        if (D_000D4CE2 < 1) {
+            if (D_000D4CE0 < 480) direction |= 8;
+            if (D_000D4CE0 >= 160) direction |= 1;
+        } else if (D_000D4CE2 >= 479) {
+            if (D_000D4CE0 < 480) direction |= 4;
+            if (D_000D4CE0 >= 160) direction |= 2;
+        } else if (D_000D4CE0 < 1) {
+            if (D_000D4CE2 < 264) direction |= 8;
+            if (D_000D4CE2 >= 88) direction |= 4;
+        } else if (D_000D4CE0 >= 639) {
+            if (D_000D4CE2 < 264) direction |= 1;
+            if (D_000D4CE2 >= 88) direction |= 2;
+        }
+    }
+    if (!direction) {
+        if (func_000B76D0(func_000B7800(D_000D2264))) a = 1;
+        if (func_000B76D0(func_000B7800(D_000D2268))) b = 1;
+        if (func_000B76D0(func_000B7800(D_000D2270))) c = 1;
+        if (func_000B76D0(func_000B7800(D_000D2278))) d = 1;
+        if (a && b) { a = 0; b = 0; }
+        if (c && d) { c = 0; d = 0; }
+        if (a) {
+            if (d) direction = 1;
+            if (c) direction = 8;
+            if (!direction) direction = 9;
+        }
+        if (b) {
+            if (d) direction = 2;
+            if (c) direction = 4;
+            if (!direction) direction = 6;
+        }
+        if (!a && !b) {
+            if (d) direction = 3;
+            if (c) direction = 12;
+        }
+    }
+    return direction;
 }
