@@ -26,3 +26,6 @@ Questions to answer (a short spike, read-only, nothing vendored):
   Claude-Code-only runtime rule (it drives Claude Code, so fine if used as a tool), egress (what
   it sends where), and that no game bytes or disassembly get committed.
 Outcome: a docs/tools.md entry with a Use / Skip / Later verdict and the reason.
+
+Evaluated 2026-11-13 from the README only: **Skip** for Milestone 1. Row in `docs/tools.md`,
+answers and open questions in `docs/research/notes-craft-anything.md`.
