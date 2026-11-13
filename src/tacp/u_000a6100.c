@@ -142,7 +142,20 @@ int func_000A6880(void)
     return r_eax;
 }
 
-INCLUDE_ASM(func_000A68B0);
+int func_000A65D0(int, int);
+extern char D_00284CEE[];
+extern char D_000E6CC0[];
+
+int func_000A68B0(void)
+{
+    int r_eax;
+
+    r_eax = func_000A65D0(22, 1);
+    *(short *)((D_00284CEE)) = 1;
+    *(short *)((D_000E6CC0)) = 1;
+    return r_eax;
+}
+
 INCLUDE_ASM(func_000A68E0);
 extern char D_000E6D42[];
 extern char D_000E6D44[];
