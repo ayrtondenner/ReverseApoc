@@ -1417,13 +1417,28 @@ def _coauthors(repo: Path, p: Proposal,
         if key not in models:
             model = _transcript_model(repo, run, exe, function, n)
         try:
-            driver.coauthor(model)
+            _coauthor_line(model)
         except driver.DriverError as exc:
             raise FlagsError(f"{p.id}: attempt {n} of {exe} {function} (run {run}) has model "
                              f"{model or 'unknown'}; {exc}") from None  # fmt: skip
         found.append((pass_n, index, model))
     ordered = dict.fromkeys(model for *_, model in sorted(found))
-    return tuple(driver.coauthor(model) for model in ordered)
+    return tuple(_coauthor_line(model) for model in ordered)
+
+
+def _coauthor_line(model: str | None) -> str:
+    """The Co-Authored-By line of `model`: driver.coauthor for a Claude model, else the
+    backends.toml `coauthor` of the arm whose model id (or accepted init id) it is, as the
+    driver's own landing credits a non-Claude arm (2026-11-13). Any other model raises
+    driver.coauthor's DriverError, so nothing lands under an unknown model."""
+    try:
+        return driver.coauthor(model)
+    except driver.DriverError:
+        arms = [arm for arm in driver.backends.load_arms().values()
+                if model is not None and (model == arm.model or model in arm.accepted_init)]
+        if not arms:
+            raise
+        return f"Co-Authored-By: {arms[0].coauthor}"
 
 
 def _landing_source(repo: Path, p: Proposal) -> Path:
