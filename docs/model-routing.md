@@ -805,10 +805,12 @@ hands the same attempt on.
 
   | Key | Arms, in order |
   |---|---|
-  | `"[0, 64)"` | `gpt-6.1-terra`, `deepseek-flash`, `claude-haiku-5-5` |
-  | `"[64, 256)"` | `gpt-6.1-terra`, `deepseek-flash`, `claude-haiku-5-5`, `glm-5.3` |
-  | `"[256, inf)"` | `gpt-6.1-terra`, `deepseek-flash`, `glm-5.3` |
+  | `"[0, 64)"` | `gpt-6.1-terra`, `claude-haiku-5-5`, `deepseek-flash` |
+  | `"[64, 256)"` | `gpt-6.1-terra`, `claude-haiku-5-5`, `deepseek-flash` |
+  | `"[256, inf)"` | `gpt-6.1-terra`, `deepseek-flash` |
 
+  Owner, 2026-11-13 (afternoon): GLM-5.3 left the rows (no match in about 45 sessions, three
+  quarters of the day's OpenRouter spend), Haiku moved second, DeepSeek last.
   Owner, 2026-11-13: Terra first (spend each Codex 5-hour window), DeepSeek second (2 of its first
   5 sessions held on the cascade nights, docs/model-comparison.md), then Haiku and GLM-5.3.
   Owner, 2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash joined the rows to spend the remaining
@@ -937,3 +939,25 @@ The caps' context: the medium-picks Codex run took the 5-hour window from about 
 weekly bar (S) is an Opus figure, not Haiku's.
 
 ROADMAP 999.12's last follow-up recalibrates these rows after a few real nights.
+
+## Quota per session
+
+Approximate figures for sizing a run to a budget: sessions = target / per session. Read on the
+cascade nights of 2026-11-12 and 2026-11-13 from the owner's meters (S), the OpenRouter credits
+API (A) and `stats --run` (T). They shift with function size and session length, and a reading of
+a few sessions carries about one point of meter error. The todo `usage-meters-per-subscription`
+replaces the screenshot readings with measured ones; re-measure this table when it lands.
+
+| Arm (plan) | Tokens per session, average (T) | One session moves | Rough sizing |
+|---|---|---|---|
+| Haiku 5.5 (Claude Ultra) | about 1.07M cache read, 24k output, 80k cache creation | about 0.03% of the weekly bar (S: 30 sessions, 93% to 94%) | 3% of the week: about 90 sessions |
+| Opus 5.5 (Claude Ultra) | - | about 0.1% of the weekly bar (S, 2026-11-07: 100 sessions, 17% to 27%) | 3% of the week: about 30 sessions |
+| GPT-6.1 Terra (ChatGPT Plus) | about 0.94M input, 0.9M cache read, 3k output | about 1.35% of the 5-hour window and 0.22% of the week (S: 74 sessions filled one window, the week 50% to 66%) | one 5-hour window: about 74 sessions |
+| Gemini 3.8 Flash (Google AI Plus) | about 175k input, 2.8M cache read, 28k output | about 15% of the agy week (S, one session; a canary about 6.6%) | the week: about 6 sessions |
+| DeepSeek V4.1-Flash (OpenRouter) | about 76k input, 620k cache read, 28k output | about $0.30 (A) | $10: about 33 sessions |
+| GLM-5.3 (OpenRouter) | about 215k input, 1.8M cache read, 77k output | about $0.60 (A) | left the rows on 2026-11-13: no match in about 45 sessions |
+
+Past the Codex 5-hour window, Codex keeps running on the account's credits (about 1 to 2 credits
+per session, chatgpt.com/settings/usage), and a full reset restores both the week and the window.
+`stats` prices an OpenRouter arm at list price, which came in below the credits API's real spend
+on these nights; size OpenRouter budgets from (A).

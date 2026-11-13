@@ -682,13 +682,14 @@ def test_committed_routing_table():
     2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash join the rows to spend the OpenRouter credit."""
     rows = backends.load_routing()
     assert [(row.label, row.buckets, row.arms) for row in rows] == [
-        ("[0, 64)", (0,), (TERRA, DEEPSEEK, HAIKU)),
-        ("[64, 256)", (1,), (TERRA, DEEPSEEK, HAIKU, GLM)),
-        ("[256, inf)", (2, 3), (TERRA, DEEPSEEK, GLM)),
+        ("[0, 64)", (0,), (TERRA, HAIKU, DEEPSEEK)),
+        ("[64, 256)", (1,), (TERRA, HAIKU, DEEPSEEK)),
+        ("[256, inf)", (2, 3), (TERRA, DEEPSEEK)),
     ]
     arms = _arms()
     assert {arm for row in rows for arm in row.arms} <= set(arms)
-    assert backends.routing_arms(rows) == (TERRA, DEEPSEEK, HAIKU, GLM)
+    assert backends.routing_arms(rows) == (TERRA, HAIKU, DEEPSEEK)
+    assert arms[DEEPSEEK].max_workers == 12  # owner, 2026-11-13: spend the OpenRouter credit fast
 
 
 def test_routing_rows_use_the_stats_buckets():
