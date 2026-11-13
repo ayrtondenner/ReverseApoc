@@ -962,8 +962,8 @@ ROADMAP 999.12's last follow-up recalibrates these rows after a few real nights.
 Approximate figures for sizing a run to a budget: sessions = target / per session. Read on the
 cascade nights of 2026-11-12 and 2026-11-13 from the owner's meters (S), the OpenRouter credits
 API (A) and `stats --run` (T). They shift with function size and session length, and a reading of
-a few sessions carries about one point of meter error. The todo `usage-meters-per-subscription`
-replaces the screenshot readings with measured ones; re-measure this table when it lands.
+a few sessions carries about one point of meter error. `reverseapoc meters` ("Reading the
+meters" below) now reads the meters directly; re-measure this table from its readings.
 
 | Arm (plan) | Tokens per session, average (T) | One session moves | Rough sizing |
 |---|---|---|---|
@@ -978,3 +978,23 @@ Past the Codex 5-hour window, Codex keeps running on the account's credits (abou
 per session, chatgpt.com/settings/usage), and a full reset restores both the week and the window.
 `stats` prices an OpenRouter arm at list price, which came in below the credits API's real spend
 on these nights; size OpenRouter budgets from (A).
+
+### Reading the meters
+
+`reverseapoc meters` (text, or `--json`; `--source NAME` repeatable) reads each meter from the
+tool itself, so this table can be re-measured without screenshots. Each reading names its
+source, meter, used, limit or remaining, unit, window, `resets_at` when known, `read_at` (this
+read, UTC), `as_of` (when the source took the figure) and how it was read; a source that cannot
+be read gives a reading with an `error` instead. A drive sized to a budget calls
+`meters.read_all()`. Sources as found on 2026-11-13:
+
+| Source | Read from | Notes |
+|---|---|---|
+| OpenRouter | `GET https://openrouter.ai/api/v1/credits` with `OPENROUTER_API_KEY` | total credits and usage in USD; without the key in the process environment the reading is unavailable. The key is never printed. |
+| Codex (ChatGPT Plus) | the last `token_count` event with `rate_limits` in the newest `~/.codex/sessions/**/rollout-*.jsonl` | the 5-hour (primary) and weekly (secondary) `used_percent` with their resets, and the credits balance. Only non-ephemeral sessions write rollouts: a drive's `codex exec --ephemeral` writes none and its `--json` stream carries no rate limits, so the figure dates from the owner's last interactive Codex session (`as_of`). |
+| GitHub Copilot (Pro) | `~/.copilot/session-state/*/events.jsonl`, each session's last `accountingSnapshot.totalNanoAiu` | the AI credits spent this UTC month by Copilot CLI sessions on this machine, taking 1e9 nano AIU as one credit (not yet checked against the account page). The month's balance (1,500 on Pro, reset on the 1st) is not stored locally, so there is no limit or remaining. |
+| agy (Google AI Plus) | `agy -p /usage` under an agy arm's session env (as the driver's quota step runs it), parsed by `driver.agy_quota` | spike 012 found it prints nothing machine-readable, so the reading is normally unavailable; agy's logs (`~/.gemini/antigravity-cli/`) only note `doRefreshQuota` with no figures. |
+| Claude Code (Ultra) | `~/.claude.json` `cachedUsageUtilization.limits` | the usage panel's cache: the weekly bar (`weekly_all`) and each scoped bar (`weekly_scoped Fable`) in percent, with `fetchedAtMs` as `as_of`. It refreshes only when the CLI fetches the panel; no Anthropic endpoint is called. |
+
+A window whose `resets_at` is before the read is marked `reset since` in the text report: its
+figure predates the reset.
