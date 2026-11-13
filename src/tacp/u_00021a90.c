@@ -19,7 +19,6 @@ INCLUDE_ASM(func_000225E0);
 INCLUDE_ASM(func_00022670);
 INCLUDE_ASM(func_00022A30);
 INCLUDE_ASM(func_00023010);
-INCLUDE_ASM(func_00023130);
 INCLUDE_ASM(func_00023150);
 INCLUDE_ASM(func_00023190);
 INCLUDE_ASM(func_00023720);
@@ -28,6 +27,16 @@ INCLUDE_ASM(func_00023940);
 INCLUDE_ASM(func_00023A40);
 INCLUDE_ASM(func_00023AA0);
 INCLUDE_ASM(func_00023BB0);
+
+int rand(void);
+
+s16 func_00023130(s16 n)
+{
+    unsigned r;
+
+    r = rand();
+    return r % (n + 1);
+}
 
 extern signed char D_001D3428[][28];
 extern signed char D_002818B9;
