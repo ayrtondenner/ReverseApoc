@@ -32,7 +32,9 @@ After each session, in this order:
    a night of several arms, a session whose only strays are transcript writes the hook denied
    (permission_denials), with nothing changed after its reset, stops its arm only
    (`_stop_arm`): recorded GAVE_UP guardrail, named on the console and in the run record's
-   detail, while the other arms go on. build/ itself is not audited:
+   detail, while the other arms go on. A transcript write the tool itself refused (an error
+   tool_result, not denied) whose target is absent and untracked after the session is no
+   stray (the 20261113-lanes2 STOP, owner-approved). build/ itself is not audited:
    the attempt wrapper writes there by design (a known limit);
 3. streamjson.classify (D-08): STOP stops the night; a check_init problem stops it too; LIMIT
    keeps the session's work (the gate runs on it as usual), then backs off 60, 120, 240 s and
@@ -1313,6 +1315,37 @@ def _denied_writes(events: Sequence[dict]) -> list[bool]:
     denied = _hook_denials(events) if len(set(known)) == len(known) else frozenset()
     return [use.target is not None and (use_id, use) in denied
             for use, use_id in uses if use.name in hooks.EDIT_TOOLS]  # fmt: skip
+
+
+def _refused_writes(events: Sequence[dict]) -> list[bool]:
+    """Whether the tool itself refused each write-tool call, in `_write_targets`' order (the
+    20261113-lanes2 STOP, owner-approved): every tool_use id of the transcript is unique, as
+    `_denied_writes` asks, and exactly one error tool_result answers this call's id
+    (`streamjson.refused_tool_use_ids`)."""
+    ids = streamjson.tool_use_ids(events)
+    uses = zip(streamjson.tool_uses(events), ids, strict=True)
+    known = [use_id for use_id in ids if use_id is not None]
+    unique = len(set(known)) == len(known)
+    refused = streamjson.refused_tool_use_ids(events) if unique else frozenset()
+    return [use_id in refused for use, use_id in uses if use.name in hooks.EDIT_TOOLS]
+
+
+def _never_written(raw: str | None, rels: Sequence[str] | None, repo: Path,
+                   tracked: frozenset[str]) -> bool:  # fmt: skip
+    """Whether a write the tool refused left nothing behind (the 20261113-lanes2 STOP): it names
+    a path, no form of it exists after the session (not even as a dangling link), neither its
+    forms from the checkout (`hooks.candidates`, `_claude_drive_form` first) nor `repo` joined
+    with each repo-relative form `rels`, and no form in `rels` is git-tracked (`tracked`)."""
+    if raw is None:
+        return False
+    try:
+        forms = hooks.candidates(_claude_drive_form(raw), str(repo))
+    except hooks.HookError:
+        return False
+    on_disk = [*forms, *(repo / rel for rel in rels or ())]
+    if any(os.path.lexists(form) for form in on_disk):
+        return False
+    return not any(rel in tracked for rel in rels or ())
 
 
 def _roots(repo: Path, cwd: object) -> list[str]:
@@ -4453,8 +4486,13 @@ class _Night:
         (`_denied_writes`: its unique tool_use id, tool and target are in the result event's
         permission_denials). For an agy session (owner ruling 2026-11-10, "extend it") the
         second part is each write agy's permission check provably refused
-        (agyjson.denied_writes), all denied; a Codex session has none."""
-        allowed = self._allowed(session.claim, self._tracked())
+        (agyjson.denied_writes), all denied; a Codex session has none. A Claude write the hook
+        did not deny is no stray when the tool itself refused it (`_refused_writes`) and its
+        target is absent and untracked after the session (`_never_written`; the 20261113-lanes2
+        STOP, owner-approved): Claude Code rejects, say, an Edit of a missing file before any
+        hook runs. The invariants above still catch any file it did leave."""
+        tracked = self._tracked()
+        allowed = self._allowed(session.claim, tracked)
         stray = [p for p in self._unexplained(session.after) if not allowed(p)]
         stray += [name for name in self._view_changes(session) if name not in stray]
         stray += [name for name in session.pinned_changed if name not in stray]
@@ -4466,9 +4504,14 @@ class _Night:
             return stray, [(f"{path}{_TRANSCRIPT_MARK}", True) for path in refused]
         events = session.events
         uses = zip(_write_targets(events), transcript_paths(events, self.repo),
-                   _denied_writes(events), strict=True)  # fmt: skip
-        writes = [(f"{raw}{_TRANSCRIPT_MARK}", denied) for raw, rels, denied in uses
-                  if rels is None or not all(allowed(rel) for rel in rels)]  # fmt: skip
+                   _denied_writes(events), _refused_writes(events), strict=True)  # fmt: skip
+        writes: list[tuple[str, bool]] = []
+        for raw, rels, denied, refused in uses:
+            if rels is not None and all(allowed(rel) for rel in rels):
+                continue
+            if refused and not denied and _never_written(raw, rels, self.repo, tracked):
+                continue
+            writes.append((f"{raw}{_TRANSCRIPT_MARK}", denied))
         return stray, writes
 
     def _guard_launch(self, claim: _Claim) -> dict[str, str]:
