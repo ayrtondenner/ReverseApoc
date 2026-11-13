@@ -63,6 +63,7 @@ from __future__ import annotations
 import enum
 import json
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -133,6 +134,7 @@ _OUTPUT_CAP_TEXT = re.compile(
 )
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
 _TARGET_FIELDS = ("file_path", "notebook_path", "command", "path")
+_TOOL_USE_ERROR = "<tool_use_error>"  # how Claude Code's own refusal of a call opens
 _ASSISTANT = "assistant"
 _THINKING_TOKENS = "thinking_tokens"
 _THINKING_DELTA = "estimated_tokens_delta"
@@ -577,3 +579,30 @@ def tool_use_ids(events: Sequence[dict]) -> list[str | None]:
         for block in _blocks(events)
         if block.get("type") == "tool_use"
     ]
+
+
+def _body_text(content: object) -> str:
+    """A tool_result's content as text: the string, or its text blocks joined."""
+    if isinstance(content, str):
+        return content
+    blocks = [_mapping(block) for block in content] if isinstance(content, list) else []
+    return "".join(str(block.get("text")) for block in blocks if block.get("type") == "text")
+
+
+def _is_refusal(result: Mapping) -> bool:
+    """An error tool_result: `is_error: true`, or a body that opens with `<tool_use_error>`."""
+    return result.get("is_error") is True or (
+        _body_text(result.get("content")).lstrip().startswith(_TOOL_USE_ERROR)
+    )
+
+
+def refused_tool_use_ids(events: Sequence[dict]) -> frozenset[str]:
+    """The tool_use ids exactly one tool_result block answers, an error one (`_is_refusal`):
+    calls the tool refused, such as an Edit of a file that does not exist, which Claude Code
+    rejects before any hook runs (the 20261113-lanes2 STOP). An id two results answer is in
+    none."""
+    answers = [block for block in _blocks(events) if block.get("type") == "tool_result"
+               and isinstance(block.get("tool_use_id"), str)]  # fmt: skip
+    answered = Counter(block["tool_use_id"] for block in answers)
+    return frozenset(block["tool_use_id"] for block in answers
+                     if answered[block["tool_use_id"]] == 1 and _is_refusal(block))  # fmt: skip
