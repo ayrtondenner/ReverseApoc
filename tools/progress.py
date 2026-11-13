@@ -39,7 +39,8 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
 DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.json and
 progress-shield-tacp.json), DIR/progress.svg (the mosaic: a squarified treemap,
 EXE > unit > function), and DIR/index.html (the progress page, served at the Pages root:
-per-EXE bars and function strips, the mosaic inline);
+per-EXE bars and function strips, the mosaic inline and, when --config sits in a git checkout,
+the progress-over-days chart re-derived from its history; a shallow clone gets a note instead);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -56,14 +57,16 @@ import datetime
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
+import subprocess
 import sys
 import tomllib
 from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -186,10 +189,11 @@ def _check_span(path: Path, number: int, start: int, end: int, previous_end: int
         raise ProgressError(f"{path}: data row {number}: overlaps or precedes the row before it")
 
 
-def read_functions(path: Path) -> list[Row]:
-    """functions.csv rows, sorted and non-overlapping, each kind one of KINDS."""
+def read_functions(path: Path, text: str | None = None) -> list[Row]:
+    """functions.csv rows, sorted and non-overlapping, each kind one of KINDS. `text`, when
+    given, is the table's content in place of the file's (the timeline reads past commits)."""
     rows: list[Row] = []
-    for number, rec in enumerate(_records(path, FUNCTIONS_COLUMNS), start=1):
+    for number, rec in enumerate(_records(path, FUNCTIONS_COLUMNS, text), start=1):
         row = Row(_address(path, number, "start", rec["start"]),
                   _address(path, number, "end", rec["end"]), rec["name"], rec["kind"],
                   rec["unit"])  # fmt: skip
@@ -201,10 +205,10 @@ def read_functions(path: Path) -> list[Row]:
     return rows
 
 
-def read_units(path: Path) -> list[Unit]:
-    """units.csv rows, sorted and non-overlapping."""
+def read_units(path: Path, text: str | None = None) -> list[Unit]:
+    """units.csv rows, sorted and non-overlapping; `text` as read_functions'."""
     units: list[Unit] = []
-    for number, rec in enumerate(_records(path, UNITS_COLUMNS), start=1):
+    for number, rec in enumerate(_records(path, UNITS_COLUMNS, text), start=1):
         unit = Unit(rec["unit"], _address(path, number, "start", rec["start"]),
                     _address(path, number, "end", rec["end"]))  # fmt: skip
         _check_span(path, number, unit.start, unit.end, units[-1].end if units else 0)
@@ -373,9 +377,16 @@ def _function(row: Row, status: Status | None) -> Function:
 
 def _derive_exe(config: Path, stem: str, label: str, status_text: str | None) -> ExeProgress:
     exe_dir = Path(config) / stem
-    rows = read_functions(exe_dir / FUNCTIONS_CSV)
-    units = read_units(exe_dir / UNITS_CSV)
-    statuses = {s.start: s for s in read_status(exe_dir / STATUS_CSV, status_text)}
+    return _exe_progress(exe_dir, stem, label, read_functions(exe_dir / FUNCTIONS_CSV),
+                         read_units(exe_dir / UNITS_CSV),
+                         read_status(exe_dir / STATUS_CSV, status_text))  # fmt: skip
+
+
+def _exe_progress(exe_dir: Path, stem: str, label: str, rows: Sequence[Row],
+                  units: Sequence[Unit], status_rows: Iterable[Status]) -> ExeProgress:  # fmt: skip
+    """One EXE from its parsed tables; `exe_dir` names them in errors (a directory, or a past
+    commit's `<sha>:config/<stem>` for the timeline)."""
+    statuses = {s.start: s for s in status_rows}
     code = [row for row in rows if row.kind in CODE_KINDS]
     stray = sorted(set(statuses) - {row.start for row in code})
     if stray:
@@ -825,7 +836,526 @@ def exclude_assembler(progress: Progress, asm_starts: Iterable[tuple[str, int]])
                           for exe in progress.exes))  # fmt: skip
 
 
-# ---- outputs ----
+# ---- the timeline: matched percent over days (todo progress-timeline-chart) ----
+#
+# Per EXE, the percent at the end of each day since the first commit, re-derived (with
+# _exe_progress and the signed asm rows moved out, so with the tables committed the last day is
+# the page's figure) at each first-parent commit of HEAD that changed one of the EXE's three
+# tables: the day a change reached the mainline is the day the figure moves. What each day did
+# comes from every commit by its own committer date (a merge only by count, unless it changed
+# the tables), the drive runs of progress/attempts.jsonl and the dated headings of
+# docs/learnings.md. build_timeline is pure; load_timeline is the thin git layer around it.
+
+TIMELINE_FILES = (FUNCTIONS_CSV, UNITS_CSV, STATUS_CSV)
+ATTEMPTS_JSONL = Path("progress") / "attempts.jsonl"
+LEARNINGS_MD = Path("docs") / "learnings.md"
+_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_LEARNING = re.compile(r"## ([0-9]{4}-[0-9]{2}-[0-9]{2}): (.+)")
+_SUBJECT = re.compile(r"([a-z]+)(?:\(([^)]*)\))?!?: ")  # a conventional-commit prefix
+_MATCH_SUBJECT = re.compile(r"feat\([^)]*\)!?: match (.*)")
+_MATCH_COUNT = re.compile(r"([0-9]+) ")  # "match 23 Tier 1 functions ..."
+_MATCH_NAME = re.compile(r"func_[0-9A-F]{8}")
+_FLAG_ID = re.compile(r"F-([0-9]{4})")
+_FLAGS_TEXT = " under approved flags "
+TOOLING_TYPES = ("feat", "fix", "refactor", "perf", "test", "build", "ci", "style")
+PLAN_TYPES = ("docs",)
+CO_AUTHOR, MATCHED_BY = "co-authored-by", "matched-by"
+CREDIT_NAMES = 2  # a match with more co-authors than this is credited to their count
+MATCHED_BY_TOOL = "reverseapoc "  # Matched-By: reverseapoc drive / lift name the tool, no model
+RUN_KIND, RUN_FINAL = "run", ("ENDED", "STOPPED")  # STARTED alone is a run still going
+_GIT_SAFE = ("-c", "safe.directory=*")
+_RECORD, _UNIT_SEP, _TRAILER_SEP = "\x1e", "\x1f", "\x1d"
+SHALLOW_NOTE = ("This checkout is a shallow clone, so the history the chart is drawn from is "
+                "cut; the chart is left out.")  # fmt: skip
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """A first-parent commit that changed an EXE's tables: per stem, the (functions, units,
+    status) texts after it, None for a table the commit does not have."""
+
+    sha: str
+    day: str  # committer date, YYYY-MM-DD in the committer's zone
+    texts: Mapping[str, tuple[str | None, str | None, str | None]]
+
+
+@dataclass(frozen=True)
+class LoggedCommit:
+    """A commit: its subject, its trailers as (key, value), and whether it is a merge."""
+
+    sha: str
+    day: str
+    subject: str
+    trailers: tuple[tuple[str, str], ...] = ()
+    merge: bool = False
+
+
+@dataclass(frozen=True)
+class RunLog:
+    """A drive run's last ENDED or STOPPED record: (model, sessions, matched) per model."""
+
+    run: str
+    day: str
+    sessions: int
+    matched: int
+    by_model: tuple[tuple[str, int, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class Day:
+    """One calendar day: each EXE's percent at its end (None before its tables exist) and the
+    change from the day before (None on the EXE's first day), its biggest driver and summary."""
+
+    date: str
+    index: int  # days since the first commit's day
+    percents: tuple[float | None, ...]
+    deltas: tuple[float | None, ...]
+    driver: str  # "" on a day with nothing logged
+    summary: str
+
+    @property
+    def active(self) -> bool:
+        return bool(self.driver)
+
+
+@dataclass(frozen=True)
+class Timeline:
+    """The days from the first commit's to the last logged one, EXE figures in EXES order; no
+    days and a note when the history cannot be read (a shallow clone)."""
+
+    labels: tuple[str, ...]
+    days: tuple[Day, ...] = ()
+    note: str = ""
+
+
+def parse_runs(text: str, path: Path = ATTEMPTS_JSONL) -> tuple[RunLog, ...]:
+    """Each run's last ENDED or STOPPED record of an attempts.jsonl, in first-seen order. A line
+    that is not JSON, or a final run record missing its run, date, sessions or matched, is a
+    ProgressError naming its line."""
+    final: dict[str, RunLog] = {}
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ProgressError(f"{path}: line {number}: not JSON ({exc})") from None
+        if not isinstance(record, dict) or record.get("kind") != RUN_KIND:
+            continue
+        if record.get("event") not in RUN_FINAL:
+            continue
+        found = _run_log(record)
+        if found is None:
+            raise ProgressError(f"{path}: line {number}: a run record without a run, a date, "
+                                "sessions or matched")  # fmt: skip
+        final[found.run] = found
+    return tuple(final.values())
+
+
+def _count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _run_log(record: Mapping) -> RunLog | None:
+    run, day = record.get("run"), record.get("date")
+    sessions, matched = _count(record.get("sessions")), _count(record.get("matched"))
+    if not isinstance(run, str) or not isinstance(day, str) or not _DATE.fullmatch(day):
+        return None
+    try:
+        datetime.date.fromisoformat(day)
+    except ValueError:  # month 13 and the like; the caller names the line
+        return None
+    if sessions is None or matched is None:
+        return None
+    totals = record.get("totals")
+    by_model = totals.get("by_model") if isinstance(totals, dict) else None
+    models = []
+    for model, figures in sorted((by_model or {}).items()):
+        if isinstance(figures, dict):
+            models.append((model, _count(figures.get("sessions")) or 0,
+                           _count(figures.get("matched")) or 0))  # fmt: skip
+    return RunLog(run, day, sessions, matched, tuple(models))
+
+
+def parse_learnings(text: str) -> tuple[tuple[str, str], ...]:
+    """(date, title) of each `## YYYY-MM-DD: title` heading of docs/learnings.md, in order."""
+    return tuple((m[1], m[2].strip()) for line in text.splitlines()
+                 if (m := _LEARNING.fullmatch(line.rstrip())))  # fmt: skip
+
+
+def _timeline_dir(sha: str, stem: str) -> PurePosixPath:
+    """How a past commit's table is named in an error: `<sha>:config/<stem>/<file>`."""
+    return PurePosixPath(f"{sha}:config/{stem}")
+
+
+def _snapshot_percent(snap: Snapshot, stem: str, label: str, asm: Container[int],
+                      parsed: dict[tuple[str, str], list]) -> float | None:  # fmt: skip
+    """The EXE's percent after `snap`, None while it has no functions.csv or units.csv. The
+    big tables are parsed once per distinct text (`parsed`), status.csv at every snapshot."""
+    functions, units, status = snap.texts[stem]
+    if functions is None or units is None:
+        return None
+    where = _timeline_dir(snap.sha, stem)
+    if (FUNCTIONS_CSV, functions) not in parsed:
+        parsed[(FUNCTIONS_CSV, functions)] = read_functions(where / FUNCTIONS_CSV, functions)
+    if (UNITS_CSV, units) not in parsed:
+        parsed[(UNITS_CSV, units)] = read_units(where / UNITS_CSV, units)
+    statuses = [] if status is None else read_status(where / STATUS_CSV, status)
+    exe = _exe_progress(where, stem, label, parsed[(FUNCTIONS_CSV, functions)],
+                        parsed[(UNITS_CSV, units)], statuses)  # fmt: skip
+    return _without(exe, asm).totals.percent
+
+
+def _day_figures(snapshots: Sequence[Snapshot], asm: Iterable[tuple[str, int]]
+                 ) -> dict[str, tuple[float | None, ...]]:  # fmt: skip
+    """Per day with a snapshot, each EXE's percent after its last snapshot of that day. A
+    snapshot dated before the one it follows (committer dates can go back along the mainline:
+    another zone, a rebase) counts on that one's day, so no figure moves into the past. An EXE
+    is re-derived only when its texts changed."""
+    wanted = set(asm)
+    parsed: dict[tuple[str, str], list] = {}
+    current: list[float | None] = [None] * len(EXES)
+    seen: dict[str, tuple[str | None, ...]] = {}
+    out: dict[str, tuple[float | None, ...]] = {}
+    day = ""
+    for snap in snapshots:
+        day = max(day, snap.day)
+        for i, (stem, label) in enumerate(EXES):
+            if stem not in snap.texts or seen.get(stem) == snap.texts[stem]:
+                continue
+            seen[stem] = snap.texts[stem]
+            starts = {start for s, start in wanted if s == stem}
+            current[i] = _snapshot_percent(snap, stem, label, starts, parsed)
+        out[day] = tuple(current)
+    return out
+
+
+def _conventional(subject: str) -> tuple[str, str]:
+    """(type, scope) of a conventional-commit subject, ("", "") for any other."""
+    found = _SUBJECT.match(subject)
+    return (found[1], found[2] or "") if found else ("", "")
+
+
+def _match_size(rest: str) -> int:
+    """Functions one match commit lands: `match 23 ...` 23, else the func_ names before ` in `
+    (at least one)."""
+    count = _MATCH_COUNT.match(rest)
+    if count:
+        return int(count[1])
+    return max(len(_MATCH_NAME.findall(rest.split(" in ", 1)[0])), 1)
+
+
+def _credit(trailers: Iterable[tuple[str, str]]) -> str:
+    """Who a match is credited to: its Co-Authored-By name (two joined by "and", more counted),
+    else the model a Matched-By names, else "no co-author"."""
+    pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
+    names = sorted({value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR})
+    if len(names) > CREDIT_NAMES:
+        return f"{len(names)} co-authors"
+    if names:
+        return " and ".join(names)
+    models = [value for key, value in pairs
+              if key == MATCHED_BY and not value.startswith(MATCHED_BY_TOOL)]  # fmt: skip
+    return models[0] if models else "no co-author"
+
+
+def _flag_ranges(ids: Iterable[int]) -> str:
+    """F-0069, F-0070, F-0071, F-0073 as "F-0069..F-0071, F-0073"."""
+    ordered = sorted(set(ids))
+    spans: list[list[int]] = []
+    for n in ordered:
+        if spans and n == spans[-1][1] + 1:
+            spans[-1][1] = n
+        else:
+            spans.append([n, n])
+    return ", ".join(f"F-{a:04d}" if a == b else f"F-{a:04d}..F-{b:04d}" for a, b in spans)
+
+
+def _plural(count: int, word: str, many: str | None = None) -> str:
+    return f"{count} {word if count == 1 else many or word + 's'}"
+
+
+@dataclass
+class _DayLog:
+    """What one day logged, gathered before it is worded."""
+
+    credits: dict[str, int] = dataclasses.field(default_factory=dict)  # credit -> functions
+    unflagged: dict[str, int] = dataclasses.field(default_factory=dict)  # the same, no flags
+    flagged: int = 0  # functions landed under approved flags
+    flags: set[int] = dataclasses.field(default_factory=set)
+    tooling: dict[str, int] = dataclasses.field(default_factory=dict)  # scope -> commits
+    plans: int = 0
+    other: int = 0
+    merges: int = 0
+    table_merges: list[str] = dataclasses.field(default_factory=list)  # their subjects
+    runs: list[RunLog] = dataclasses.field(default_factory=list)
+    learnings: list[str] = dataclasses.field(default_factory=list)
+
+    def add(self, commit: LoggedCommit, snapshots: Container[str]) -> None:
+        """Count `commit`; a merge in `snapshots` (it changed the tables) is kept by subject,
+        since its branch's matches are credited on their own days."""
+        if commit.merge:
+            self.merges += 1
+            if commit.sha in snapshots:
+                self.table_merges.append(commit.subject)
+            return
+        match = _MATCH_SUBJECT.match(commit.subject)
+        kind, scope = _conventional(commit.subject)
+        if match is not None:
+            size = _match_size(match[1])
+            credit = _credit(commit.trailers)
+            self.credits[credit] = self.credits.get(credit, 0) + size
+            if _FLAGS_TEXT in match[1]:
+                self.flagged += size
+                self.flags |= {int(n) for n in _FLAG_ID.findall(match[1])}
+            else:
+                self.unflagged[credit] = self.unflagged.get(credit, 0) + size
+        elif kind in TOOLING_TYPES:
+            self.tooling[scope] = self.tooling.get(scope, 0) + 1
+        elif kind in PLAN_TYPES:
+            self.plans += 1
+        else:
+            self.other += 1
+
+
+def _most(counts: Mapping[str, int]) -> tuple[str, int]:
+    """The key with the highest count, the first in sort order on a tie."""
+    return min(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _driver(log: _DayLog) -> str:
+    """The day's biggest driver: the largest match group (the flagged matches together, else
+    each credit), else the last merge that changed the tables, its largest drive run, its top
+    tooling scope, its plans, its other commits, its merges or its learnings; "" for a day with
+    nothing logged."""
+    groups = dict(log.unflagged)
+    if log.flagged:
+        groups[f"flags {_flag_ranges(log.flags)}"] = log.flagged
+    if groups:
+        name, size = _most(groups)
+        return f"{name}: {_plural(size, 'match', 'matches')}"
+    if log.table_merges:
+        return f"merge: {log.table_merges[-1]}"
+    if log.runs:
+        run = min(log.runs, key=lambda r: (-r.sessions, r.run))
+        return f"drive run {run.run}: {run.sessions} sessions, {run.matched} matched"
+    if log.tooling:
+        scope, count = _most(log.tooling)
+        return f"tooling: {scope} ({_plural(count, 'commit')})" if scope else (
+            f"tooling: {_plural(count, 'unscoped commit')}")
+    if log.plans:
+        return f"plans or docs: {_plural(log.plans, 'commit')}"
+    if log.other:
+        return _plural(log.other, "other commit")
+    if log.merges:
+        return _plural(log.merges, "merge")
+    return "learnings" if log.learnings else ""
+
+
+def _by_count(counts: Mapping[str, int]) -> list[tuple[str, int]]:
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _runs_text(runs: Sequence[RunLog]) -> str:
+    """The day's drive runs in one clause, with each model's matched of its sessions."""
+    models: dict[str, list[int]] = {}
+    for run in runs:
+        for model, sessions, matched in run.by_model:
+            figures = models.setdefault(model, [0, 0])
+            figures[0] += sessions
+            figures[1] += matched
+    detail = (f"{sum(r.sessions for r in runs)} sessions, "
+              f"{sum(r.matched for r in runs)} matched")  # fmt: skip
+    if models:
+        detail += ": " + ", ".join(f"{model} {matched} of {sessions}"
+                                   for model, (sessions, matched) in sorted(models.items()))
+    return f"{_plural(len(runs), 'drive run')} ({detail})"
+
+
+def _summary(log: _DayLog) -> str:
+    """The day in one sentence: matches by credit, flags, drive runs, tooling, plan and other
+    commits, then the learnings by title."""
+    parts = []
+    total = sum(log.credits.values())
+    if total:
+        who = ", ".join(f"{name} {size}" for name, size in _by_count(log.credits))
+        parts.append(f"{_plural(total, 'match', 'matches')} ({who})")
+    if log.flags:
+        parts.append(f"flags {_flag_ranges(log.flags)}")
+    if log.runs:
+        parts.append(_runs_text(log.runs))
+    if log.tooling:
+        parts.append(_plural(sum(log.tooling.values()), "tooling commit"))
+    if log.plans:
+        parts.append(_plural(log.plans, "plan or docs commit"))
+    if log.other:
+        parts.append(_plural(log.other, "other commit"))
+    if log.merges:
+        parts.append(_plural(log.merges, "merge"))
+    if log.learnings:
+        word = "learning" if len(log.learnings) == 1 else "learnings"
+        parts.append(f"{word}: {'; '.join(log.learnings)}")
+    return "; ".join(parts) + "." if parts else ""
+
+
+def _delta(now: float | None, before: float | None) -> float | None:
+    if now is None or before is None:
+        return None
+    return round(now - before, PERCENT_DECIMALS)
+
+
+def build_timeline(snapshots: Sequence[Snapshot], commits: Iterable[LoggedCommit],
+                   runs: Iterable[RunLog], learnings: Iterable[tuple[str, str]],
+                   asm: Iterable[tuple[str, int]]) -> Timeline:  # fmt: skip
+    """Every calendar day from the first logged day to the last (snapshots, commits and runs;
+    learnings dated outside that span are left out): each EXE's percent at the day's end, carried
+    over days without a snapshot, the change from the day before, the biggest driver and a
+    summary. `snapshots` are first-parent order, oldest first; `asm` the (stem, start) of the
+    signed asm rows, moved out of every day as the page moves them out (D-23). A table the
+    reader refuses is a ProgressError naming `<sha>:config/<stem>/<file>`."""
+    labels = tuple(label for _stem, label in EXES)
+    figures = _day_figures(snapshots, asm)
+    movers = {snap.sha for snap in snapshots}
+    logs: dict[str, _DayLog] = {}
+    for logged in commits:
+        logs.setdefault(logged.day, _DayLog()).add(logged, movers)
+    for run in runs:
+        logs.setdefault(run.day, _DayLog()).runs.append(run)
+    dates = sorted(set(logs) | set(figures))
+    if not dates:
+        return Timeline(labels)
+    first, last = (datetime.date.fromisoformat(d) for d in (dates[0], dates[-1]))
+    for day, title in learnings:
+        if dates[0] <= day <= dates[-1]:
+            logs.setdefault(day, _DayLog()).learnings.append(title)
+    days = []
+    current: tuple[float | None, ...] = (None,) * len(EXES)
+    for index in range((last - first).days + 1):
+        date = (first + datetime.timedelta(days=index)).isoformat()
+        before, current = current, figures.get(date, current)
+        log = logs.get(date, _DayLog())
+        days.append(Day(date, index, current,
+                        tuple(_delta(now, then) for now, then in zip(current, before, strict=True)),
+                        _driver(log), _summary(log)))  # fmt: skip
+    return Timeline(labels, tuple(days))
+
+
+def _git(repo: Path, args: Sequence[str], data: bytes | None = None) -> bytes:
+    """`git -c safe.directory=* -C repo <args>`'s output; a failure is a ProgressError."""
+    try:
+        done = subprocess.run(["git", *_GIT_SAFE, "-C", str(repo), *args], input=data,
+                              capture_output=True, check=False)  # fmt: skip
+    except OSError as exc:
+        raise ProgressError(f"git {args[0]}: cannot run ({exc})") from None
+    if done.returncode != 0:
+        why = done.stderr.decode("utf-8", "replace").strip()
+        raise ProgressError(f"git {args[0]} failed in {repo}: {why}")
+    return done.stdout
+
+
+def _table_changes(repo: Path) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """(sha, day, the (stem, file) tables it changed) of each first-parent commit of HEAD that
+    changed one, oldest first; a merge counts what it changed against its first parent."""
+    tracked = {f"config/{stem}/{name}": (stem, name)
+               for stem, _label in EXES for name in TIMELINE_FILES}  # fmt: skip
+    raw = _git(repo, ["log", "--first-parent", "--diff-merges=first-parent", "--reverse",
+                      "--name-only", f"--format={_RECORD}%H %cs", "HEAD"])  # fmt: skip
+    out = []
+    for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
+        head, *paths = chunk.splitlines()
+        sha, day = head.split()
+        touched = [tracked[p] for p in paths if p in tracked]
+        if touched:
+            out.append((sha, day, touched))
+    return out
+
+
+def _cat_files(repo: Path, specs: Sequence[str]) -> list[str | None]:
+    """The text of each `<sha>:<path>` through one `git cat-file --batch`, None when the commit
+    has no such file."""
+    if not specs:
+        return []
+    raw = _git(repo, ["cat-file", "--batch"], ("\n".join(specs) + "\n").encode("utf-8"))
+    out: list[str | None] = []
+    pos = 0
+    for spec in specs:
+        end = raw.find(b"\n", pos)
+        header = raw[pos:end].decode("utf-8", "replace").split() if end >= 0 else []
+        pos = end + 1
+        if header[-1:] == ["missing"]:
+            out.append(None)
+            continue
+        if len(header) != 3 or header[1] != "blob" or not header[2].isdigit():
+            raise ProgressError(f"git cat-file: {spec}: unexpected answer {' '.join(header)!r}")
+        size = int(header[2])
+        try:
+            out.append(raw[pos:pos + size].decode("utf-8"))
+        except UnicodeDecodeError:
+            raise ProgressError(f"{spec}: not UTF-8") from None
+        pos += size + 1
+    return out
+
+
+def _snapshots(repo: Path) -> list[Snapshot]:
+    """One Snapshot per first-parent commit that changed a table. Only the changed tables are
+    read (all three on an EXE's first change); the others carry over from the snapshot before."""
+    changes = _table_changes(repo)
+    wanted: list[tuple[int, str, str]] = []
+    seen: set[str] = set()
+    for i, (_sha, _day, touched) in enumerate(changes):
+        for stem in dict.fromkeys(stem for stem, _name in touched):
+            names = [name for s, name in touched if s == stem] if stem in seen else TIMELINE_FILES
+            seen.add(stem)
+            wanted += [(i, stem, name) for name in names]
+    texts = _cat_files(repo, [f"{changes[i][0]}:config/{stem}/{name}" for i, stem, name in wanted])
+    read: dict[int, list[tuple[str, str, str | None]]] = {}
+    for (i, stem, name), text in zip(wanted, texts, strict=True):
+        read.setdefault(i, []).append((stem, name, text))
+    state: dict[str, list[str | None]] = {}
+    out = []
+    for i, (sha, day, _touched) in enumerate(changes):
+        for stem, name, text in read[i]:
+            state.setdefault(stem, [None] * len(TIMELINE_FILES))[TIMELINE_FILES.index(name)] = text
+        out.append(Snapshot(sha, day, {stem: tuple(now) for stem, now in state.items()}))
+    return out
+
+
+def _logged_commits(repo: Path) -> list[LoggedCommit]:
+    """Every commit of HEAD, oldest first, with its subject and trailers; a commit with more
+    than one parent is a merge."""
+    fmt = f"--format={_RECORD}%H{_UNIT_SEP}%P{_UNIT_SEP}%cs{_UNIT_SEP}%s{_UNIT_SEP}" + (
+        "%(trailers:only,unfold,separator=%x1d)")
+    raw = _git(repo, ["log", "--reverse", fmt, "HEAD"])
+    out = []
+    for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
+        sha, parents, day, subject, trailers = chunk.rstrip("\n").split(_UNIT_SEP, 4)
+        pairs = tuple((key.strip(), value.strip()) for key, sep, value
+                      in (t.partition(":") for t in trailers.split(_TRAILER_SEP)) if sep)
+        out.append(LoggedCommit(sha, day, subject, pairs, len(parents.split()) > 1))
+    return out
+
+
+def _repo_text(path: Path) -> str:
+    """A repository file's text, "" when it is absent."""
+    try:
+        return path.read_bytes().decode("utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProgressError(f"{path}: cannot read ({exc})") from None
+
+
+def load_timeline(repo: Path, asm: Iterable[tuple[str, int]]) -> Timeline | None:
+    """The timeline of the checkout at `repo` (the directory holding config/): None when it is
+    no checkout (no .git: a config tree on its own has no history), no days and SHALLOW_NOTE in
+    a shallow clone. A git failure or a table the reader refuses is a ProgressError."""
+    repo = Path(repo)
+    if not (repo / ".git").exists():
+        return None
+    if _git(repo, ["rev-parse", "--is-shallow-repository"]).strip() == b"true":
+        return Timeline(tuple(label for _stem, label in EXES), note=SHALLOW_NOTE)
+    return build_timeline(_snapshots(repo), _logged_commits(repo),
+                          parse_runs(_repo_text(repo / ATTEMPTS_JSONL), ATTEMPTS_JSONL),
+                          parse_learnings(_repo_text(repo / LEARNINGS_MD)), asm)  # fmt: skip
+
 
 
 def render(doc: object) -> bytes:
@@ -1540,9 +2070,10 @@ def _assembler_css() -> list[str]:
             f"margin-top:{TICK_HEIGHT - TICK_SHORT}px}}"]  # fmt: skip
 
 
-def _page_css(coverage: bool = False, assembler: bool = False) -> str:
+def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False) -> str:
     """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
-    section's and the assembler tick's rules only when the page has them."""
+    section's, the assembler tick's and the timeline chart's rules only when the page has
+    them."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
         "color-scheme:light dark}",
@@ -1587,6 +2118,7 @@ def _page_css(coverage: bool = False, assembler: bool = False) -> str:
         *(f'.mosaic [{attr}="{token}"]{{{attr}:var(--{var})}}'
           for attr, token, var in MOSAIC_PAINTS),
         *(_coverage_css() if coverage else []),
+        *(_timeline_css() if timeline else []),
         "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
         ".exe h2{margin-bottom:.5rem}.mosaic svg{min-width:48rem}}",
     ])
@@ -1744,8 +2276,248 @@ def _mechanics_html(mechanics: Mechanics | None) -> list[str]:
     return lines
 
 
+TIMELINE_HEADING = "Progress over days"
+# One line per EXE in EXES order: the dataviz reference palette's categorical slots 1 to 3 (blue,
+# orange, aqua), light and dark, validated with its validate_palette.js on SURFACE and
+# DARK_SURFACE: all pass; slot 3's light contrast is 2.74:1 (a warning), covered by the direct
+# labels and the table. A slot is the EXE's, never its rank.
+SERIES_COLORS = ("#2a78d6", "#eb6834", "#1baf7a")
+DARK_SERIES_COLORS = ("#3987e5", "#d95926", "#199e70")
+# The chart's own coordinates. At a 390 px phone the column is about 351 px, so the 400-unit
+# viewBox draws its 13-unit text near 11.4 px; on a desktop it stops at CHART_MAX_WIDTH.
+CHART_WIDTH, CHART_HEIGHT = 400, 240
+CHART_FONT = 13
+CHART_LEFT, CHART_RIGHT, CHART_TOP, CHART_BOTTOM = 44, 46, 26, 40  # margins around the plot
+CHART_MAX_WIDTH = "32rem"
+CHART_TICK_GAP = 6  # tick label to axis
+CHART_LABEL_GAP = 14  # the least room between two direct labels at the right edge
+CHART_DOT = 3.5  # a marker's radius
+X_STEPS = (1, 2, 5, 7, 14, 30, 60, 91, 182, 365)  # day-axis tick steps, the first that fits
+X_TICKS_MAX = 6
+Y_INTERVALS = 4  # about this many grid intervals; the step rounds up to 1, 2, 2.5 or 5
+_Y_MANTISSAS = (1.0, 2.0, 2.5, 5.0, 10.0)
+
+
+def _short(label: str) -> str:
+    return label.removesuffix(".EXE")
+
+
+def _y_scale(top: float) -> tuple[float, int]:
+    """(step, decimals) of the percent axis: a 1, 2, 2.5 or 5 step near top / Y_INTERVALS."""
+    raw = top / Y_INTERVALS if top > 0 else 0.25
+    magnitude = 10.0 ** math.floor(math.log10(raw))
+    mantissa = next(m for m in _Y_MANTISSAS if m * magnitude >= raw * (1 - 1e-9))
+    step = mantissa * magnitude
+    decimals = max(0, -math.floor(math.log10(step) + 1e-9)) + (1 if mantissa == 2.5 else 0)
+    return step, decimals
+
+
+def _x_step(last: int) -> int:
+    return next((s for s in X_STEPS if last / s <= X_TICKS_MAX), math.ceil(last / X_TICKS_MAX))
+
+
+def _change(percent_value: float | None, delta: float | None) -> str:
+    """A day's figure for the table and the tooltips: the percent and its change."""
+    if percent_value is None:
+        return "not started"
+    shown = shield_message(percent_value)
+    if delta is None:
+        return f"{shown} (first day)"
+    if delta == 0:
+        return f"{shown} (no change)"
+    return f"{shown} ({f'{delta:+.{PERCENT_DECIMALS}f}'.rstrip('0').rstrip('.')})"
+
+
+def _series(timeline: Timeline) -> list[int]:
+    """The EXE indexes that have a figure on some day."""
+    return [i for i in range(len(timeline.labels))
+            if any(d.percents[i] is not None for d in timeline.days)]  # fmt: skip
+
+
+@dataclass(frozen=True)
+class _Plot:
+    """The chart's scales: x(day index) and y(percent) in viewBox units, and the percent axis
+    as `intervals` steps of `step` from 0, labelled with `decimals` decimals."""
+
+    last: int  # the last day's index, at least 1
+    step: float
+    intervals: int
+    decimals: int
+
+    def x(self, index: int) -> float:
+        return CHART_LEFT + (CHART_WIDTH - CHART_LEFT - CHART_RIGHT) * index / self.last
+
+    def y(self, value: float) -> float:
+        height = CHART_HEIGHT - CHART_TOP - CHART_BOTTOM
+        return CHART_TOP + height * (1 - value / (self.step * self.intervals))
+
+
+def _plot(timeline: Timeline) -> _Plot:
+    highest = max((p for d in timeline.days for p in d.percents if p is not None), default=0.0)
+    step, decimals = _y_scale(highest)
+    intervals = max(math.ceil(highest / step - 1e-9), 1)
+    return _Plot(max(timeline.days[-1].index, 1), step, intervals, decimals)
+
+
+def _axes_svg(timeline: Timeline, plot: _Plot) -> list[str]:
+    """The axis title, the percent grid with its labels, the day ticks and the day axis title."""
+    x, y, decimals = plot.x, plot.y, plot.decimals
+    lines = [f'<text class="tl-axis" x="0" y="{CHART_FONT}">matched code, %</text>']
+    for k in range(plot.intervals + 1):
+        value = round(k * plot.step, 10)
+        lines.append(f'<line class="tl-grid" x1="{CHART_LEFT}" x2="{CHART_WIDTH - CHART_RIGHT}" '
+                     f'y1="{_num(y(value))}" y2="{_num(y(value))}"/>')
+        lines.append(f'<text class="tl-axis" x="{CHART_LEFT - CHART_TICK_GAP}" '
+                     f'y="{_num(y(value) + CHART_FONT / 3)}" text-anchor="end">'
+                     f"{value:.{decimals}f}%</text>")  # fmt: skip
+    last = timeline.days[-1].index
+    base = CHART_HEIGHT - CHART_BOTTOM
+    for index in range(0, last + 1, _x_step(last)):
+        lines.append(f'<text class="tl-axis" x="{_num(x(index))}" '
+                     f'y="{base + CHART_FONT + CHART_TICK_GAP}" text-anchor="middle">'
+                     f"{index}</text>")  # fmt: skip
+    lines.append(f'<text class="tl-axis" x="{_num((CHART_LEFT + CHART_WIDTH - CHART_RIGHT) / 2)}" '
+                 f'y="{CHART_HEIGHT - 4}" text-anchor="middle">'
+                 f"{_xml(f'days since the first commit, {timeline.days[0].date}')}</text>")
+    return lines
+
+
+def _line_svg(timeline: Timeline, i: int, plot: _Plot) -> list[str]:
+    """EXE i's line, unbroken over the days it has a figure, and a marker per active day with
+    the day's figure and driver as its tooltip."""
+    x, y = plot.x, plot.y
+    points, dots = [], []
+    for day in timeline.days:
+        value = day.percents[i]
+        if value is None:
+            continue
+        points.append(f"{'L' if points else 'M'}{_num(x(day.index))},{_num(y(value))}")
+        if not day.active:
+            continue
+        title = (f"Day {day.index}, {day.date}: {_short(timeline.labels[i])} "
+                 f"{_change(value, day.deltas[i])}. {day.driver}")
+        dots.append(f'<circle class="tl-dot s{i}" cx="{_num(x(day.index))}" '
+                    f'cy="{_num(y(value))}" r="{CHART_DOT}"><title>{_xml(title)}</title></circle>')
+    return [f'<path class="tl-line s{i}" d="{" ".join(points)}"/>', *dots]
+
+
+def _end_labels_svg(timeline: Timeline, series: Sequence[int], plot: _Plot) -> list[str]:
+    """Each line's short name at its last figure, right of the plot, pushed apart so two lines
+    ending close together keep readable labels, and then back up from the plot's bottom so none
+    lands on the day axis."""
+    ends = sorted((plot.y(next(d.percents[i] for d in reversed(timeline.days)
+                          if d.percents[i] is not None)), i) for i in series)  # fmt: skip
+    placed: list[tuple[float, int]] = []
+    for at, i in ends:
+        if placed and at - placed[-1][0] < CHART_LABEL_GAP:
+            at = placed[-1][0] + CHART_LABEL_GAP
+        placed.append((at, i))
+    limit = float(CHART_HEIGHT - CHART_BOTTOM)
+    for k in reversed(range(len(placed))):
+        at, i = placed[k]
+        placed[k] = (min(at, limit), i)
+        limit = placed[k][0] - CHART_LABEL_GAP
+    x = CHART_WIDTH - CHART_RIGHT + CHART_TICK_GAP
+    return [f'<text class="tl-name" x="{x}" y="{_num(at + CHART_FONT / 3)}">'
+            f"{_xml(_short(timeline.labels[i]))}</text>" for at, i in placed]
+
+
+def render_timeline_svg(timeline: Timeline) -> str:
+    """The chart: matched percent (y, from 0) against days since the first commit (x), one line
+    per EXE with a figure, a marker with a tooltip per active day, direct labels at the right;
+    colours come from the page's rules (light and dark), so it is only drawn inline."""
+    series = _series(timeline)
+    plot = _plot(timeline)
+    last = timeline.days[-1]
+    figures = ", ".join(f"{timeline.labels[i]} {_change(last.percents[i], None).split(' (')[0]}"
+                        for i in series)  # fmt: skip
+    aria = (f"Matched code percent per EXE over the {last.index + 1} days since the first commit "
+            f"on {timeline.days[0].date}; on {last.date}: {figures}. The table below holds the "
+            "same data.")
+    lines = [f'<svg class="tl-chart" viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}" role="img" '
+             f'aria-label="{_xml(aria)}" font-size="{CHART_FONT}">',
+             *_axes_svg(timeline, plot)]  # fmt: skip
+    for i in series:
+        lines += _line_svg(timeline, i, plot)
+    lines += _end_labels_svg(timeline, series, plot)
+    lines.append("</svg>")
+    return "\n".join(lines)
+
+
+def _timeline_css() -> list[str]:
+    """The chart's and the day table's rules: series colours per scheme, recessive axes."""
+    def colours(palette: Sequence[str]) -> str:
+        return "".join(f".tl-line.s{i}{{stroke:{c}}}.tl-dot.s{i}{{fill:{c}}}"
+                       f".tl-key.s{i}{{background:{c}}}" for i, c in enumerate(palette))
+
+    return [
+        ".tl{margin-top:.75rem}",
+        f".tl svg{{display:block;width:100%;height:auto;max-width:{CHART_MAX_WIDTH}}}",
+        ".tl-axis,.tl-name{fill:var(--secondary)}",
+        ".tl-grid{stroke:var(--secondary);stroke-opacity:.25;stroke-width:1}",
+        ".tl-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}",
+        ".tl-dot{stroke:var(--surface);stroke-width:1.5}",
+        colours(SERIES_COLORS),
+        f"@media (prefers-color-scheme: dark){{{colours(DARK_SERIES_COLORS)}}}",
+        ".days{width:100%;border-collapse:collapse;margin-top:.5rem;font-size:.875rem;"
+        "font-variant-numeric:tabular-nums}",
+        ".days th,.days td{padding:0 .75rem .25rem 0;text-align:left;vertical-align:top}",
+        ".days thead th{font-weight:600}",
+        ".days tbody th{font-weight:400;white-space:nowrap}",
+        ".days .fig>*{padding-top:.75rem}",
+        ".days .what{overflow-wrap:anywhere}",
+    ]
+
+
+def _days_table_html(timeline: Timeline) -> list[str]:
+    """The chart's data as a table, newest day first. A day is two rows under its Day header:
+    the EXE figures, then the driver and summary across the EXE columns, so at 390 px the
+    figures keep their width instead of yielding it to a long summary column."""
+    active = [d for d in reversed(timeline.days) if d.active]
+    head = "".join(f'<th scope="col">{_xml(label)}</th>' for label in timeline.labels)
+    rows = []
+    for d in active:
+        figures = "".join(f"<td>{_xml(_change(p, delta))}</td>"
+                          for p, delta in zip(d.percents, d.deltas, strict=True))  # fmt: skip
+        rows += [f'<tr class="fig"><th scope="row" rowspan="2">Day {d.index}<br>{_xml(d.date)}'
+                 f"</th>{figures}</tr>",
+                 f'<tr><td class="what" colspan="{len(timeline.labels)}"><strong>'
+                 f"{_xml(d.driver)}</strong><br>{_xml(d.summary)}</td></tr>"]  # fmt: skip
+    return [f"<details><summary>Day by day ({len(active)} days with commits, runs or "
+            "learnings, newest first)</summary>",
+            '<table class="days">',
+            f'<thead><tr><th scope="col">Day</th>{head}</tr></thead>',
+            "<tbody>", *rows, "</tbody>", "</table>", "</details>"]  # fmt: skip
+
+
+TIMELINE_CAPTION = (
+    "Matched code per EXE at the end of each day since the first commit, re-derived from the "
+    "history of each EXE's status, functions and units tables the way the figures above are "
+    "(a change counts on the day it reached main). Each marker's tooltip and the table name the "
+    "day's biggest driver; the table also sums what the day did: match commits by co-author, "
+    "flags approvals, drive runs, tooling and plan commits, and learnings.")
+
+
+def _timeline_html(timeline: Timeline | None) -> list[str]:
+    """The `Progress over days` section: the chart, its legend and the day table, or the note
+    alone when the history cannot be read; nothing without a timeline."""
+    if timeline is None:
+        return []
+    lines = ['<section class="timeline" aria-labelledby="timeline">',
+             f'<h2 id="timeline">{TIMELINE_HEADING}</h2>']
+    if not timeline.days:
+        return [*lines, f'<p class="caption">{_xml(timeline.note)}</p>', "</section>"]
+    keys = [f'<li><span class="swatch tl-key s{i}" aria-hidden="true"></span>'
+            f"{_xml(timeline.labels[i])}</li>" for i in _series(timeline)]  # fmt: skip
+    return [*lines, f'<p class="caption">{_xml(TIMELINE_CAPTION)}</p>',
+            '<ul class="legend">', *keys, "</ul>",
+            '<div class="tl">', render_timeline_svg(timeline), "</div>",
+            *_days_table_html(timeline), "</section>"]  # fmt: skip
+
+
 def render_html(progress: Progress, commit: str | None = None,
-                mechanics: Mechanics | None = None) -> str:  # fmt: skip
+                mechanics: Mechanics | None = None,
+                timeline: Timeline | None = None) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, a percent bar, the figures in text and the function strip (one tick per game and
     thunk function in address order; matched and partial ticks stand taller and carry the mosaic
@@ -1767,7 +2539,8 @@ def render_html(progress: Progress, commit: str | None = None,
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
-             _page_css(coverage=mechanics is not None, assembler=assembler), "</style>",
+             _page_css(coverage=mechanics is not None, assembler=assembler,
+                       timeline=timeline is not None and bool(timeline.days)), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
@@ -1777,6 +2550,7 @@ def render_html(progress: Progress, commit: str | None = None,
     lines += [STRIP_KEY,
               *([ASSEMBLER_KEY] if assembler else []),
               *_mechanics_html(mechanics),
+              *_timeline_html(timeline),
               "<h2>The mosaic</h2>",
               '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
               "bytes; large units carry their name.</p>",
@@ -1787,8 +2561,9 @@ def render_html(progress: Progress, commit: str | None = None,
 
 
 def write_html(progress: Progress, path: Path, commit: str | None = None,
-               mechanics: Mechanics | None = None) -> None:  # fmt: skip
-    _write_atomic(path, render_html(progress, commit, mechanics).encode("utf-8"))
+               mechanics: Mechanics | None = None,
+               timeline: Timeline | None = None) -> None:  # fmt: skip
+    _write_atomic(path, render_html(progress, commit, mechanics, timeline).encode("utf-8"))
 
 
 # ---- command line ----
@@ -1812,12 +2587,13 @@ def _parser() -> argparse.ArgumentParser:
 @dataclass(frozen=True)
 class _Derived:
     """What main derives once: derive's progress (the DecompHub feed's, as gate writes it), the
-    same with the signed asm rows moved out (every other output, D-23), and the coverage view
-    (None without mechanics.toml)."""
+    same with the signed asm rows moved out (every other output, D-23), the coverage view
+    (None without mechanics.toml) and the timeline (None outside a checkout or without --out)."""
 
     progress: Progress
     shown: Progress
     mechanics: Mechanics | None
+    timeline: Timeline | None = None
 
 
 Writer = Callable[[_Derived, Path], None]
@@ -1838,12 +2614,28 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
                    _on_shown(functools.partial(write_exe_shield, stem=stem)))
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
-            d.shown, path, args.commit, d.mechanics)
+            d.shown, path, args.commit, d.mechanics, d.timeline)
     if args.report is not None:
         yield args.report, _on_shown(write_report)
     if args.decomphub is not None:
         # gate writes this feed from derive() alone (T-07-44): the asm list never changes it.
         yield args.decomphub, lambda d, path: write_decomphub(d.progress, path)
+
+
+HISTORY_FAILED_NOTE = ("The chart is left out: the repository history could not be read; the "
+                       "log of the run that built this page says why.")  # fmt: skip
+
+
+def _timeline(config: Path, mechanics: Mechanics | None) -> Timeline | None:
+    """The timeline of the checkout holding `config`. A history the walk cannot read leaves the
+    chart out with a note on the page and a warning on stderr; the page is still written."""
+    asm = mechanics.assembler if mechanics else ()
+    try:
+        return load_timeline(Path(config).resolve().parent, asm)
+    except ProgressError as exc:
+        print(f"progress.py: warning: the progress-over-days chart is left out: {exc}",
+              file=sys.stderr)  # fmt: skip
+        return Timeline(tuple(label for _stem, label in EXES), note=HISTORY_FAILED_NOTE)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1858,7 +2650,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         progress = derive(args.config)
         found = derive_mechanics(args.config, progress)
         shown = exclude_assembler(progress, found.assembler) if found else progress
-        derived = _Derived(progress, shown, found)
+        timeline = _timeline(args.config, found) if args.out is not None else None
+        derived = _Derived(progress, shown, found, timeline)
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
             write(derived, path)

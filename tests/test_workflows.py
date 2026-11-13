@@ -147,6 +147,8 @@ def test_pages_build_steps():
     build = job("build")
     assert "runs-on: ubuntu-latest" in build
     assert "- uses: actions/checkout@v7" in build
+    # The progress-over-days chart walks the whole history; a shallow clone gets a note only.
+    assert "fetch-depth: 0" in build
     runs = [line for line in build if line.startswith("run:")]
     assert any(PROGRESS_RUN in line for line in runs), runs
     assert not any("uv " in line or "pip " in line for line in runs), "progress.py is stdlib"
