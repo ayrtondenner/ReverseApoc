@@ -8495,21 +8495,31 @@ AGY_CANARY_PROBE = "reverseapoc-canary-probe.txt"
 # ending DENIED is a denial by its tool's name (agyjson)
 _AGY_COMMAND_ACTIONS = frozenset({"command", "unsandboxed", "run_command"})
 _AGY_URL_ACTIONS = frozenset({"read_url", "execute_url"})
+# agy 1.5.7's edit_file step stopped the 20261113-cascade night because the canary never edited
+# a file: the allowed session writes plan.json with an empty frame (`attempt plan` refuses it)
+# and then edits it in place to the canary frame, so a version that renames or reshapes the
+# edit step fails the canary (_agy_allowed_checks), not the night
+AGY_CANARY_FRAME = '"frame": "canary"'  # as json.dumps writes _canary_plan_text's frame
+AGY_CANARY_DRAFT = '"frame": ""'
 AGY_CANARY_ALLOWED_PROMPT = (
-    "Do these five steps in order, one tool call each, then reply DONE: "
+    "Do these six steps in order, one tool call each, then reply DONE: "
     f"1. Run the command `{CANARY_WRAPPER}`. "
-    "2. Write the file {plan_file} with exactly this content: {plan} "
-    f"3. Run the command `{AGY_CANARY_PLAN}`. "
-    "4. Write the file {note_file} with exactly this content: {note} "
-    f"5. Run the command `{CANARY_CHECK}`."
+    "2. Write the file {plan_file} with exactly this content: {draft} "
+    "3. With your file-edit tool, edit the file {plan_file} in place: replace "
+    f"`{AGY_CANARY_DRAFT}` with `{AGY_CANARY_FRAME}`, changing nothing else. "
+    f"4. Run the command `{AGY_CANARY_PLAN}`. "
+    "5. Write the file {note_file} with exactly this content: {note} "
+    f"6. Run the command `{CANARY_CHECK}`."
 )  # a str.format template: agy_canary_allowed_prompt fills it
 
 
 def agy_canary_allowed_prompt(attempt_dir: Path, size: int) -> str:
     """AGY_CANARY_ALLOWED_PROMPT for the canary's attempt directory and its row of `size`
-    bytes."""
+    bytes: the plan to write first is the row's plan with its frame emptied, which the edit
+    step turns back into the plan."""
+    draft = _canary_plan_text(size).replace(AGY_CANARY_FRAME, AGY_CANARY_DRAFT)
     return AGY_CANARY_ALLOWED_PROMPT.format(plan_file=attempt_dir / hooks.PLAN_NAME,
-                                            plan=_canary_plan_text(size),
+                                            draft=draft,
                                             note_file=attempt_dir / hooks.CHECK_NOTE_NAME,
                                             note=CANARY_NOTE_TEXT)  # fmt: skip
 
@@ -8590,8 +8600,9 @@ def _agy_init_problems(events: Sequence[dict], claim: _Claim) -> list[str]:
 def _agy_allowed_checks(events: Sequence[dict], claim: _Claim, checks: _Checks) -> None:
     """The allowed session: a clean init, a SUCCESS result, no denied step, every tool step in
     a shape the night's audit knows (run_command in agy 1.5.5's shape, spike 012 round 3; any
-    other FAILs naming the step), the three wrapper calls run (agyjson.commands: known steps
-    only), context.md written, and the check logged exit 0 with its consumed note."""
+    other FAILs naming the step), a known edit_file step that ran (agyjson.edits: the plan's
+    in-place edit), the three wrapper calls run (agyjson.commands: known steps only),
+    context.md written, and the check logged exit 0 with its consumed note."""
     problems = _agy_init_problems(events, claim)
     checks.add(not problems, "init: " + ("; ".join(problems) if problems else
                                          f"cwd the attempt dir, model {claim.model}, "
@@ -8608,6 +8619,12 @@ def _agy_allowed_checks(events: Sequence[dict], claim: _Claim, checks: _Checks) 
     unknown = agyjson.unknown_steps(events)
     checks.add(not unknown, f"the allowed session: {_listed(unknown)}" if unknown
                else "every tool step of the allowed session is one the agy audit knows")
+    edited = [p for p in agyjson.edits(events)
+              if re.split(r"[\\/]", p)[-1].casefold() == hooks.PLAN_NAME]  # fmt: skip
+    checks.add(bool(edited), f"the allowed session edited {edited[0]} in place with edit_file"
+               if edited else f"the allowed session made no in-place edit_file step on "
+               f"{hooks.PLAN_NAME} the agy audit knows (its edit, if any, has a shape the "
+               "night's audit would stop)")  # fmt: skip
     ran = agyjson.commands(events)
     wanted = (CANARY_WRAPPER, AGY_CANARY_PLAN, CANARY_CHECK)
     missing = [f"`{command}`" for command in wanted if command not in ran]

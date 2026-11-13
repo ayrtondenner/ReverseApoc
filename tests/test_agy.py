@@ -208,6 +208,9 @@ def test_agy_prompt(tmp_path):
     assert prompt == codex.replace(codex_note, note)
     assert note.startswith(codex_note)
     assert "read_file" in note and "inside this attempt's directory" in note
+    # agy 1.5.8's edit_file step is a write the audit knows and judges (allowed by the same
+    # write_file rules), so the file-edit rule holds for agy as it does for Codex
+    assert "Create and edit files only with your file-edit tool" in note
     claim = driver._Claim(driver.Pick(EXE, 0x1000, "func_00001000", UNIT, 20, 1), RUN,
                           tmp_path / "repo", 1, arm=backends.load_arms()[GEMINI])  # fmt: skip
     reads = _rule(driver.agy_settings(claim)["permissions"]["allow"], "read_file")
@@ -269,7 +272,9 @@ def test_agyjson_reads_the_real_run_command_step():
     assert agyjson.commands(events) == [CONTEXT, PLAN, CHECK]
     assert agyjson.unknown_steps(events) == []
     assert agyjson.write_targets(events) == ["C:\\made-up\\attempt-1\\plan.json",
+                                             "C:\\made-up\\attempt-1\\plan.json",
                                              "C:\\made-up\\attempt-1\\check-note.json"]
+    assert agyjson.edits(events) == ["C:\\made-up\\attempt-1\\plan.json"]
     assert agyjson.read_targets(events) == []
     line = {"CommandLine": CHECK}
     odd = [_step(1, "run_command", name="run_command", parameters={**line, "Cwd": "C:\\x"}),
@@ -692,6 +697,99 @@ def test_agyjson_knows_the_real_schedule_timer():
     for index, text in zip(range(10, 10 + len(unknown)), found, strict=True):
         assert f"step {index}: tool 'schedule'" in text, (index, text)
     assert agyjson.commands(unknown) == [] and agyjson.denials(unknown) == []
+
+
+EDITED = "C:/made-up/ws/x.txt"  # the agy 1.5.8 captures' file, its scratch dir made up
+
+
+def _edit(index: int, *, state: str = "DONE", **info) -> dict:
+    """An edit_file step in agy 1.5.8's real shape (the 2026-11-13 captures): tool_info {name,
+    parameters: {Path}}; `info` replaces or adds tool_info keys."""
+    return _step(index, "edit_file", state=state,
+                 **{"name": "edit_file", "parameters": {"Path": EDITED}, **info})  # fmt: skip
+
+
+def _deny_rule_message(target: str) -> str:
+    """agy 1.5.8's whole message for an edit_file step a write_file deny rule refused (the
+    2026-11-13 deny capture): the write_file permission names the target, no warning line."""
+    return (f"permission check failed for write_file {json.dumps(target)}: Permission denied "
+            f"for write_file({target}). Matches user-configured deny rule.")
+
+
+def test_agyjson_knows_the_real_edit_file_step():
+    """agy 1.5.7 began streaming an in-place edit as tool `edit_file`, which stopped the
+    20261113-cascade night as an unknown step. The real 1.5.8 allowed capture (a read_file of
+    x.txt, then an edit_file of it, settings allowing write_file(x.txt)) is clean: no unknown
+    step, no denial, the read in the reads, the edit's Path in the writes the night judges
+    against its allowlist (agy governs edit_file with the write_file rules) and in `edits`."""
+    events = _events("agy158_edit_allowed")
+    assert agyjson.unknown_steps(events) == []
+    assert agyjson.denials(events) == [] and agyjson.commands(events) == []
+    assert agyjson.read_targets(events) == [EDITED]
+    assert agyjson.write_targets(events) == [EDITED]
+    assert agyjson.edits(events) == [EDITED]
+    assert agyjson.undenied_steps(events) == ["step 2: read_file (DONE)",
+                                              "step 4: edit_file (DONE)"]  # fmt: skip
+
+
+def test_agyjson_a_denied_edit_file_never_ran():
+    """The real 1.5.8 deny capture: an edit_file of x.txt under a write_file(x.txt) deny rule
+    ends ERROR, TOOL_ERROR, `permission check failed for write_file "<path>": Permission denied
+    for write_file(<path>). Matches user-configured deny rule.`: a denial with the write_file
+    action, so the edit never ran (in no write, edit or unknown list) and is a denied write the
+    night audit names; the read before it ran."""
+    events = _events("agy158_edit_denied")
+    assert agyjson.denials(events) == [agyjson.Denial(4, "edit_file", "write_file", EDITED,
+                                                      EDITED)]
+    assert agyjson.write_targets(events) == [] and agyjson.edits(events) == []
+    assert agyjson.unknown_steps(events) == []
+    assert agyjson.denied_writes(events) == [EDITED]
+    assert agyjson.undenied_steps(events) == ["step 2: read_file (DONE)"]
+    assert agyjson.read_targets(events) == [EDITED]
+
+
+def test_agyjson_an_edit_file_step_of_another_shape_is_unknown():
+    """Fail closed: only the captured shape is a known edit, tool_info {name: edit_file,
+    parameters: {Path: <string>}} with an `error` once it fails. Another tool_info key, another
+    or a missing parameter, a Path that is no string, a tool_info name that is not its tool's,
+    a subagent's step and a made-up tool are each unknown, never an edit, and a path they name
+    is still judged as a write. Only the exact deny-rule message is a denial: text before it,
+    another action, another target, the round-3 `user denied permission` form (never seen for
+    edit_file) and another error type all count as run."""
+    unknown = [_edit(1, output="made-up"), _edit(2, parameters={"Path": EDITED, "Content": "x"}),
+               _edit(3, parameters={}), _edit(4, parameters={"Path": [EDITED]}),
+               _edit(5, name="write_file"), _edit(6, subagent={"name": "made-up"}),
+               _step(7, "patch_file", name="patch_file", parameters={"Path": EDITED})]
+    found = agyjson.unknown_steps(unknown)
+    assert [text.split(":")[0] for text in found] == [f"step {n}" for n in range(1, 8)], found
+    assert agyjson.edits(unknown) == [] and agyjson.denials(unknown) == []
+    assert agyjson.write_targets(unknown).count(EDITED) == 5  # step 4's Path is no string
+    message = _deny_rule_message(EDITED)
+    inexact = [_edit(index, state="ERROR", error={"type": "TOOL_ERROR", "message": m})
+               for index, m in enumerate(("made-up: " + message,
+                                          message.replace("write_file", "read_file"),
+                                          _deny_rule_message("C:/made-up/ws/y.txt"),
+                                          _deny_message("write_file", EDITED)), start=10)]
+    inexact.append(_edit(14, state="ERROR", error={"type": "MADE_UP_ERROR", "message": message}))
+    assert agyjson.denials(inexact) == [] and agyjson.unknown_steps(inexact) == []
+    assert agyjson.write_targets(inexact) == [EDITED] * 5
+    exact = _edit(12, state="ERROR", error={"type": "TOOL_ERROR", "message": message})
+    assert agyjson.denials([exact]) == [agyjson.Denial(12, "edit_file", "write_file", EDITED,
+                                                       EDITED)]
+
+
+def test_an_agy_edit_is_judged_as_a_write(tmp_path, capsys, monkeypatch):
+    """At night an edit_file step in 1.5.8's shape is a write the audit judges: an edit of the
+    session's own notes.md stops nothing, and an edit a deny rule refused is a denied write
+    (`_denied_write_stop`), as a refused write_file is."""
+    rig, night, env = agy_night(tmp_path / "edit", monkeypatch, scenario="gemini_edit")
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code == 0, err
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    rig, night, env = agy_night(tmp_path / "denied", monkeypatch, scenario="denied_edit")
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code != 0, err
+    _denied_write_stop(night, "C:/made-up/tools/x.py")
 
 
 def test_an_unknown_agy_tool_stops_the_night(tmp_path, capsys, monkeypatch):
@@ -1134,6 +1232,7 @@ def test_agy_canary_pass(tmp_path, capsys):
     assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
     texts = " | ".join(c["check"] for c in doc["checks"])
     for needle in ("init", "attempt context", "attempt plan", "attempt check", "context.md",
+                   "edited C:\\made-up\\attempt-1\\plan.json in place with edit_file",
                    "0001.note.json", "ledger", "settings", "1500000", AGY_VERSION,
                    driver.AGY_CANARY_OUTSIDE, driver.AGY_CANARY_UNSANDBOXED, "example.com",
                    *(f"the {name.replace('-', ' ')} probe was denied" for name in PROBES)):
@@ -1217,10 +1316,17 @@ def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
                   if name != probe.name and want not in wants[probe.name]]  # fmt: skip
         assert not [want for want in others if want in probe.prompt], probe
     allowed = driver.agy_canary_allowed_prompt(attempt_dir, 0xD)
-    order = [f"{WRAPPER} context", "plan.json", f"{WRAPPER} plan", "check-note.json",
-             f"{WRAPPER} check"]  # fmt: skip
+    order = [f"{WRAPPER} context", "plan.json", "With your file-edit tool, edit the file",
+             f"{WRAPPER} plan", "check-note.json", f"{WRAPPER} check"]  # fmt: skip
     places = [allowed.index(needle) for needle in order]
     assert places == sorted(places), places
+    # the plan is written with an empty frame and edited in place to the plan `attempt plan`
+    # accepts, so the session makes one in-place edit (agy's edit_file step) on its own file
+    plan = driver._canary_plan_text(0xD)
+    draft = plan.replace(driver.AGY_CANARY_FRAME, driver.AGY_CANARY_DRAFT)
+    assert draft != plan and draft in allowed and plan not in allowed, allowed
+    edit = f"replace `{driver.AGY_CANARY_DRAFT}` with `{driver.AGY_CANARY_FRAME}`"
+    assert edit in allowed and str(attempt_dir / "plan.json") in allowed, allowed
     for prompt in (allowed, *(probe.prompt for probe in probes)):
         for framing in ("guardrail", "canary,", "not a matching attempt", "will fail",
                         "will be denied", "do not retry"):  # fmt: skip
@@ -1362,6 +1468,31 @@ def test_agy_canary_allowed_session_names_an_unseen_step_shape(tmp_path, capsys)
     failed = _failed(doc)
     assert "is not a tool step the agy audit knows" in failed and "'parameters'" in failed, failed
     assert "never ran" in failed and f"{WRAPPER} plan" in failed, failed
+    assert _no_pass(rig)
+
+
+def test_agy_canary_allowed_session_must_edit_in_place(tmp_path, capsys):
+    """agy 1.5.7's edit_file step stopped a night the canary had passed, because the canary
+    never edited a file. The allowed session must make a known edit_file step of plan.json that
+    ran: one with no edit (the plan written whole) or with its edit on another file FAILs
+    saying so, and one whose edit step has another shape (a Content parameter beside Path)
+    FAILs as an unknown step and as no edit, so a version that renames or reshapes the edit
+    step fails the canary, not the night."""
+    for scenario in ("canary_agy_allowed_no_edit", "canary_agy_allowed_edit_other"):
+        rig = _agy_canary_rig(tmp_path / scenario, scenarios={ALLOWED: scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), scenario
+        failed = _failed(doc)
+        assert "the allowed session made no in-place edit_file step on plan.json" in failed
+        assert "is not a tool step the agy audit knows" not in failed, failed
+        assert _no_pass(rig), scenario
+    rig = _agy_canary_rig(tmp_path / "reshaped",
+                          scenarios={ALLOWED: "canary_agy_allowed_edit_reshaped"})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = _failed(doc)
+    assert "tool 'edit_file'" in failed and "is not a tool step the agy audit knows" in failed
+    assert "the allowed session made no in-place edit_file step" in failed, failed
     assert _no_pass(rig)
 
 
