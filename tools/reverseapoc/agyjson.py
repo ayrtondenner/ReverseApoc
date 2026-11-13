@@ -430,17 +430,24 @@ def _denial_form(actions: str, reason: str) -> re.Pattern:
                       rf"denied permission {reason}{re.escape(_DENIAL_WARNING)}", re.S)
 
 
-# agy 1.5.8 (the coordinator's deny capture, 2026-11-13): the whole message for an edit_file
-# step a write_file deny rule refused, with no warning line. The only form known for edit_file:
-# its soft-deny form (no rule matched) was never seen, so such a step counts as run.
-_DENY_RULE_FORM = re.compile(r'permission check failed for (write_file) "((?:[^"\\]|\\.)*)": '
-                             r"Permission denied for write_file\((.*)\)\. Matches "
-                             r"user-configured deny rule\.", re.S)  # fmt: skip
-_DENIAL_FORMS = {"read_file": _denial_form("read_file", r"for read_file\((.*)\)"),
-                 _WRITE_ACTION: _denial_form("write_file", r"for write_file\((.*)\)"),
-                 _EDIT_TOOL: _DENY_RULE_FORM,
-                 "run_command": _denial_form("unsandboxed|command",
-                                             r"to run command:\n(.*)")}  # fmt: skip
+def _deny_rule_form(action: str) -> re.Pattern:
+    return re.compile(rf'permission check failed for ({action}) "((?:[^"\\]|\\.)*)": '
+                      rf"Permission denied for {action}\((.*)\)\. Matches "
+                      r"user-configured deny rule\.", re.S)  # fmt: skip
+
+
+# agy 1.5.8 (the coordinator's deny captures, 2026-11-13): the whole message for a step a deny
+# rule refused, with no warning line: an edit_file step under a write_file deny rule, and a
+# read_file step under a read_file deny rule (the canary's orig/ read probes meet the second).
+# Only captured forms are denials: edit_file's soft-deny form (no rule matched) was never seen
+# (1.5.8 let an unconfigured edit in the workspace through), and write_file's deny-rule form
+# was not captured, so such steps count as run. A tool's forms are tried in order.
+_DENIAL_FORMS = {"read_file": (_denial_form("read_file", r"for read_file\((.*)\)"),
+                               _deny_rule_form("read_file")),
+                 _WRITE_ACTION: (_denial_form("write_file", r"for write_file\((.*)\)"),),
+                 _EDIT_TOOL: (_deny_rule_form("write_file"),),
+                 "run_command": (_denial_form("unsandboxed|command",
+                                              r"to run command:\n(.*)"),)}  # fmt: skip
 
 
 class Denial(NamedTuple):
@@ -483,7 +490,7 @@ def _refused(step: Mapping, tool: str, request: str) -> tuple[str, str] | None:
     if step.get("state") != _ERROR_STATE or error.get(_TYPE) != _TOOL_ERROR or not isinstance(
             message, str):  # fmt: skip
         return None
-    found = _DENIAL_FORMS[tool].fullmatch(message)
+    found = next((m for form in _DENIAL_FORMS[tool] if (m := form.fullmatch(message))), None)
     if found is None:
         return None
     action, quoted, target = found.groups()
