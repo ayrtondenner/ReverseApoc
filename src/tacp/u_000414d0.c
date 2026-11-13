@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_000414D0);
 INCLUDE_ASM(func_00041530);
-INCLUDE_ASM(func_000415F0);
 INCLUDE_ASM(func_00041660);
 INCLUDE_ASM(func_000416C0);
 
@@ -31,6 +30,33 @@ extern struct unk_0016 *func_00021180(void);
 
 extern short D_000E6D42;
 extern short D_001B24AC[];
+extern short D_000E6D60;
+extern u8 D_0010A12E[];
+extern short D_00109EF0[];
+extern short D_00284CE4;
+
+/* void: the bytes cannot tell, EAX holds the index or the loop bound at ret. */
+void func_000415F0(int a)
+{
+    struct unk_0016 *p;
+    int i;
+    int j;
+    u8 unit;
+
+    if (D_0010A12E[(int)D_000E6D60 + a * 0x49c] != 0 ||
+        D_000E6D60 == *(short *)((char *)D_00109EF0 + a * 0x49c)) {
+        for (i = 0, j = 0; i < D_000E6D42; i++) {
+            p = func_00021180();
+            if (p != 0) {
+                unit = *(u8 *)((char *)D_001B24AC + j);
+                p->kind = 0xa;
+                p->unit = unit;
+                p->field_0E = D_00284CE4;
+            }
+            j += 2;
+        }
+    }
+}
 
 /* void: the bytes cannot tell, EAX just holds the loop bound at ret. */
 void func_00041720(short a, int b, int c, int d)
