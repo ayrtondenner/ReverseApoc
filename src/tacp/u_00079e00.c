@@ -41,7 +41,13 @@ L7A081:;
 
 INCLUDE_ASM(func_0007A090);
 INCLUDE_ASM(func_0007A0A0);
-INCLUDE_ASM(func_0007A0D0);
+extern unsigned char D_00293050[];
+
+unsigned char func_0007A0D0(unsigned char i)
+{
+    return D_00293050[i];
+}
+
 INCLUDE_ASM(func_0007A0E0);
 INCLUDE_ASM(func_0007A140);
 INCLUDE_ASM(func_0007A3A0);
