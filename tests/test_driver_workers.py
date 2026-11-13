@@ -2859,3 +2859,111 @@ def test_any_other_pack_error_still_stops_the_night(tmp_path):
     report = night.run(pack=pack)
     assert (report.event, report.reason) == ("STOPPED", "error")
     assert "made-up: the offset map disagrees" in report.detail
+
+
+# ---- todo budget-runs-and-contributors: a budget's cap and the meter seam ----
+
+
+@dataclass(frozen=True)
+class _Reading:
+    """What the meter seam returns: `used` in `unit` (one of quota.UNITS)."""
+
+    used: float
+    unit: str
+
+
+def _launch_meter(night: Night, arm: str, unit: str, calls: list[str]):
+    """A meter whose reading is 50 plus the sessions `arm` launched so far: the first reading
+    is the baseline, so each launch moves it by one."""
+
+    def meter(name: str) -> _Reading | None:
+        calls.append(name)
+        if name != arm:
+            return None
+        return _Reading(50.0 + _runs_launched(night, _arm_run(arm)), unit)
+
+    return meter
+
+
+def test_the_default_meter_reads_nothing():
+    assert driver.Deps.meter("claude-haiku-5-5") is None
+
+
+def test_an_arm_cap_bounds_an_arm_lane_without_cascade(tmp_path):
+    """A budget's cap reaches an --arm lane as an arm cap: HAIKU at 2 launches 2 of the three
+    picks while SONNET goes on."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "arm_caps": ((HAIKU, 2),)})
+    assert report.event == "ENDED", report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 2
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+
+
+def test_a_spent_budget_stops_its_arm(tmp_path):
+    """The meter seam is read between launches for each budgeted arm only; once HAIKU's reading
+    moved by its budget (1%week) since the night's first reading, HAIKU launches nothing more,
+    the console and the run record name it, and SONNET goes on."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    calls: list[str] = []
+    lines: list[str] = []
+    budget = driver.quota.parse_budget("1%week")
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "budgets": ((HAIKU, budget),)},
+                       meter=_launch_meter(night, HAIKU, driver.quota.WEEK, calls),
+                       say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 1
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+    assert calls == [HAIKU] * 3  # the baseline, then before each HAIKU attempt only
+    spent = [line for line in lines if "budget 1%week spent" in line and HAIKU in line]
+    assert len(spent) == 1, lines
+    (ended,) = [r for r in night.kinds("run") if r["event"] == "ENDED"]
+    assert "budget 1%week spent" in ended["detail"]
+
+
+@pytest.mark.parametrize("reading", [None, "%5h"], ids=["no-reading", "other-unit"])
+def test_a_meter_with_no_usable_reading_changes_nothing(tmp_path, reading):
+    """No reading, or one in another unit than the budget's, never stops the arm; a reading
+    in another unit is named on the console once."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    budget = driver.quota.parse_budget("1%week")
+    calls: list[str] = []
+    lines: list[str] = []
+    meter = (lambda name: None) if reading is None else _launch_meter(night, HAIKU, reading,
+                                                                      calls)  # fmt: skip
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "budgets": ((HAIKU, budget),)},
+                       meter=meter, say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 3
+    notes = [line for line in lines if "the meter reads" in line]
+    assert len(notes) == (0 if reading is None else 1), lines
+    assert all(HAIKU in note and "%5h" in note and "1%week" in note for note in notes)
+
+
+def test_a_window_that_resets_still_counts_against_the_budget(tmp_path):
+    """A %5h window resets mid-night: readings 40, 45, then 2 after the reset, then 6. What
+    each reading moved adds up (5, then 2 counted from 0, then 4), so a 10%5h budget is read
+    spent at the fourth reading, never undone by the drop."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(6)))
+    readings = iter([40.0, 45.0, 2.0, 6.0, 7.0, 8.0, 9.0])
+    lines: list[str] = []
+    budget = driver.quota.parse_budget("10%5h")
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "budgets": ((HAIKU, budget),)},
+                       meter=lambda name: _Reading(next(readings), driver.quota.FIVE_HOUR),
+                       say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 2  # baseline 40, then 45, 2, 6 (spent)
+    assert any("budget 10%5h spent" in line and "11%5h" in line for line in lines), lines
+
+
+def test_a_spent_budget_passes_the_cascade_attempt_on(tmp_path):
+    """On a cascade night a spent arm is skipped as a capped one is: row (HAIKU, SONNET), HAIKU's
+    budget spent after its first launch, so every later attempt runs on SONNET."""
+    night = ArmNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+    budget = driver.quota.parse_budget("$1")
+    report = night.run(config={"routing": _every(HAIKU, SONNET),
+                               "budgets": ((HAIKU, budget),)},
+                       meter=_launch_meter(night, HAIKU, driver.quota.USD, []))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    runs = [r["run"] for r in night.kinds("attempt")]
+    assert runs.count(_arm_run(HAIKU)) == 1 and runs[0] == _arm_run(HAIKU)
+    assert set(runs[1:]) == {_arm_run(SONNET)}

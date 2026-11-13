@@ -2584,3 +2584,128 @@ def test_a_cascade_dry_run_reads_the_arm_caps(tmp_path, capsys):
     launched = [a.split()[0] for a in shown if a.split()[0] in dict(caps)]
     assert len(launched) == len(set(launched)), shown
     assert driver.PREVIEW_ROW_CAPPED in shown, shown
+
+
+# ---- todo budget-runs-and-contributors: --arm-budget through run_drive ----
+
+
+def _budgets(*pairs: tuple[str, str]) -> tuple:
+    return tuple((arm, driver.quota.parse_budget(text)) for arm, text in pairs)
+
+
+_OWNER_BUDGETS = _budgets((HAIKU, "5%week"), (DEEPSEEK, "$10"))
+_OWNER_ARMS = ((HAIKU, 2), (DEEPSEEK, 1))
+
+
+def test_a_budget_dry_run_prints_each_arms_budget_before_any_spend(tmp_path, capsys):
+    """`--dry-run --arm-budget`: one line per budget, budget -> quota per session (source,
+    date) -> sessions -> expected matches, then the note that the night's --max-sessions (60)
+    ends the night before the 199 budgeted sessions; the JSON document adds `budgets`. No
+    session, no gate."""
+    rig = Rig(tmp_path / "text")
+    code, out, _ = rig.drive(capsys, dry_run=True, seams=_openrouter_keyed(rig), arms=_OWNER_ARMS,
+                             arm_budgets=_OWNER_BUDGETS, allow_egress=(DEEPSEEK,))  # fmt: skip
+    assert code == 0
+    lines = out.splitlines()
+    haiku = next(line for line in lines if line.startswith(f"budget {HAIKU}:"))
+    deepseek = next(line for line in lines if line.startswith(f"budget {DEEPSEEK}:"))
+    assert "5%week" in haiku and "166 sessions" in haiku and "read 2026-11-13" in haiku
+    assert "8.5" in haiku
+    assert "$10" in deepseek and "33 sessions" in deepseek and "13.2" in deepseek
+    assert any("199 sessions" in line and "--max-sessions 60" in line for line in lines), out
+    assert not rig.commands("gate")
+    assert not [c for c in rig.runner.calls if c[:1] == ["claude"]]
+    rig = Rig(tmp_path / "json")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams=_openrouter_keyed(rig),
+                             arms=_OWNER_ARMS, arm_budgets=_OWNER_BUDGETS,
+                             allow_egress=(DEEPSEEK,))  # fmt: skip
+    assert code == 0
+    budgets = json.loads(out)["budgets"]
+    assert [(b["arm"], b["budget"], b["sessions"], b["bound"]) for b in budgets] == [
+        (HAIKU, "5%week", 166, "budget"), (DEEPSEEK, "$10", 33, "budget")]  # fmt: skip
+
+
+def test_a_dry_run_without_budgets_has_no_budget_lines(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0 and "budgets" not in json.loads(out)
+
+
+@pytest.mark.parametrize(("arms", "budgets", "words"), [
+    (((SONNET, 1),), _budgets((SONNET, "$5")), (SONNET, "quota.toml", HAIKU)),
+    (((HAIKU, 1),), _budgets((HAIKU, "100%5h")), (HAIKU, "%5h", "%week")),
+    (((HAIKU, 1),), _budgets((HAIKU, "0.01%week")), (HAIKU, "0 sessions")),
+    (((HAIKU, 1),), _budgets((SONNET, "$5")), (SONNET, "no arm of this run")),
+], ids=["no-quota-entry", "no-such-unit", "below-one-session",
+        "not-an-arm-of-the-run"])  # fmt: skip
+def test_a_budget_that_cannot_be_sized_is_refused(tmp_path, capsys, arms, budgets, words):
+    """A budget for an arm with no quota.toml entry, in a unit it has no figure for, below one
+    session, or for no arm of the run: exit 2 before any command or session."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, arms=arms, arm_budgets=budgets)
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert "--arm-budget" in detail and all(word in detail for word in words), detail
+    assert rig.runner.calls == []
+    _no_session_ran(rig)
+
+
+@pytest.mark.parametrize("over", [
+    {"arms": ((HAIKU, 1),), "arm_budgets": _budgets((HAIKU, "5%week"), (HAIKU, "1%week"))},
+    {"arm_caps": ((HAIKU, 3),), "arm_budgets": _budgets((HAIKU, "5%week"))},
+], ids=["twice", "with-arm-cap"])  # fmt: skip
+def test_the_driver_refuses_two_caps_for_one_arm(tmp_path, capsys, over):
+    """The cli refuses these first; the driver holds the same line for any other caller."""
+    from test_driver_workers import _every
+
+    rig = Rig(tmp_path)
+    if "arm_caps" in over:
+        over = {**over, "routing": _every(HAIKU)}
+    code, out, _ = rig.drive(capsys, json=True, **over)
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert "--arm-budget" in detail and HAIKU in detail and "one cap" in detail, detail
+    assert rig.runner.calls == []
+
+
+def test_budget_caps_and_budgets_reach_the_night(tmp_path, capsys, monkeypatch):
+    """run_drive hands each budget's cap to the night as an arm cap, and the budgets for the
+    meter seam, and prints each budget's line on the console."""
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rig = Rig(tmp_path)
+    code, _, err = rig.drive(capsys, seams=_openrouter_keyed(rig), arms=_OWNER_ARMS,
+                             arm_budgets=_OWNER_BUDGETS, allow_egress=(DEEPSEEK,),
+                             max_sessions=200)  # fmt: skip
+    assert code == 0, err
+    assert seen[0].arm_caps == ((HAIKU, 166), (DEEPSEEK, 33))
+    assert seen[0].budgets == _OWNER_BUDGETS
+    assert f"budget {HAIKU}:" in err and f"budget {DEEPSEEK}:" in err
+    assert "--max-sessions" not in err  # 199 budgeted sessions fit under 200
+
+
+def test_a_cascade_budget_joins_the_arm_caps(tmp_path, capsys, monkeypatch):
+    """With --cascade, a budget is one more arm cap beside --arm-cap's, shown on the cascade
+    line."""
+    from test_driver_workers import _every
+
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rig = Rig(tmp_path)
+    code, _, err = rig.drive(capsys, seams=_openrouter_keyed(rig), routing=_every(HAIKU, DEEPSEEK),
+                             arm_caps=((HAIKU, 5),), arm_budgets=_budgets((DEEPSEEK, "$3")),
+                             allow_egress=(DEEPSEEK,))  # fmt: skip
+    assert code == 0, err
+    assert seen[0].arm_caps == ((HAIKU, 5), (DEEPSEEK, 10))
+    cascade = next(line for line in err.splitlines() if "cascade: " in line)
+    assert f"{HAIKU}=5" in cascade and f"{DEEPSEEK}=10" in cascade

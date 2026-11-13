@@ -162,6 +162,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 from . import (
     agyjson,
@@ -173,6 +174,7 @@ from . import (
     contextpack,
     hooks,
     mechanics,
+    quota,
     streamjson,
     unitdefs,
 )
@@ -433,8 +435,13 @@ class DriveConfig:
     # (_Night._route), under `<run>-<arm>`, with that arm's gates. Empty: no cascade.
     routing: tuple[backends.Route, ...] = ()
     # quick 261112-fds: `--arm-cap ARM=N`, a cascade arm's session cap tonight in place of its
-    # backends.toml max_sessions (refuse_arms keeps N at or below it)
+    # backends.toml max_sessions (refuse_arms keeps N at or below it); todo
+    # budget-runs-and-contributors: also each --arm-budget's cap (refuse_budgets), which caps
+    # an --arm or --night-model lane the same way
     arm_caps: tuple[tuple[str, int], ...] = ()
+    # todo budget-runs-and-contributors: each `--arm-budget` arm and its budget, which the night
+    # holds against the meter seam (Deps.meter) between launches (`_Night._read_meters`)
+    budgets: tuple[tuple[str, quota.Budget], ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -471,6 +478,28 @@ def _today() -> str:
 
 def _quiet(text: str) -> None:
     """The silent console: --json mode, and every Deps or finish no verb wired (261026-9ue)."""
+
+
+class MeterReading(Protocol):
+    """Todo budget-runs-and-contributors: what the meter seam (Deps.meter) returns for an arm,
+    its plan's meter now: `used` in `unit`, one of quota.UNITS ("%week" and "%5h": the percent
+    of that window used; "$": dollars spent; "credits": plan credits spent), as a running
+    total. The night adds up what each reading moved since the last one (`_count_meter`; a
+    drop is a window that reset), so only what the night spent counts against the budget."""
+
+    used: float
+    unit: str
+
+
+def _no_meter(arm: str) -> MeterReading | None:
+    """The default meter seam: no reading, so a budget caps its arm by session count only."""
+    return None
+
+
+BUDGET_SPENT_LINE = ("arm {arm} stopped: budget {budget} spent (the meter moved {spent} since "
+                     "the night's first reading); the other arms go on")  # fmt: skip
+BUDGET_UNIT_LINE = ("arm {arm}: the meter reads {unit}, not budget {budget}'s unit, so only the "
+                    "budget's session cap holds it tonight")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -531,6 +560,11 @@ class Deps:
     # Owner ruling 2026-11-11: the argv prefix of the real wrapper a Codex session's broker
     # runs outside the sandbox (real_wrapper).
     broker_wrapper: Callable[[], Sequence[str]] = lambda: real_wrapper()
+    # Todo budget-runs-and-contributors: the meter seam, (arm) -> MeterReading | None, read
+    # between launches for each --arm-budget arm (`_Night._read_meters`), from several
+    # workers at once, so it must be thread-safe; it never raises (a reading it cannot take
+    # is None). The default reads nothing: a budget then caps its arm by session count only.
+    meter: Callable[[str], MeterReading | None] = _no_meter
 
 
 def _which(name: str) -> str:
@@ -2872,6 +2906,7 @@ class _Lane:
     attempted: dict[Key, int] = field(default_factory=dict)
     live_cap: int | None = None  # quick 261112-fds: a cascade arm's sessions at once
     resume: dict[Key, int] = field(default_factory=dict)  # 261112-fds: ARM_WAITING's attempt
+    budget_spent: bool = False  # the meter read the arm's --arm-budget spent (_read_meters)
 
     def drop(self, key: Key) -> None:
         """A function another arm matched tonight: no more work for this arm."""
@@ -3195,22 +3230,30 @@ class _Night:
         self.failure: BaseException | None = None  # the first worker failure, re-raised
         self.halt_notes: list[str] = []  # what each halted worker's containment did
         self.arm_stops: list[str] = []  # owner ruling 2026-11-10: why each arm stopped (cond)
+        caps = dict(config.arm_caps)
         for lane in self.lanes:  # 07.2-16 (D-22): each arm its own pause and session cap
             lane.pause = _Pause(self.cond, self.stop, deps.clock)
-            lane.max_sessions = self.arms[lane.arm].max_sessions if lane.arm else None
+            # todo budget-runs-and-contributors: an --arm-budget's cap, else its max_sessions
+            lane.max_sessions = (caps.get(lane.arm, self.arms[lane.arm].max_sessions)
+                                 if lane.arm else None)  # fmt: skip
         self.pause = self.lanes[0].pause  # D-07: one arm's pause holds for its every worker
         # quick 261112-fds (backlog 999.12a): on a cascade night, one lane per routing arm,
         # under `<run>-<arm>` with no workers of its own: each attempt binds the lane of its
         # rung (`arm_lane`), so its run id, pause, cap, model and audit are that arm's.
         # Its cap is --arm-cap's, else its max_sessions; its live cap its max_workers.
         self.arm_lanes: dict[str, _Lane] = {}
-        caps = dict(config.arm_caps)
         for arm in backends.routing_arms(config.routing):
             lane = _Lane(arm, f"{config.run_id}-{arm}", ())
             lane.pause = _Pause(self.cond, self.stop, deps.clock)
             lane.max_sessions = caps.get(arm, self.arms[arm].max_sessions)
             lane.live_cap = self.arms[arm].max_workers
             self.arm_lanes[arm] = lane
+        # todo budget-runs-and-contributors: each budgeted arm's last meter reading, what its
+        # readings moved tonight, and the arms whose meter reads another unit (_read_meters;
+        # under cond)
+        self.meter_last: dict[str, Decimal] = {}
+        self.meter_spent: dict[str, Decimal] = {}
+        self.meter_mismatch: set[str] = set()
         # 07-21 stop-all: worker -> the pid of its live session (run_session's on_start/on_end)
         self.pids: dict[int, int] = {}
         self.pid_lock = threading.Lock()
@@ -3422,9 +3465,69 @@ class _Night:
     def _lane_end(self, lane: _Lane) -> bool:
         """07.2-16 (D-22): the arm has launched its own cap of sessions (counted ones and spent
         transient launches; quick 261112-fdr: and a cascade arm's LIMIT launches), or (owner
-        ruling 2026-11-10) a denied write stopped it; under the night's condition."""
+        ruling 2026-11-10) a denied write stopped it, or (todo budget-runs-and-contributors) the
+        meter read its budget spent; under the night's condition."""
         capped = lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
-        return capped or lane.stopped
+        return capped or lane.stopped or lane.budget_spent
+
+    def _read_meters(self, arms: Container[str] | None = None) -> None:
+        """Todo budget-runs-and-contributors: between launches, ask the meter seam (Deps.meter)
+        about each --arm-budget arm in `arms` (None: every one) still launching, outside the
+        night's condition (a meter may be slow). `_count_meter` adds up what each reading moved;
+        once that reaches the budget, in the budget's unit, the arm launches nothing more
+        (`_lane_end`), its sessions in flight finish, the other arms go on, and the console and
+        the run record name it. No reading (None) changes nothing; a reading in another unit
+        changes nothing either, and the console says so once per arm. What the meter moved
+        before its first reading of the night, and a worker already waiting for a slot when the
+        budget is read spent, are not caught here: the budget's session cap still holds."""
+        for arm, budget in self.config.budgets:
+            if arms is not None and arm not in arms:
+                continue
+            lane = self.arm_lanes.get(arm) or next(
+                (lane for lane in self.lanes if lane.arm == arm), None)  # fmt: skip
+            with self.cond:
+                if lane is None or self._lane_end(lane):
+                    continue
+            reading = self.deps.meter(arm)
+            if reading is None:
+                continue
+            if reading.unit != budget.unit:
+                line = self._meter_unit_note(arm, budget, reading.unit)
+            else:
+                line = self._count_meter(arm, lane, budget, Decimal(str(reading.used)))
+            if line is not None:
+                self.deps.say(line)
+
+    def _count_meter(self, arm: str, lane: _Lane, budget: quota.Budget,
+                     used: Decimal) -> str | None:  # fmt: skip
+        """Under the night's condition: the arm's first reading is its baseline; each later one
+        adds what the meter moved since the last (a reading below the last is a window that
+        reset, so it counts from 0). The BUDGET_SPENT_LINE when this reading spent the budget
+        (and the arm is stopped and named in the run record), else None."""
+        with self.cond:
+            last = self.meter_last.get(arm)
+            self.meter_last[arm] = used
+            if last is None:
+                return None
+            moved = used - last if used >= last else used
+            spent = self.meter_spent[arm] = self.meter_spent.get(arm, Decimal(0)) + moved
+            if lane.budget_spent or spent < budget.amount:
+                return None
+            lane.budget_spent = True
+            line = BUDGET_SPENT_LINE.format(arm=arm, budget=budget,
+                                            spent=quota.Budget(spent, budget.unit))
+            self.arm_stops.append(line)
+            self.cond.notify_all()
+            return line
+
+    def _meter_unit_note(self, arm: str, budget: quota.Budget, unit: str) -> str | None:
+        """Under the night's condition: BUDGET_UNIT_LINE the first time the meter reads `arm`
+        in another unit than its budget's, else None."""
+        with self.cond:
+            if arm in self.meter_mismatch:
+                return None
+            self.meter_mismatch.add(arm)
+        return BUDGET_UNIT_LINE.format(arm=arm, unit=unit, budget=budget)
 
     def _settle(self, *, counted: bool, spent: bool) -> None:
         """Under the night's condition: this worker's reserved slot (if it holds one) becomes a
@@ -3742,6 +3845,7 @@ class _Night:
             for key in done:  # a resumed hold run: as `_hold_done` and `release` left them
                 lane.passes[key] = lane.passes.get(key, 0) + 1
                 lane.done.add(key)
+        self._read_meters()  # todo budget-runs-and-contributors: the budgets' baselines
         self.coordinator = _Coordinator(self)
         end = self.coordinator.run()
         self._retry_deferred()  # 07-34: every claim of the night is released now
@@ -3804,6 +3908,9 @@ class _Night:
             last = first + self._attempts()
         try:
             for n in range(first, last):
+                # a spent budget stops its arm before this launch: the arms that may take it
+                self._read_meters(backends.route_for(self.config.routing, pick.size).arms
+                                  if cascade else (self.lane.arm,))  # fmt: skip
                 if cascade:  # 261112-fds/fdt: the row's first arm that can launch, never waiting
                     slot = self._cascade_route(pick, n)
                     if slot != RESERVED:
@@ -6782,6 +6889,10 @@ class DriveOptions:
     # quick 261112-fds: `--arm-cap ARM=N`, repeatable with --cascade: arm ARM launches at most
     # N sessions tonight (at most its backends.toml max_sessions, refuse_arms)
     arm_caps: tuple[tuple[str, int], ...] = ()
+    # todo budget-runs-and-contributors: `--arm-budget ARM=BUDGET`, repeatable with --arm,
+    # --night-model or --cascade: the arm's cap tonight from config/driver/quota.toml
+    # (refuse_budgets), and its budget for the meter seam (Deps.meter)
+    arm_budgets: tuple[tuple[str, quota.Budget], ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -6842,6 +6953,9 @@ class Seams:
     agy_argv: Callable[..., Sequence[str]] = Deps.agy_argv
     # Owner ruling 2026-11-11: the real wrapper a Codex session's broker runs (Deps's).
     broker_wrapper: Callable[[], Sequence[str]] = Deps.broker_wrapper
+    # Todo budget-runs-and-contributors: the night's meter seam (Deps.meter's); the usage
+    # meters are wired here when they land.
+    meter: Callable[[str], MeterReading | None] = _no_meter
 
 
 def stamp(now: datetime) -> str:
@@ -7212,6 +7326,7 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
                 argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
                 broker_wrapper=seams.broker_wrapper, session=seams.session,
+                meter=seams.meter,
                 lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
@@ -7563,6 +7678,10 @@ FABLE_TRIAL_NIGHT = ("fable trial: every session runs on {model} at USD {budget:
 # "held", which names the signed asm hold of the dry run's `held:` line)
 NIGHT_MODEL_LINE = "night model: every matching session runs on {model}"
 ARMS_LINE = "arms: {arms}, side by side in this one drive"  # 07.2-16 (D-22)
+# todo budget-runs-and-contributors: the budgets buy more than the night's cap
+BUDGET_NIGHT_CAP_LINE = ("budgets: {total} sessions in all; the night's --max-sessions {cap} "
+                         "ends the night first (give --max-sessions {total} or more to spend "
+                         "every budget; an arm with no budget shares that cap too)")  # fmt: skip
 # quick 261112-fds (backlog 999.12a): `drive --cascade`'s rows and each arm's cap tonight
 CASCADE_LINE = ("cascade: {rows}; caps {caps}; each arm under run <run>-ARM, in this one "
                 "drive")  # fmt: skip
@@ -7617,7 +7736,8 @@ def _previewed_attempt(order: Sequence[str], caps: Mapping[str, int | None],
 
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
             picks: Sequence[DryPick], held: Sequence[Key] | None = None,
-            caps: Mapping[str, int | None] | None = None) -> int:  # fmt: skip
+            caps: Mapping[str, int | None] | None = None,
+            budgets: Sequence[quota.Sizing] = ()) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
     gate (D-10). A tier pick's line and document add its tier, level and pass (07-26). `held`
     (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
@@ -7627,8 +7747,10 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     261112-fds: with --cascade each pick's line ends with its size bucket and the arm of each
     of its ATTEMPTS_PER_FUNCTION attempts at its next pass, and its document adds `cascade`
     {bucket, pass, attempts}; quick 261112-fdr (IN-05): with each arm's cap of `caps` applied
-    (`_cascade_previews`)."""
-    docs, lines = [], []
+    (`_cascade_previews`). Todo budget-runs-and-contributors: each --arm-budget's line comes
+    first (`_budget_lines`: budget, quota per session with its source and date, sessions and
+    expected matches), and the document adds `budgets` (quota.Sizing.doc)."""
+    docs, lines = [], _budget_lines(options, budgets)
     if options.fable_trial:
         lines.append(FABLE_TRIAL_DRY_RUN.format(count=len(picks), model=FABLE_MODEL,
                                                 budget=options.fable_budget_usd))  # fmt: skip
@@ -7656,6 +7778,8 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
            "held_starts": [[exe, f"0x{start:08X}"] for exe, start in keys]}  # fmt: skip
     if options.fable_trial:
         doc["fable_trial"] = {"model": FABLE_MODEL, "budget_usd": options.fable_budget_usd}
+    if budgets:
+        doc["budgets"] = [sizing.doc() for sizing in budgets]
     _emit(options, doc, lines)
     return EXIT_OK
 
@@ -7951,6 +8075,46 @@ def _refuse_arm_caps(options: DriveOptions, arms: Mapping[str, backends.Arm], sh
                                      f"max_sessions {limit} in {shown}")  # fmt: skip
 
 
+def refuse_budgets(options: DriveOptions,
+                   arms: Mapping[str, backends.Arm]) -> tuple[quota.Sizing, ...]:  # fmt: skip
+    """Todo budget-runs-and-contributors: each `--arm-budget ARM=BUDGET` sized from
+    config/driver/quota.toml (quota.size: floor(BUDGET / its quota per session), at most the
+    arm's backends.toml max_sessions), before any command. Refused for an arm that is no arm of
+    the night (`night_arms`, or the cascade's), an arm budgeted twice or also given an
+    --arm-cap, an arm with no quota entry, a unit its entry has no figure for, a budget that
+    buys no session, and an unusable quota.toml."""
+    if not options.arm_budgets:
+        return ()
+    night = [name for name, _ in night_arms(options)] or list(
+        backends.routing_arms(options.routing))  # fmt: skip
+    names = [name for name, _ in options.arm_budgets]
+    capped = dict(options.arm_caps)
+    try:
+        table = quota.load_quota()
+        sized = []
+        for name, budget in options.arm_budgets:
+            if names.count(name) > 1 or name in capped:
+                raise quota.QuotaError(f"{name} is budgeted twice or also given an --arm-cap; "
+                                       "give each arm one cap")  # fmt: skip
+            if name not in night:
+                raise quota.QuotaError(f"{name} names no arm of this run "
+                                       f"({', '.join(night) or 'no --arm or --cascade'})")
+            sized.append(quota.size(name, budget, table, max_sessions=arms[name].max_sessions))
+    except quota.QuotaError as exc:
+        raise Refused("arm budget", f"--arm-budget: {exc}") from exc
+    return tuple(sized)
+
+
+def _budget_lines(options: DriveOptions, sizings: Sequence[quota.Sizing]) -> list[str]:
+    """Each budget's line (quota.Sizing.line) and, when the budgets buy more sessions than the
+    night's --max-sessions, BUDGET_NIGHT_CAP_LINE."""
+    lines = [sizing.line() for sizing in sizings]
+    total = sum(sizing.sessions for sizing in sizings)
+    if total > options.max_sessions:
+        lines.append(BUDGET_NIGHT_CAP_LINE.format(total=total, cap=options.max_sessions))
+    return lines
+
+
 def _cascade_line(options: DriveOptions, arms: Mapping[str, backends.Arm]) -> str:
     """Quick 261112-fds: CASCADE_LINE for the night's rows and each arm's effective cap
     (--arm-cap, else its max_sessions, else none of its own)."""
@@ -7972,6 +8136,11 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
     log = _Log(options, seams)
     try:
         arms = refuse_arms(options, seams)  # 07.2-12: before the preflight's first command
+        sizings = refuse_budgets(options, arms)  # todo budget-runs-and-contributors
+        # each budget is its arm's cap tonight, beside --arm-cap's (the cli refuses both on one
+        # arm), so the cascade preview, the cascade line and the night all read it
+        options = replace(options, arm_caps=options.arm_caps + tuple(
+            (sizing.arm, sizing.sessions) for sizing in sizings))  # fmt: skip
         with _phase("preflight"):  # 07.2-06: --land-held launches no claude either
             preflight(options, seams, check_cli=not (options.dry_run or options.land_held),
                       log=log)  # fmt: skip
@@ -8004,7 +8173,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                 _drafts(log, [_pick_of(entry) for entry in picks])
             if options.dry_run:
                 with _phase("pack"):
-                    return dry_run(options, worlds, picks, held, _arm_caps(options, arms))
+                    return dry_run(options, worlds, picks, held, _arm_caps(options, arms),
+                                   sizings)  # fmt: skip
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
@@ -8025,7 +8195,9 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          night_model=options.night_model, hold=options.hold,
                          land_held=options.land_held, arm_table=arms,
                          arms=lanes, routing=options.routing,
-                         arm_caps=options.arm_caps)  # fmt: skip
+                         arm_caps=options.arm_caps, budgets=options.arm_budgets)  # fmt: skip
+    for line in _budget_lines(options, sizings):  # todo budget-runs-and-contributors
+        console(options, seams)(line)
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))

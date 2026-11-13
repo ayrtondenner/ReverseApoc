@@ -247,3 +247,60 @@ The tooling under `tools/` is GPLv3, because it includes modules from the Theme 
 ## Contributing
 
 Use [GitHub issues](https://github.com/ayrtondenner/ReverseApoc/issues) for bugs, questions and proposals. Please never attach game files, executables or disassembly to an issue or pull request.
+
+You can also spend your own AI plans on matching nights. This is how.
+
+### What you need
+
+- Your own copy of the game. `uv run reverseapoc ingest` copies the executables into `orig/` and checks their hashes. Nothing copyrighted ships with this repo.
+- The Watcom C 10.x compiler, which you supply yourself (see [Getting started](#getting-started)).
+- Docker and [uv](https://docs.astral.sh/uv/).
+- Whatever plans or keys you choose to spend: a Claude Code plan, the Codex CLI on a ChatGPT plan, the Antigravity CLI on a Google AI plan, an OpenRouter key. You pay for what you use. Nobody else's account is involved.
+
+### Setup
+
+1. Follow [Getting started](#getting-started) on your own clone, then run `docker compose run --rm test`.
+2. Run `npx @opengsd/gsd-core@1.18.0 --claude --local` and `git config core.hooksPath .githooks` once per clone.
+3. A drive runs only in the main checkout of a clean clone. Do not run two drives at once, and write nothing under the checkout while one runs.
+
+### Canaries
+
+Each arm proves its guardrails once, with one real session, before its first night. The arms are in `config/driver/backends.toml`.
+
+- A Claude arm: `uv run reverseapoc drive --canary --night-model claude-haiku-5-5`.
+- A hosted or non-Anthropic arm adds its egress opt-in: `uv run reverseapoc drive --canary --night-model deepseek-flash --allow-egress deepseek-flash`.
+- A Codex or Antigravity arm will not run in a night until its canary has passed on your installed CLI (`build/driver/canary/<arm>.json`).
+
+### A budget-sized drive
+
+Say what you want to spend, in your plan's own terms, with `--arm-budget NAME=BUDGET`. BUDGET is `<p>%week`, `<p>%5h`, `$<usd>` or `<n>credits`. The driver turns it into a session cap from `config/driver/quota.toml`. The cap is never above the arm's `max_sessions`. Quote a `$`, or your shell will eat it.
+
+Always look at the dry run first. It spends nothing:
+
+```
+uv run reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=5%week \
+  --arm deepseek-flash=1 --arm-budget 'deepseek-flash=$10' --allow-egress deepseek-flash \
+  --max-sessions 200
+```
+
+It prints one line per budget: the budget, the quota one session takes (with its source and date), the sessions it buys and the matches to expect at the measured rate. Here: 166 Haiku sessions (about 8.5 matches) and 33 DeepSeek sessions (about 13, from a small sample). The same command without `--dry-run` runs the night. The figures are rough; see [Quota per session](docs/model-routing.md#quota-per-session). Claude Code users can ask the `drive-budget` project skill to build the command from a plain request.
+
+### Egress
+
+A non-Anthropic or hosted arm sends disassembly of the game off your machine, to that provider. The driver refuses such an arm unless you name it with `--allow-egress ARM`. Opt in only if you accept that. A local model (`qwen-local`) sends nothing.
+
+### How results come back
+
+- A match is a commit the driver makes on your clone, after the container gate proved it byte for byte. Open those commits as a pull request.
+- CI and the owner re-run the gate on every function. Bytes prove a match, never an agent's word.
+- Credit goes in the commit trailers: `Matched-By` names the driver (and a hosted arm's model), `Co-Authored-By` names each model that held the function, and the commit author is you.
+
+### Rules that apply to you
+
+- Never commit game files, disassembly or build output (`orig/`, `asm/`, `build/`, `third_party/`).
+- Never edit `orig/`, the hash manifests under `config/` or the build scripts to make a check pass.
+- A matched function stays byte-identical: no restructuring, no inline assembly to force a match.
+- Claude Code is the agent runtime here. Codex CLI and Antigravity CLI may run only as `reverseapoc drive` sessions. Commit no config for other runtimes (no `.codex/`, `.gemini/` or `AGENTS.md`).
+- No secrets in tracked files. Keys live in your user environment.
+
+The full rules are in [CLAUDE.md](CLAUDE.md).
