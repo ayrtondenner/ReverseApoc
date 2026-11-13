@@ -35,8 +35,38 @@ L6F822:;
 
 INCLUDE_ASM(func_0006F830);
 INCLUDE_ASM(func_0006F9B0);
-INCLUDE_ASM(func_0006FC80);
 INCLUDE_ASM(func_0006FD20);
+
+extern int D_000F3D78[];
+extern int D_000E0D48[];
+extern int D_000E0E0C[];
+extern u8 *D_0018276C;
+
+int func_0006FC80(int arg)
+{
+    int row_index;
+    int total;
+    int sum;
+    int k;
+    u8 *row;
+
+    total = 0;
+    row = D_0018276C;
+    for (row_index = 0; row_index < *(unsigned short *)(D_00183A68);) {
+        sum = 0;
+        if (row[0xc8] == arg) {
+            for (k = 0; k < 14; k++) {
+                sum += row[0xd4 + k] * D_000F3D78[k];
+            }
+            sum *= D_000E0D48[*(s16 *)(row + 0xaa)];
+            sum *= D_000E0E0C[arg];
+        }
+        row_index++;
+        row += 0xe2;
+        total += sum;
+    }
+    return total;
+}
 
 #define DAILY_HISTORY_ROWS 27
 #define DAILY_HISTORY_SLOTS 56
