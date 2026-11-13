@@ -170,6 +170,7 @@ assumptions to confirm at setup.
 | `gpt-oss` | agy | google | `gpt-oss-120b-medium` | none (the agy sign-in) |
 | `agy-sonnet-4-6` | agy | google | `claude-sonnet-4-6` | none (the agy sign-in) |
 | `agy-opus-4-6` | agy | google | `claude-opus-4-6-thinking` | none (the agy sign-in) |
+| `copilot-haiku-5-5`, `copilot-sonnet-5-5`, `copilot-gpt-6-luna` | copilot | github | `claude-haiku-5.5`, `claude-sonnet-5.5`, `gpt-6-luna` | none (the Copilot CLI's Copilot Pro sign-in) |
 | `deepseek-flash` | claude | openrouter | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY` |
 | `glm-5.3` | claude | openrouter | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
 | `glm-4.7-flash` | claude | openrouter | `z-ai/glm-4.7-flash` | `OPENROUTER_API_KEY` |
@@ -613,6 +614,105 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   refused, or an outside write goes through), the fallback is a minimal owner-written
   user-global rule set, documented and removable in docs/legal.md. The driver never writes it.
 
+## Copilot arms
+
+Spike 013 (owner ruling 2026-11-13) added `copilot-haiku-5-5` (`claude-haiku-5.5`, the arm the
+first Copilot night runs), `copilot-sonnet-5-5` (`claude-sonnet-5.5`) and `copilot-gpt-6-luna`
+(`gpt-6-luna`): Claude Haiku 5.5, Claude Sonnet 5.5 and GPT-6 Luna through the GitHub Copilot
+CLI on the owner's Copilot Pro plan, which brings 1,500 AI credits a month (reset 2026-11-30)
+the owner has no other use for. This is the same scoped runtime exception as Codex and agy
+(CLAUDE.md). The record of what the CLI does is
+[spike 013](../.planning/spikes/013-copilot-cli/README.md).
+
+- **Install and sign in (owner).** Copilot CLI 1.0.111 at
+  `%LOCALAPPDATA%\GitHubCopilotCLI\copilot.exe` (on the user PATH; open a new shell after the
+  install), signed in with `copilot login`. The ids are in `copilot help config`'s model list.
+  Each session passes `--no-auto-update` and `COPILOT_AUTO_UPDATE=false`, so the canary-proved
+  version is the one that runs; an update made by hand means a new canary.
+- **The session.** `copilot -p <prompt> --model <id> --output-format json --stream on
+  --no-auto-update --no-custom-instructions --disable-builtin-mcps --no-ask-user
+  --disallow-temp-dir --available-tools view create edit powershell read_powershell --allow-tool
+  shell(uv:*) --allow-tool write(<file>)... --deny-tool read(<repo>/orig/**) --deny-tool
+  write(<repo>/orig/**) (and third_party/) --deny-tool url --deny-tool memory --max-ai-credits
+  <cap> --usage-output-file <file>`, with the attempt dir as its working directory and no
+  `--add-dir`, so the attempt dir is the only directory its file tools may touch. The write rules
+  name exactly the session's view unit, notes.md, plan.json, check-note.json and giveup.json. No
+  allow-everything flag, no autopilot, no trusted folder. Copilot loads no skill of ours (custom
+  instructions are off), so the prompt is the Codex prompt (goal, skill body, the harness note
+  with its wait instruction, session rules), plus one sentence that its view tool may read inside
+  the attempt dir. Copilot runs the wrapper itself (no broker: no sandbox stands in its way).
+- **The guard set.** Before each session the driver writes, outside the workspace,
+  `build/driver/<run>/copilot/<exe>__<function>__attempt-<n>.home/settings.json` =
+  `{"disableAllHooks": true, "autoUpdate": false}` and passes that directory as `COPILOT_HOME`,
+  with `COPILOT_PLUGIN_DIR_ONLY=true`, and removes any usage file a relaunch left. Copilot reads
+  hooks from its home, from installed plugins and from the checkout's `.claude/settings.json`,
+  and the capture's results carried a user-level postToolUse hook's text; with every hook off
+  none may run. Every session, whatever its harness, loses every inherited `COPILOT_*` variable
+  (`COPILOT_ALLOW_ALL` approves every tool, `COPILOT_PROVIDER_*` reroutes the model) and
+  `GH_TOKEN` and `GITHUB_TOKEN` (Copilot takes them over its sign-in), plus every other vendor's
+  key, as for Codex and agy. The empty wrapper ledger and the uv pins are the Codex ones. The
+  session state Copilot keeps (the pack among it) lands in that home, under gitignored build/.
+- **The stream.** One JSON event per line, the first behind a UTF-8 BOM (the shared reader takes
+  it off), then a `result` line with the exit code. The init check reads `session.start`: its
+  cwd must be the attempt dir, its `selectedModel` the arm's id and its
+  `sessionLimits.maxAiCredits` the cap passed; a model call, message or tool call naming another
+  model stops the night too (an automatic model switch fails closed). The stream carries no
+  tokens: they come from the usage file's `tokenDetails` (uncached input, output, cache read,
+  cache write), and its `totalNanoAiu` / 1e9 is the session's AI credits, recorded as the
+  attempt record's `credits` (a Copilot record's own field). `cost_usd` is 0 (subscription);
+  `stats --run` prices the tokens at the arm's prices, which are GitHub's credit rates in USD
+  ($0.01 a credit), so its API-equivalent figure is the credits spent at a cent each. A
+  session.error of type `rate_limit` or `quota` pauses the arm like a usage limit, a
+  `context_limit` is counted like a turn cap, anything else stops the night, and so does a
+  result with a non-zero exit and no error.
+- **The audit (fail closed).** Every tool call is read from the stream by its `toolCallId`. Only
+  `view {path}`, `create {path, file_text}`, `edit {path, old_str, new_str}`, `powershell
+  {command[, description, mode, initial_wait]}` and `read_powershell {shellId[, delay]}` by the
+  main agent are known; another tool, another argument, a subagent's call (`agentId`, a parent,
+  program or MCP field), a completion with no start and any event type outside the known set (a
+  hook, a skill, a subagent, a permission prompt, a model switch) are strays. A call ended
+  `denied` with exactly one of 1.0.111's two refusal texts (a rule named, or "no interactive
+  user response was available") never ran; anything less exact counts as run. Every powershell
+  command that ran must be an exact wrapper form naming no `orig` or `third_party` part; every
+  create or edit path, every completion's fileEdits path and every path in the result's
+  filesModified must pass the session's write allowlist; every view path must stay inside the
+  checkout and name no forbidden root; no tool result may carry hook text; the per-session
+  settings must hold the driver's bytes; and the attempt dir is judged against the launch
+  inventory and the wrapper ledger. A refused create or edit is a denied write, so on a night of
+  several arms a session whose only strays are such writes stops its arm only.
+- **What the audit cannot do.** Copilot's shell rules name a command and at most its first
+  subcommand, so no rule names the wrapper's exact forms: `shell(uv:*)` is the rule that surely
+  matches them, and it matches any other `uv` command too. Path rules do not reach shell
+  commands, and Copilot runs commands it deems read-only without asking. A session that reads
+  `orig/` through the shell is caught by its command, quarantined and the night stops, but what
+  it sent to GitHub before it ended has left the machine. `--sandbox` exists (MXC on Windows)
+  but is unverified on Windows 10 and not passed.
+- **The canary.** `reverseapoc drive --canary --night-model copilot-haiku-5-5 --allow-egress
+  copilot-haiku-5-5 --run canary-copilot-haiku` (and the same for the other two arms) runs one
+  session in the canary's attempt dir under the night's guard set: Copilot goes on after a
+  refused call, so one session does the allowed path and every probe. In order: `attempt
+  context`, a create of plan.json and an in-place edit of it, `attempt plan`, the note, `attempt
+  check` (with the wait instruction), then five probes that must each end refused in Copilot's
+  own stream and leave nothing: a view of a file under orig/ that never exists, a `..` view of
+  the same file, a create one directory above the workspace, `Get-Content` of the orig/ file
+  (a non-wrapper shell read) and `Invoke-WebRequest`. It passes when the init is clean, the
+  session ended with exit 0, every tool call and event is one the night's audit knows, no hook
+  text reached a result, all three wrapper calls ran and the audit passes every command, write
+  and read that ran, the create and the edit succeeded, context.md is in the ledger, the check
+  logged exit 0 and consumed its note, every probe was refused, the attempt dir matches the
+  ledger, the settings are unchanged and the usage file names the session's credits; plus the
+  containers, tree and refs lines of every canary. The pass file
+  `build/driver/canary/<arm>.json` records `cli_version` from `copilot --version`, the
+  session's `credits` and its tokens; a night of a Copilot arm is refused unless it says PASS for
+  the installed version. What the first canary must still prove is listed in spike 013 (the
+  sign-in under the per-session home, the `shell(uv:*)` rule, the long-command tool shapes,
+  each refusal's text).
+- **Sizing.** Each arm runs with `max_workers = 4` and `max_ai_credits = 30` (Copilot's minimum
+  per-session cap; a soft cap, one response may pass it). The capture spent 0.437 credits on
+  three model calls; a matching session is about 3 to 5 credits per Haiku session (a placeholder:
+  re-measure from the first night's `credits`), so the month's 1,500 credits cover a few hundred
+  Haiku sessions and far fewer Sonnet ones (Sonnet 5.5's rates are 20 times Haiku's).
+
 ## The local arm
 
 `qwen-local` runs Qwen3.6-35B-A3B on the owner's own llama.cpp server and is the last arm of
@@ -956,6 +1056,7 @@ replaces the screenshot readings with measured ones; re-measure this table when 
 | Gemini 3.8 Flash (Google AI Plus) | about 175k input, 2.8M cache read, 28k output | about 15% of the agy week (S, one session; a canary about 6.6%) | the week: about 6 sessions |
 | DeepSeek V4.1-Flash (OpenRouter) | about 76k input, 620k cache read, 28k output | about $0.30 (A) | $10: about 33 sessions |
 | GLM-5.3 (OpenRouter) | about 215k input, 1.8M cache read, 77k output | about $0.60 (A) | left the rows on 2026-11-13: no match in about 45 sessions |
+| Haiku 5.5 (Copilot Pro) | not measured yet | about 3 to 5 AI credits (a placeholder; the record's `credits` measures it) | 1,500 credits a month: a few hundred sessions; re-measure |
 
 Past the Codex 5-hour window, Codex keeps running on the account's credits (about 1 to 2 credits
 per session, chatgpt.com/settings/usage), and a full reset restores both the week and the window.
