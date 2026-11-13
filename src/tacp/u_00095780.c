@@ -7,7 +7,16 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00095780);
+typedef struct {
+    char pad0[4];
+    char kind;
+    char who;
+    char pad6[8];
+    short a;
+    short index;
+    short b;
+} Msg00095780;
+
 typedef struct {
     char pad0[4];
     char kind;
@@ -17,9 +26,32 @@ typedef struct {
     short index;
 } Msg00095800;
 
+extern short D_0010A2EA[][590];
+extern short D_0010A302[][590];
 extern short D_0010A306[][590];
 extern int D_0027EFC0;
 Msg00095800 *func_00021180(void);
+
+void func_00095780(int who, int index, short a, short b)
+{
+    Msg00095780 *m;
+
+    if (a != D_0010A2EA[who][index] || b != D_0010A302[who][index]) {
+        if (D_0027EFC0 == 0) {
+            m = (Msg00095780 *)func_00021180();
+            if (m != 0) {
+                m->kind = 30;
+                m->who = who;
+                m->index = index;
+                m->a = a;
+                m->b = b;
+            }
+        } else {
+            D_0010A2EA[who][index] = a;
+            D_0010A302[who][index] = b;
+        }
+    }
+}
 
 void func_00095800(int who, int index, short value)
 {
