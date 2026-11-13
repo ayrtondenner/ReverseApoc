@@ -748,6 +748,24 @@ def test_agyjson_a_denied_edit_file_never_ran():
     assert agyjson.read_targets(events) == [EDITED]
 
 
+def test_agyjson_a_read_a_deny_rule_refused_never_ran():
+    """The real 1.5.8 read-deny capture (2026-11-13, settings: allow read_file(open.txt), deny
+    read_file(secret.txt)): the refused read ends ERROR, TOOL_ERROR, in the deny-rule form
+    `permission check failed for read_file "<path>": Permission denied for read_file(<path>).
+    Matches user-configured deny rule.`, which is a denial (the canary's orig/ read probes meet
+    this form on 1.5.8), so secret.txt is no read target. The same capture shows 1.5.8 letting
+    an edit_file of z.txt through with no write rule naming it: it ran, so the audit judges it
+    as a write (fail closed), and an unconfigured read of z.txt ran too."""
+    events = _events("agy158_read_denied")
+    secret, opened, other = (f"C:/made-up/ws/{name}" for name in ("secret.txt", "open.txt",
+                                                                  "z.txt"))
+    assert agyjson.denials(events) == [agyjson.Denial(4, "read_file", "read_file", secret,
+                                                      secret)]
+    assert agyjson.read_targets(events) == [opened, other]
+    assert agyjson.write_targets(events) == [other] and agyjson.edits(events) == [other]
+    assert agyjson.unknown_steps(events) == []
+
+
 def test_agyjson_an_edit_file_step_of_another_shape_is_unknown():
     """Fail closed: only the captured shape is a known edit, tool_info {name: edit_file,
     parameters: {Path: <string>}} with an `error` once it fails. Another tool_info key, another
