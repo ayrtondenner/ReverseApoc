@@ -15,7 +15,6 @@ INCLUDE_ASM(func_000509C0);
 INCLUDE_ASM(func_00050A20);
 INCLUDE_ASM(func_00050A80);
 INCLUDE_ASM(func_00050AE0);
-INCLUDE_ASM(func_00050BB0);
 
 extern short D_000D504C;
 extern short hover_info_changed;
@@ -24,8 +23,30 @@ extern int D_000D4D58;
 extern int D_000D4D5C;
 extern unsigned short D_000D5064;
 extern int D_000E12F8;
+extern short D_000D4D70;
+extern short D_000D4D72;
+extern short D_000D4D74;
+extern short D_00183B04;
+extern short D_00183B06;
 
-void func_0005EDF0();
+void func_0005EDF0(void);
+
+void func_00050BB0(void)
+{
+    register int one;
+
+    if (D_000D4D70) {
+        D_00183B06 = D_000D4D72 + 25;
+        D_00183B04 = D_000D4D74 + 7;
+    } else {
+        D_000D4D72 = D_00183B06 - 25;
+        D_000D4D74 = D_00183B04 - 7;
+    }
+    D_000D4D70 = D_000D4D70 == 0;
+    one = 1;
+    func_0005EDF0();
+    D_000E12F8 = one;
+}
 
 void func_00050970(void)
 {
