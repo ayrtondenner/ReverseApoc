@@ -1,0 +1,20 @@
+{
+  "numStartups": 1,
+  "cachedUsageUtilization": {
+    "fetchedAtMs": 1794560400000,
+    "utilization": {
+      "five_hour": null,
+      "seven_day": {"utilization": 61, "resets_at": "2026-11-16T19:00:00.000000+00:00"},
+      "limits": [
+        {"kind": "weekly_all", "group": "weekly", "percent": 61, "severity": "normal",
+         "resets_at": "2026-11-16T19:00:00.000000+00:00", "scope": null, "is_active": true},
+        {"kind": "weekly_scoped", "group": "weekly", "percent": 9, "severity": "normal",
+         "resets_at": "2026-11-16T19:00:00.000000+00:00",
+         "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null},
+         "is_active": false},
+        {"kind": "session", "group": "five_hour", "percent": 30, "severity": "normal",
+         "resets_at": "2026-11-13T05:00:00+00:00", "scope": null, "is_active": true}
+      ]
+    }
+  }
+}

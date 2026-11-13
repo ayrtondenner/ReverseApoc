@@ -22,3 +22,22 @@ Per source, find a non-interactive read:
 - **Claude Code (Ultra):** the weekly and Fable bars live in the claude.ai account; no
   documented CLI read is known. Investigate before assuming none.
 Record each read's source and date beside the numbers. Never print or commit a key or token.
+
+## Result (2026-11-13)
+
+`reverseapoc meters` (tools/reverseapoc/meters.py, tests/test_meters.py) reads each source
+non-interactively where a local or API read exists. docs/model-routing.md "Reading the meters"
+records each source and how it is read:
+
+- OpenRouter: the credits API, with OPENROUTER_API_KEY (never printed).
+- Codex: the newest `rate_limits` record in the ~/.codex/sessions rollouts (5-hour, weekly,
+  credits). A drive's `--ephemeral` sessions write none, so the figure dates from the last
+  interactive session (`as_of`).
+- Copilot: this month's AI credits from the CLI's session-state logs; the account balance is
+  not stored locally.
+- agy: `agy -p /usage` through driver.agy_quota; still nothing machine-readable (spike 012), and
+  agy's logs hold no figures.
+- Claude Code: ~/.claude.json `cachedUsageUtilization` (the weekly and Fable bars), the usage
+  panel's own cache.
+
+The quota table is re-measured from these readings on the next nights.

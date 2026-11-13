@@ -31,6 +31,7 @@ from . import (
     lift,
     locate,
     mechanics,
+    meters,
     probe,
     search,
     session,
@@ -2717,6 +2718,35 @@ def _add_compare_objects_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_compare_objects)
 
 
+# ---- meters: the subscription and credit meters (todo usage-meters-per-subscription) ----
+
+
+def _cmd_meters(args: argparse.Namespace) -> int:
+    """Exit 0: a source that cannot be read is a reading with an `error`, not a failure."""
+    seams = meters.default_seams()
+    readings = meters.read_all(args.source or meters.SOURCES, seams)
+    print(json.dumps([r.to_json() for r in readings], indent=2, sort_keys=True) if args.json
+          else meters.format_readings(readings, seams.now()))  # fmt: skip
+    return 0
+
+
+def _add_meters_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "meters",
+        help="read the subscription and credit meters (OpenRouter credits, the Codex 5-hour and "
+        "weekly bars, Copilot CLI AI credits, agy /usage, the Claude Code usage panel cache) "
+        "from the tools themselves; an unreadable source prints its reason",
+        description="Reads ~/.codex/sessions, ~/.copilot/session-state and ~/.claude.json "
+        "(read-only), calls the OpenRouter credits API when OPENROUTER_API_KEY is set and runs "
+        "`agy -p /usage`. Never prints a key. See docs/model-routing.md \"Reading the meters\".",
+    )
+    p.add_argument("--json", action="store_true", help="print the readings as JSON (sorted keys)")
+    p.add_argument("--source", action="append", choices=meters.SOURCES, default=None,
+                   metavar="NAME", help="read only this source (repeatable; one of "
+                   f"{', '.join(meters.SOURCES)}); default: every source")  # fmt: skip
+    p.set_defaults(func=_cmd_meters)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -2792,6 +2822,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_stats_command(sub)
     _add_causes_command(sub)
     _add_compare_objects_command(sub)
+    _add_meters_command(sub)
     _add_watcom_commands(sub)
     return parser
 

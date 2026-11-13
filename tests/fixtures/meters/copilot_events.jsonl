@@ -1,0 +1,4 @@
+{"type":"session.start","id":"e1","parentId":null,"timestamp":"2026-11-12T20:00:00.000Z","data":{"producer":"copilot-agent","copilotVersion":"0.0.0","sessionLimits":{"maxAiCredits":30}}}
+{"type":"session.usage_checkpoint","id":"e2","parentId":"e1","timestamp":"2026-11-12T20:00:10.000Z","data":{"totalPremiumRequests":1,"accountingSnapshot":{"totalPremiumRequestCost":1.0,"totalNanoAiu":250000000.0,"aiCreditsStatus":"complete"}}}
+not json
+{"type":"session.shutdown","id":"e3","parentId":"e2","timestamp":"2026-11-12T20:01:00.000Z","data":{"shutdownType":"routine","totalPremiumRequests":2,"totalNanoAiu":750000000,"accountingSnapshot":{"totalPremiumRequestCost":2.0,"totalNanoAiu":750000000.0,"aiCreditsStatus":"complete"}}}
