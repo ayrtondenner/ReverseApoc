@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_0001DF90);
 INCLUDE_ASM(func_0001E000);
-INCLUDE_ASM(func_0001E5D0);
 INCLUDE_ASM(func_0001E660);
 typedef struct {
     short type;
@@ -53,6 +52,28 @@ void func_0001E860(Obj0001E860 *p, int *sx, int *sy)
     y += D_000E4D6E * 40;
     *sx = x - D_000E6BF8;
     *sy = y - D_000E6BFC - z;
+}
+
+extern short D_000E4D74, D_000E4D76, D_000E4D78, D_000E4D7A;
+extern void func_00027841(int, int, int, int, unsigned char);
+
+/* The return value is not used by the listing. */
+void func_0001E5D0(short x, short y, short w, short h, unsigned char color)
+{
+    int right;
+    int bottom;
+
+    bottom = h;
+    right = x + w;
+    bottom += y;
+    if (x < D_000E4D78 && right > D_000E4D74 &&
+        y < D_000E4D7A && bottom > D_000E4D76) {
+        if (x < D_000E4D74) x = D_000E4D74;
+        if (right > D_000E4D78) right = D_000E4D78;
+        if (y < D_000E4D76) y = D_000E4D76;
+        if (bottom > D_000E4D7A) bottom = D_000E4D7A;
+        func_00027841(x, y, right, bottom, color);
+    }
 }
 
 typedef struct {
