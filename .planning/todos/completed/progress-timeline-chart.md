@@ -29,3 +29,7 @@ gets its own line starting on the day work on it began), plus a per-day summary 
 pure function over git log + the CSVs, tested on a synthetic repo; the chart as inline SVG in the
 generated page (no third-party JS unless recorded in docs/tools.md), phone-legible (backlog
 999.4's lessons), with a text table of the same data for accessibility.
+
+**Done (2026-11-13):** tools/progress.py's `Progress over days` section (build_timeline,
+load_timeline, render_timeline_svg; tests/test_progress_timeline.py); pages.yml checks out with
+`fetch-depth: 0`, and a shallow clone leaves a note in place of the chart.

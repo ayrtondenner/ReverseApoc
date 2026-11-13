@@ -39,9 +39,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # The whole history: the page's progress-over-days chart is re-derived from the history of
+      # config/<exe>/*.csv; a shallow clone would only leave a note in its place.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Derive the progress files from the committed CSVs
         run: python3 -I tools/progress.py --out _site --report build/report.json --commit "$GITHUB_SHA"
