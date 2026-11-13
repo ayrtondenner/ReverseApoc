@@ -13,11 +13,12 @@ UFO2P.EXE and TACP.EXE) to document the original engine for OpenApoc. Not a port
 - A matched function is byte-identical and stays that way: no restructuring, no "modernizing",
   no inline assembly to force a match. Rules per path live in `.claude/rules/`.
 - Claude Code is the only agent runtime here, with one scoped exception: Codex CLI (the
-  owner's ChatGPT Plus) and Antigravity CLI (the owner's Google AI Plus) may run
-  `reverseapoc drive` sessions (spike 012 and later multi-arm nights), launched and audited by
-  the driver under its guard set, with per-session config generated under gitignored build/.
-  No `.codex/`, `.gemini/`, AGENTS.md or other runtime config is committed; everything else
-  stays Claude Code only. Install skills as plugins at project scope.
+  owner's ChatGPT Plus), Antigravity CLI (the owner's Google AI Plus) and GitHub Copilot CLI
+  (the owner's Copilot Pro) may run `reverseapoc drive` sessions (spike 012 and later
+  multi-arm nights; Copilot from spike 013), launched and audited by the driver under its
+  guard set, with per-session config generated under gitignored build/. No `.codex/`,
+  `.gemini/`, `.github/copilot/`, `.copilot/`, AGENTS.md or other runtime config is
+  committed; everything else stays Claude Code only. Install skills as plugins at project scope.
 
 ## Commands
 
