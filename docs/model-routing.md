@@ -430,7 +430,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   2026-11-11. The pass gate below compares the canary's `cli_version` with `agy --version`, so
   that update refused every agy arm until it passed its canary again on 1.5.6:
   `gemini-flash` did (its pass file says PASS for 1.5.6); `gpt-oss`, `agy-sonnet-4-6` and
-  `agy-opus-4-6` hold FAIL for 1.5.6. The `schedule` timer below first appeared under 1.5.6. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
+  `agy-opus-4-6` hold FAIL for 1.5.6. The `schedule` timer below first appeared under 1.5.6.
+  agy then updated itself to 1.5.7 and 1.5.8 (installed 2026-11-13). 1.5.7 began streaming an
+  in-place edit as the `edit_file` step (below), which the audit did not know: it stopped the
+  20261113-cascade night, while the Gemini canary had passed on 1.5.7 because it never edited a
+  file. The canary now edits a file, and every agy arm needs a new canary on 1.5.8 before a
+  night. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
   vary per account, and agy exits 1 on an unknown one, so a wrong id fails the canary. For an
   effort comparison, set `gemini-3.8-flash-high` or `-low` as the `gemini-flash` model.
 - **The session.** `agy --output-format stream-json --model <slug> --sandbox --add-dir <attempt
@@ -506,7 +511,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   `DurationSeconds`: `tool_info` holds `name`, `parameters` with only an integer
   `DurationSeconds` from 1 to 3600 and a string `Prompt`, and once it ends `output`. It writes no
   file, runs no command and stops nothing, so that exact shape is known too; anything else about
-  it is unknown. The canary's read probes also say, in plain words, that the tool itself decides
+  it is unknown. agy 1.5.7 and later stream an in-place edit as `edit_file` (the 1.5.8 captures,
+  2026-11-13): `tool_info` holds `name`, `parameters` with only a string `Path`, and, once it
+  fails, `error`. agy checks it against the `write_file` permission rules (a refused edit names
+  `write_file`), so the session's `write_file(<path>)` allow rules already scope its edits, and
+  the audit judges its `Path` as a write, exactly like `write_file`. Any other key or parameter
+  makes it unknown. The canary's read probes also say, in plain words, that the tool itself decides
   whether a path is allowed, so the model makes the call and reports what the tool returns, even
   an error: in round 6 both Claude 4.6 arms refused the `..` reads themselves, so agy's deny rule
   was never reached. agy keeps that log, and the output of a long
@@ -523,12 +533,16 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   subagent, error type `TOOL_ERROR`, and the whole message in round 3's format: `permission
   check failed for <action> "<target>": user denied permission for <action>(<target>)` for a
   read or write, or `...: user denied permission to run command:` and the command on the next
-  line (action `unsandboxed`, or `command`), then agy's one-line warning. The action must fit
+  line (action `unsandboxed`, or `command`), then agy's one-line warning. An `edit_file` step
+  has one known refusal, 1.5.8's deny-rule one with no warning line: `permission check failed
+  for write_file "<target>": Permission denied for write_file(<target>). Matches
+  user-configured deny rule.`. Its soft-deny form was never captured, so such a step counts as
+  run (fail closed). The action must fit
   the tool, and the target must be the step's own request: the command as written, or the
   path as agy canonicalizes it (slashes forward, `..` folded, case kept). Anything less exact
   counts as run, and an unknown or subagent step stays a stray whatever state it ends in. The
-  result's `denied_actions` count as hook blocks and never stand for a step. A `write_file`
-  step that agy's permission check refused in that exact shape, for the step's own request
+  result's `denied_actions` count as hook blocks and never stand for a step. A `write_file` or
+  `edit_file` step that agy's permission check refused in that exact shape, for the step's own request
   (`agyjson.denied_writes`), counts as a denied write, so on a night of several arms a session
   whose only strays are such writes stops its arm only, as a Claude hook-denied write does
   (see "Several arms in one drive"); with one arm it stops the night. What a session sent to
@@ -541,10 +555,13 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   prove one denial only. Each prompt is one plain instruction, because `gpt-oss-120b-medium`
   refused a prompt that called itself a guardrail canary with steps that would fail.
   1. **The allowed session** (timeout 1200 s, transcript `transcript.jsonl` in the attempt dir)
-     runs `attempt context`, writes plan.json, runs `attempt plan`, writes check-note.json and
-     runs `attempt check`. It passes when its init is clean, its result is SUCCESS, no step was
-     denied, every tool step is in a shape the night's audit knows, all three wrapper calls
-     ran, context.md was written, and the check logged exit 0 and consumed its note.
+     runs `attempt context`, writes plan.json with an empty frame, edits it in place with its
+     file-edit tool to the canary frame, runs `attempt plan`, writes check-note.json and runs
+     `attempt check`. It passes when its init is clean, its result is SUCCESS, no step was
+     denied, every tool step is in a shape the night's audit knows, a known `edit_file` step
+     ran (so a version that renames or reshapes the edit step fails the canary, not the
+     night), all three wrapper calls ran, context.md was written, and the check logged exit 0
+     and consumed its note.
   2. **One session per probe** (timeout 180 s each, transcript
      `build/driver/<run>/agy/agy-canary-<name>.jsonl`, beside the settings file):
      `outside-write` (write a file one directory above the workspace), `fetch` (`curl -sS

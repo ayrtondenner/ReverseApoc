@@ -765,11 +765,12 @@ def test_agyjson_an_edit_file_step_of_another_shape_is_unknown():
     assert agyjson.edits(unknown) == [] and agyjson.denials(unknown) == []
     assert agyjson.write_targets(unknown).count(EDITED) == 5  # step 4's Path is no string
     message = _deny_rule_message(EDITED)
-    inexact = [_edit(10, state="ERROR", error={"type": "TOOL_ERROR", "message": m})
-               for m in ("made-up: " + message, message.replace("write_file", "read_file"),
-                         _deny_rule_message("C:/made-up/ws/y.txt"),
-                         _deny_message("write_file", EDITED))]
-    inexact.append(_edit(11, state="ERROR", error={"type": "MADE_UP_ERROR", "message": message}))
+    inexact = [_edit(index, state="ERROR", error={"type": "TOOL_ERROR", "message": m})
+               for index, m in enumerate(("made-up: " + message,
+                                          message.replace("write_file", "read_file"),
+                                          _deny_rule_message("C:/made-up/ws/y.txt"),
+                                          _deny_message("write_file", EDITED)), start=10)]
+    inexact.append(_edit(14, state="ERROR", error={"type": "MADE_UP_ERROR", "message": message}))
     assert agyjson.denials(inexact) == [] and agyjson.unknown_steps(inexact) == []
     assert agyjson.write_targets(inexact) == [EDITED] * 5
     exact = _edit(12, state="ERROR", error={"type": "TOOL_ERROR", "message": message})
@@ -1472,17 +1473,19 @@ def test_agy_canary_allowed_session_names_an_unseen_step_shape(tmp_path, capsys)
 
 def test_agy_canary_allowed_session_must_edit_in_place(tmp_path, capsys):
     """agy 1.5.7's edit_file step stopped a night the canary had passed, because the canary
-    never edited a file. The allowed session must make a known edit_file step that ran: one
-    with no edit (the plan written whole) FAILs saying so, and one whose edit step has another
-    shape (a Content parameter beside Path) FAILs as an unknown step and as no edit, so a
-    version that renames or reshapes the edit step fails the canary, not the night."""
-    rig = _agy_canary_rig(tmp_path / "none", scenarios={ALLOWED: "canary_agy_allowed_no_edit"})
-    code, doc = _agy_canary(rig, capsys)
-    assert (code, doc["canary"]) == (1, "FAIL")
-    failed = _failed(doc)
-    assert "the allowed session made no in-place edit_file step" in failed, failed
-    assert "agy audit knows" not in failed, failed
-    assert _no_pass(rig)
+    never edited a file. The allowed session must make a known edit_file step of plan.json that
+    ran: one with no edit (the plan written whole) or with its edit on another file FAILs
+    saying so, and one whose edit step has another shape (a Content parameter beside Path)
+    FAILs as an unknown step and as no edit, so a version that renames or reshapes the edit
+    step fails the canary, not the night."""
+    for scenario in ("canary_agy_allowed_no_edit", "canary_agy_allowed_edit_other"):
+        rig = _agy_canary_rig(tmp_path / scenario, scenarios={ALLOWED: scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), scenario
+        failed = _failed(doc)
+        assert "the allowed session made no in-place edit_file step on plan.json" in failed
+        assert "is not a tool step the agy audit knows" not in failed, failed
+        assert _no_pass(rig), scenario
     rig = _agy_canary_rig(tmp_path / "reshaped",
                           scenarios={ALLOWED: "canary_agy_allowed_edit_reshaped"})
     code, doc = _agy_canary(rig, capsys)

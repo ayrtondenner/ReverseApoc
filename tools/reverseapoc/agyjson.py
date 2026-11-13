@@ -34,9 +34,13 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
 - `unknown_steps`: each tool step that ran and is not a known tool (`run_command` in agy
   1.5.5's shape, `read_file` or `write_file` with a path, or round 4's `manage_task` status
   poll of a backgrounded command: tool_info {name, parameters: {Action: "status", TaskId},
-  output}, no file or command effect, so in no list and never a denial) in its known shape,
-  a subagent's included: the audit counts each as a stray (WR-02). Only a known step can be a
-  denial, so an unknown one is named whatever state it ends in.
+  output}, no file or command effect, so in no list and never a denial, or agy 1.5.8's
+  `edit_file`: tool_info {name, parameters: {Path}} and, once failed, error, a write judged as
+  write_file's) in its known shape, a subagent's included: the audit counts each as a stray
+  (WR-02). Only a known step can be a denial, so an unknown one is named whatever state it
+  ends in.
+- `edits`: the Path of each edit_file step that ran in its known shape (the agy canary's proof
+  that the session's in-place edit is a step the audit knows).
 - `denied_actions`: the result's denied actions as `action(target)` strings.
 - `denials`, `undenied_steps`, `response` (the agy canary's evidence): each tool step agy's
   permission check refused, with its action and target read from its own error message and its
@@ -47,7 +51,9 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   TOOL_ERROR, and its whole message is round 3's: `permission check failed for <action>
   "<target>": user denied permission for <action>(<target>)` (read_file, write_file) or `...
   user denied permission to run command:` and the command on the next line (run_command:
-  action `unsandboxed`, or `command`), then agy's one-line warning; the action fits the
+  action `unsandboxed`, or `command`), then agy's one-line warning, or for edit_file agy
+  1.5.8's deny-rule refusal `permission check failed for write_file "<target>": Permission
+  denied for write_file(<target>). Matches user-configured deny rule.`; the action fits the
   step's tool, the quoted and bare targets agree, and the target is the step's own request (a
   command as written; a path as agy canonicalizes it, round 3: slashes forward and `..`
   folded, case kept).
@@ -213,10 +219,19 @@ _COMMAND_TOOLS = frozenset({"run_command"})
 _COMMAND_LINE = "CommandLine"
 _NAME = "name"
 _OUTPUT = "output"
+_ERROR = "error"
 _COMMAND_INFO = frozenset({_NAME, _PARAMETERS, _OUTPUT})
 _LEGACY_COMMAND = "command"  # RESEARCH's documented tool_info.command, never seen: unknown
 _READ_TOOLS = frozenset({"read_file"})
-_WRITE_TOOLS = frozenset({"write_file"})
+# agy 1.5.7 began streaming an in-place edit as edit_file (it stopped the 20261113-cascade
+# night as an unknown step); the coordinator's 1.5.8 captures (2026-11-13) show tool_info
+# {name, parameters: {Path}} and, once it fails, error, and agy checks it against the
+# write_file permission rules (a refusal names write_file), so it is a write like write_file
+_EDIT_TOOL = "edit_file"
+_EDIT_INFO = frozenset({_NAME, _PARAMETERS, _ERROR})
+_EDIT_PATH = "Path"
+_WRITE_ACTION = "write_file"
+_WRITE_TOOLS = frozenset({_WRITE_ACTION, _EDIT_TOOL})
 # spike 012 round 4 (gemini-flash's allowed session): agy 1.5.5 backgrounds a command that
 # outlives its time limit, and the model polls that task with manage_task: tool_info {name,
 # parameters: {Action: "status", TaskId}, output} (the output, once DONE, the task's status
@@ -321,6 +336,15 @@ def _real_timer(name: str, info: Mapping) -> bool:
             and 1 <= seconds <= _TIMER_MAX_S and isinstance(parameters["Prompt"], str))  # fmt: skip
 
 
+def _real_edit(name: str, info: Mapping) -> bool:
+    """agy 1.5.8's edit_file step and nothing more: tool_info names the tool, holds only its
+    name, parameters and (once it fails) error, and its parameters only a string Path."""
+    parameters = info.get(_PARAMETERS)
+    return (info.get(_NAME) == name and set(info) <= _EDIT_INFO
+            and isinstance(parameters, Mapping) and set(parameters) == {_EDIT_PATH}
+            and isinstance(parameters[_EDIT_PATH], str))  # fmt: skip
+
+
 def commands(events: Sequence[dict]) -> list[str]:
     """The CommandLine of every run_command step that ran in agy 1.5.5's shape (see the module
     docstring); a command step of any other shape is an unknown step, never a command run."""
@@ -353,6 +377,13 @@ def read_targets(events: Sequence[dict]) -> list[str]:
     return _paths(events, writes=False)
 
 
+def edits(events: Sequence[dict]) -> list[str]:
+    """The Path of every edit_file step that ran in agy 1.5.8's shape, in order (the agy
+    canary's proof of an in-place edit; each is in `write_targets` too)."""
+    return [_mapping(step["tool_info"])[_PARAMETERS][_EDIT_PATH] for step in _steps(events)
+            if step.get("tool_name") == _EDIT_TOOL and _ran(step) and _known(step)]
+
+
 def _known(step: Mapping) -> bool:
     """A known tool in its known shape, with no subagent behind it."""
     name, info = step.get("tool_name"), _mapping(step.get("tool_info"))
@@ -364,6 +395,8 @@ def _known(step: Mapping) -> bool:
         return _real_task(name, info)
     if name in _TIMER_TOOLS:
         return _real_timer(name, info)
+    if name == _EDIT_TOOL:
+        return _real_edit(name, info)
     return (name in _READ_TOOLS | _WRITE_TOOLS and _command_line(info) is None
             and _path(info) is not None)  # fmt: skip
 
@@ -384,7 +417,6 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
 # refused (its binary's format: `permission check failed for %s %q: %w`, the target Go-quoted),
 # as every real denial shows it, error type TOOL_ERROR. Per tool: the actions that fit it and
 # the `%w` text, then the warning line every real denial ends with.
-_ERROR = "error"
 _MESSAGE = "message"
 _TYPE = "type"
 _TOOL_ERROR = "TOOL_ERROR"
@@ -398,8 +430,15 @@ def _denial_form(actions: str, reason: str) -> re.Pattern:
                       rf"denied permission {reason}{re.escape(_DENIAL_WARNING)}", re.S)
 
 
+# agy 1.5.8 (the coordinator's deny capture, 2026-11-13): the whole message for an edit_file
+# step a write_file deny rule refused, with no warning line. The only form known for edit_file:
+# its soft-deny form (no rule matched) was never seen, so such a step counts as run.
+_DENY_RULE_FORM = re.compile(r'permission check failed for (write_file) "((?:[^"\\]|\\.)*)": '
+                             r"Permission denied for write_file\((.*)\)\. Matches "
+                             r"user-configured deny rule\.", re.S)  # fmt: skip
 _DENIAL_FORMS = {"read_file": _denial_form("read_file", r"for read_file\((.*)\)"),
-                 "write_file": _denial_form("write_file", r"for write_file\((.*)\)"),
+                 _WRITE_ACTION: _denial_form("write_file", r"for write_file\((.*)\)"),
+                 _EDIT_TOOL: _DENY_RULE_FORM,
                  "run_command": _denial_form("unsandboxed|command",
                                              r"to run command:\n(.*)")}  # fmt: skip
 
@@ -519,10 +558,11 @@ def rejections(events: Sequence[dict]) -> list[Rejection]:
 
 def denied_writes(events: Sequence[dict]) -> list[str]:
     """The request (the path the model asked for) of every write step agy's permission check
-    refused (`denials`: a write_file step, its write action, its own target), in order: the
-    night audit's denied writes (owner ruling 2026-11-10, "extend it")."""
-    return [d.request for d in denials(events)
-            if d.tool in _WRITE_TOOLS and d.action == d.tool and d.request is not None]
+    refused (`denials`: a write_file or edit_file step, its write action or its own tool's,
+    its own target), in order: the night audit's denied writes (owner ruling 2026-11-10,
+    "extend it")."""
+    return [d.request for d in denials(events) if d.tool in _WRITE_TOOLS
+            and d.action in (d.tool, _WRITE_ACTION) and d.request is not None]  # fmt: skip
 
 
 def _undenied(step: Mapping) -> str:

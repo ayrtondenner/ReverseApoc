@@ -11,6 +11,10 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-13: a canary must use every tool the night uses (agy edit_file)
+
+- agy auto-updated to 1.5.7, whose new `edit_file` step stopped the 20261113-cascade night as an unknown step although the Gemini canary had passed, since the canary never edited a file; 1.5.8 checks `edit_file` against the `write_file` rules, so the audit judges it as a write and the agy canary now makes one in-place edit (`.planning/todos/completed/agy-157-edit-file-audit.md`).
+
 ## 2026-11-11: fix the tools beside a live drive, and watch ci.yml (spike 012)
 
 - A drive holds the checkout's lock, git index and audit, and a second drive is refused. During spike 012 the fixes were built in a `git clone` outside the checkout (the session's scratch folder, not a worktree, which lives under `.claude/worktrees/` inside the checkout) with only targeted tests there, and brought into main by `git fetch` and cherry-pick between drives; the last three were authored during drives 1, 2 and 2b (efdb1b99, be869480, faaf6746) and committed to main one minute after drive 2b ended. Evidence lines go to `build/gate/<spike>/results.txt`; one round's lines were lost to a log watcher holding the file open and had to be restored from the launcher's output.
