@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import attempt, driver
+from reverseapoc import attempt, contextpack, driver
 from reverseapoc.locks import ProcessLock
 from reverseapoc.picker import Pick
 from reverseapoc.session import kill_tree, run_session
@@ -2665,3 +2665,184 @@ def test_the_owners_three_arm_night_ends_once_its_paused_arm_is_capped(tmp_path)
     assert sleeps == []
     assert len(night.kinds("limit")) >= 2
     _validated(night)
+
+
+# ---- quick 261113 (drive 20261113-lanes): a function whose context pack cannot fit ----
+
+OVER_SIZE = 29894  # the size drive 20261113-lanes reported (the pack itself is made up here)
+
+
+def _over_cap(night: Night, refused, *, when=lambda: True):
+    """A Deps.pack that raises PackOverCap for a pick whose start is in `refused` while `when()`
+    holds (each refusal's start in the returned list), else the night's own fake pack."""
+    tries: list[int] = []
+
+    def pack(pick, directory, src=None):
+        if pick.start in refused and when():
+            tries.append(pick.start)
+            raise contextpack.PackOverCap(pick.name, OVER_SIZE, contextpack.PACK_CAP)
+        return night._pack(pick, directory, src)
+
+    return pack, tries
+
+
+def _over_lines(lines: list[str], pick: Pick) -> list[str]:
+    return [line for line in lines if pick.name in line and "context pack" in line]
+
+
+def _no_trace(night: Night, pick: Pick, run: str = RUN) -> None:
+    """No session, record, difficult-list entry, claim or attempt directory of `pick`."""
+    assert not [r for r in night.records() if r.get("function") == pick.name]
+    assert (pick.exe, pick.start) not in driver.load_difficult(night.repo / driver.DIFFICULT)
+    assert not _claim_path(night, unit=pick.unit).exists()
+    assert not (_driver_dir(night) / run / pick.exe / pick.name / "attempt-1").exists()
+    _validated(night)
+
+
+def _slots_free(night: driver._Night) -> None:
+    lanes = [*night.lanes, *night.arm_lanes.values()]
+    assert (night.reserved, [lane.reserved for lane in lanes]) == (0, [0] * len(lanes))
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_an_over_cap_pack_leaves_its_function_for_tonight(tmp_path, monkeypatch, workers):
+    """Drive 20261113-lanes: the first pick's pack is over the cap (required sections are never
+    cut, D-14). Its pass ends at once with one console line naming the function, the pack's size
+    and the cap; no session runs for it and nothing is recorded or listed. Its slot goes back:
+    the two other picks run under --max-sessions 2 (a slot it kept or counted would leave room
+    for one), and the night ENDS, counting it in the report."""
+    nights = _capture_nights(monkeypatch)
+    picks = (_wpick(0), _wpick(1), _wpick(2))
+    night = WNight(tmp_path, picks=picks)
+    pack, tries = _over_cap(night, {picks[0].start})
+    lines: list[str] = []
+    report = night.run(config=_workers(workers, attempts_per_function=1, max_sessions=2),
+                       pack=pack, say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.MAX_SESSIONS), report.detail
+    assert tries == [picks[0].start]
+    assert sorted(r["function"] for r in night.kinds("attempt")) == [p.name for p in picks[1:]]
+    assert len(night.launched) == 2 and report.sessions == 2
+    label = f"{EXE} {picks[0].name} attempt 1/1"
+    (line,) = _over_lines(lines, picks[0])
+    assert line == driver.OVER_CAP_LINE.format(label=label, size=OVER_SIZE,
+                                               cap=contextpack.PACK_CAP)  # fmt: skip
+    assert str(OVER_SIZE) in line and str(contextpack.PACK_CAP) in line
+    assert report.over_cap == 1
+    _no_trace(night, picks[0])
+    _slots_free(nights[-1])
+
+
+def test_an_over_cap_pack_is_never_offered_again_and_frees_its_caller(tmp_path):
+    """A tier night: the callee's pack is over the cap, so its pass ends at once and the tier
+    queue never offers it again tonight (one refusal, no busy loop); its pass counts as
+    finished, as a park's does, so its caller runs its passes the same night."""
+    from test_driver_pick import _tier_night
+
+    callee, caller = START, START + 0x10
+    night, deps = _tier_night(tmp_path, (callee, caller), edges=[(caller, callee)], unit=UNIT)
+    pack, tries = _over_cap(night, {callee})
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 3, "max_sessions": 4}, pack=pack,
+                       queue=deps.queue, requeue=deps.requeue, say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.MAX_SESSIONS), report.detail
+    assert tries == [callee]
+    assert [(int(r["start"], 16), r["pass"], r["attempt"]) for r in night.kinds("attempt")] == [
+        *((caller, 1, n) for n in (1, 2, 3)), (caller, 2, 1)]  # fmt: skip
+    over = [line for line in lines if f"func_{callee:08X}" in line and "context pack" in line]
+    assert len(over) == 1, lines
+    assert (EXE, callee) not in driver.load_difficult(night.repo / driver.DIFFICULT)
+
+
+@pytest.mark.parametrize("tier", [False, True], ids=["pool", "tier"])
+def test_a_night_of_only_over_cap_picks_ends(tmp_path, tier):
+    """Nothing but a pick whose pack is over the cap: it is refused once, no session runs, and
+    the night ENDS (queue exhausted) instead of stopping or offering it again."""
+    from test_driver_pick import _tier_night
+
+    if tier:
+        night, deps = _tier_night(tmp_path, (START,), unit=UNIT)
+        over = {"queue": deps.queue, "requeue": deps.requeue}
+    else:
+        night, over = WNight(tmp_path, picks=(_wpick(0),)), {}
+    pack, tries = _over_cap(night, {START})
+    report = night.run(pack=pack, **over)
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert tries == [START] and night.launched == [] and report.sessions == 0
+    assert report.over_cap == 1
+    assert night.kinds("attempt") == [] and night.kinds("abort") == []
+
+
+def test_an_over_cap_pack_on_a_cascade_probe_hands_the_probe_back(tmp_path, monkeypatch):
+    """A cascade night (routing): SONNET's first session ends LIMIT, and the probe that relaunches
+    the waiting attempt meets a pack over the cap. The function is left for tonight, the night
+    ENDS, the probe is handed back (not lost) and every slot is free."""
+    from test_driver_pick import _tier_night
+
+    nights = _capture_nights(monkeypatch)
+    night, deps = _tier_night(tmp_path, (START,), unit=UNIT, night_cls=ArmNight,
+                              by_model={SONNET: [Sess("rate_limit", write=None)]})  # fmt: skip
+    pack, tries = _over_cap(night, {START},
+                            when=lambda: getattr(nights[-1].local, "probe", False))  # fmt: skip
+    lines: list[str] = []
+    report = night.run(config={"attempts_per_function": 3, "routing": _every(SONNET)},
+                       pack=pack, queue=deps.queue, requeue=deps.requeue,
+                       clock=_ticking(night), say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert tries == [START] and len(night.launched) == 1
+    assert len([line for line in lines if FUNC in line and "context pack" in line]) == 1, lines
+    pause = nights[-1].arm_lanes[SONNET].pause
+    assert pause.paused and not pause.probe_taken
+    _slots_free(nights[-1])
+    assert (EXE, START) not in driver.load_difficult(night.repo / driver.DIFFICULT)
+
+
+def test_an_over_cap_pack_on_a_non_cascade_probe_hands_the_probe_back(tmp_path, monkeypatch):
+    """One worker, no cascade: the first pick's session ends LIMIT, the probe after the backoff
+    is the same attempt's relaunch and its pack is over the cap. The probe goes back, so the
+    next pick's launch takes it and clears the pause, and the night ENDS."""
+    nights = _capture_nights(monkeypatch)
+    picks = (_wpick(0), _wpick(1))
+    night = WNight(tmp_path, picks=picks, by_unit={_unit(0): [Sess("rate_limit", write=None)]})
+    pack, tries = _over_cap(night, {picks[0].start}, when=lambda: len(night.launched) > 0)
+    report = night.run(config=_workers(1, attempts_per_function=1), pack=pack)
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert tries == [picks[0].start] and len(night.launched) == 2
+    assert [r["function"] for r in night.kinds("attempt")] == [picks[1].name]
+    pause = nights[-1].lanes[0].pause
+    assert not pause.paused and not pause.probe_taken
+    _slots_free(nights[-1])
+
+
+def test_an_over_cap_pack_on_an_arm_night_is_left_for_every_arm(tmp_path, monkeypatch):
+    """Two --arm lanes over three picks: the first pick's pack is over the cap. It is refused
+    once (the pack is the same for every arm, so no other arm is offered it), each arm runs the
+    two other picks, and the night ENDS with every slot free."""
+    nights = _capture_nights(monkeypatch)
+    picks = (_wpick(0), _wpick(1), _wpick(2))
+    night = ArmNight(tmp_path, picks=picks)
+    pack, tries = _over_cap(night, {picks[0].start})
+    lines: list[str] = []
+    report = night.run(config={"arms": TWO_ARMS, "attempts_per_function": 1}, pack=pack,
+                       say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert tries == [picks[0].start]
+    for arm in (HAIKU, SONNET):
+        mine = [r["function"] for r in night.kinds("attempt") if r["run"] == _arm_run(arm)]
+        assert sorted(mine) == [p.name for p in picks[1:]], arm
+        _no_trace(night, picks[0], _arm_run(arm))
+    assert len(_over_lines(lines, picks[0])) == 1, lines
+    assert report.over_cap == 1
+    _slots_free(nights[-1])
+
+
+def test_any_other_pack_error_still_stops_the_night(tmp_path):
+    """Only a pack over the cap is left for tonight: any other ContextPackError (a made-up one
+    here) still stops the night, as before."""
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+
+    def pack(pick, directory, src=None):
+        raise contextpack.ContextPackError("made-up: the offset map disagrees")
+
+    report = night.run(pack=pack)
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert "made-up: the offset map disagrees" in report.detail

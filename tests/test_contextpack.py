@@ -450,6 +450,19 @@ def test_required_sections_alone_over_the_cap():
         build_pack(**_big_inputs(unit_text="u" * PACK_CAP))
 
 
+def test_a_pack_over_the_cap_names_its_function_size_and_cap():
+    """Quick 261113: the over-cap refusal is its own ContextPackError, carrying the function,
+    the size and the cap the message names, so the driver can leave just that function."""
+    inputs = _big_inputs(unit_text="u" * PACK_CAP)
+    with pytest.raises(contextpack.PackOverCap) as raised:
+        build_pack(**inputs)
+    over = raised.value
+    assert isinstance(over, ContextPackError)
+    assert (over.function, over.cap) == (inputs["function"], PACK_CAP)
+    assert over.size > PACK_CAP
+    assert f"{over.size} bytes" in str(over) and f"{PACK_CAP}-byte cap" in str(over)
+
+
 def _many_callers(count: int) -> tuple[Neighbour, ...]:
     return tuple(Neighbour(f"func_{0x30000 + n:08X}", "game", "unmatched") for n in range(count))
 
