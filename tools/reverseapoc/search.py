@@ -590,12 +590,18 @@ def declaration_axis(
     text: str, span: tuple[int, int], slot_map: batch.SlotMap
 ) -> Iterator[Candidate]:
     """The one order the memory locals need, if it differs from theirs; nothing for slots that
-    hold scalars. Where the model cannot place them, declaration_moves stand."""
+    hold scalars. Where the model cannot place them, declaration_moves stand, and so they do where
+    the order the map needs is one order_is_known refuses: its lines turn on where a local is
+    declared, so a known frame can need an order past them (pr_line_d_c4_i_h, pr_line_d_i_c4_h)."""
     memory = memory_locals(text, span)
     if not _computable(text, span, memory, slot_map):
         yield from declaration_moves(text, span)
         return
-    order = slots.declaration_order(memory, _target(memory, slot_map))
+    try:
+        order = slots.declaration_order(memory, _target(memory, slot_map))
+    except ValueError:  # frame_layout refused the order the target needs: nothing to compute
+        yield from declaration_moves(text, span)
+        return
     if order is not None and order != tuple(local.name for local in memory):
         yield _ordered(text, span, order)
 
