@@ -426,7 +426,10 @@ cache_creation = 0.0
 # Every arm must be an [arms."..."] entry above. The owner's defaults (2026-11-12) and each
 # row's evidence: docs/model-routing.md "The size-routed cascade", from spike 012's per-bucket
 # figures in docs/model-comparison.md.
+# Owner, 2026-11-12: GLM-5.3 (spike 012's best matches per dollar on OpenRouter: 4 of 20, $4.27
+# list) and DeepSeek V4.1-Flash (4 of 20, $11.70 list) join the rows to spend the remaining
+# OpenRouter credit; Qwen (0 matches) and Muse (the most per match) stay out.
 [routing]
-"[0, 64)" = ["claude-haiku-5-5", "gpt-6.1-terra"]
-"[64, 256)" = ["claude-haiku-5-5", "gpt-6.1-terra", "gemini-flash"]
-"[256, inf)" = ["gpt-6.1-terra"]
+"[0, 64)" = ["claude-haiku-5-5", "glm-5.3", "gpt-6.1-terra"]
+"[64, 256)" = ["claude-haiku-5-5", "glm-5.3", "gpt-6.1-terra", "deepseek-flash", "gemini-flash"]
+"[256, inf)" = ["gpt-6.1-terra", "glm-5.3", "deepseek-flash"]

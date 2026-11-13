@@ -805,17 +805,24 @@ hands the same attempt on.
 
   | Key | Arms, in order |
   |---|---|
-  | `"[0, 64)"` | `claude-haiku-5-5`, `gpt-6.1-terra` |
-  | `"[64, 256)"` | `claude-haiku-5-5`, `gpt-6.1-terra`, `gemini-flash` |
-  | `"[256, inf)"` | `gpt-6.1-terra` |
+  | `"[0, 64)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra` |
+  | `"[64, 256)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra`, `deepseek-flash`, `gemini-flash` |
+  | `"[256, inf)"` | `gpt-6.1-terra`, `glm-5.3`, `deepseek-flash` |
+
+  Owner, 2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash joined the rows to spend the remaining
+  OpenRouter credit. In spike 012, GLM-5.3 held 4 of 20 for $4.27 (L), the best matches per
+  dollar of the OpenRouter arms, and DeepSeek held 4 of 20 for $11.70 (L). Qwen (0 held) and
+  Muse (the most per match) stay out. The first table above (Haiku, Terra, Gemini) was the
+  owner's default before this change.
 
   A key that is no stats span, an empty row, a row that is not a list of arm names, an arm the
   table does not hold, a bucket in two rows, a bucket in no row, or a missing `[routing]` table
   exits 2 when `--cascade` is parsed, naming the file and the key.
 - **The ladder.** A pass has three attempts (D-07). Attempt n of pass p runs on rung
   (p - 1) * 3 + n of its row, counted from 1, and the row's last arm takes every attempt past
-  the row's end. So a function under 64 B runs Haiku, then Terra, then Terra on pass 1, and
-  Terra on every attempt from pass 2. A function of 256 B and up runs Terra throughout.
+  the row's end. So a function under 64 B runs Haiku, then GLM-5.3, then Terra on pass 1, and
+  Terra on every attempt from pass 2. A function of 256 B and up runs Terra, GLM-5.3, then
+  DeepSeek, and DeepSeek on every later attempt.
 - **Run ids.** Each arm's attempts run under `<run>-<arm>`, with that arm's model, harness,
   session environment, audit and co-author, as the `--arm` lanes do. The night's STARTED and
   ENDED records keep `<run>` and count every arm. Compare the arms with

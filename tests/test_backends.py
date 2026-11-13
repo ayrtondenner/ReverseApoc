@@ -672,20 +672,23 @@ def test_token_cost_is_exact():
 HAIKU = "claude-haiku-5-5"
 TERRA = "gpt-6.1-terra"
 GEMINI = "gemini-flash"
+GLM = "glm-5.3"
+DEEPSEEK = "deepseek-flash"
 
 
 def test_committed_routing_table():
     """The owner's default rows, in bucket order, keyed by stats' own labels; every arm is an
-    [arms."..."] entry, and load_arms still loads the file that now holds [routing]."""
+    [arms."..."] entry, and load_arms still loads the file that now holds [routing]. Owner,
+    2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash join the rows to spend the OpenRouter credit."""
     rows = backends.load_routing()
     assert [(row.label, row.buckets, row.arms) for row in rows] == [
-        ("[0, 64)", (0,), (HAIKU, TERRA)),
-        ("[64, 256)", (1,), (HAIKU, TERRA, GEMINI)),
-        ("[256, inf)", (2, 3), (TERRA,)),
+        ("[0, 64)", (0,), (HAIKU, GLM, TERRA)),
+        ("[64, 256)", (1,), (HAIKU, GLM, TERRA, DEEPSEEK, GEMINI)),
+        ("[256, inf)", (2, 3), (TERRA, GLM, DEEPSEEK)),
     ]
     arms = _arms()
     assert {arm for row in rows for arm in row.arms} <= set(arms)
-    assert backends.routing_arms(rows) == (HAIKU, TERRA, GEMINI)
+    assert backends.routing_arms(rows) == (HAIKU, GLM, TERRA, DEEPSEEK, GEMINI)
 
 
 def test_routing_rows_use_the_stats_buckets():

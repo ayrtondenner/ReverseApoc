@@ -1472,6 +1472,7 @@ def test_arm_flag_in_help(capsys):
 TERRA = "gpt-6.1-terra"
 GEMINI = "gemini-flash"
 _EGRESS = ["--allow-egress", TERRA, "--allow-egress", GEMINI]
+QWEN = "qwen-hosted"  # an egress arm in no committed routing row
 
 
 def test_cascade_flag(monkeypatch):
@@ -1499,7 +1500,7 @@ def test_arm_cap_flag(monkeypatch):
     (["--arm-cap", f"{HAIKU}=3"], "--arm-cap"),
     (["--cascade", "--arm-cap", f"{HAIKU}=3", "--arm-cap", f"{HAIKU}=4", *_EGRESS],
      f"--arm-cap {HAIKU}"),
-    (["--cascade", "--arm-cap", f"{DEEPSEEK}=3", *_EGRESS], f"--arm-cap {DEEPSEEK}"),
+    (["--cascade", "--arm-cap", f"{QWEN}=3", *_EGRESS], f"--arm-cap {QWEN}"),
 ], ids=["no-cascade", "twice", "not-a-cascade-arm"])  # fmt: skip
 def test_arm_cap_flag_refusals(argv, conflict, capsys, monkeypatch):
     seen = _recorded_drive(monkeypatch)
@@ -1525,7 +1526,7 @@ def test_arm_cap_flag_refuses_a_bad_spec(value, capsys):
     (["--canary"], "--canary"),
     (["--land-held", "spike012-*"], "--land-held"),
     (["--session", "readability"], "--session readability"),
-    (["--allow-egress", DEEPSEEK], DEEPSEEK),
+    (["--allow-egress", QWEN], QWEN),
 ])  # fmt: skip
 def test_cascade_refusals(argv, conflict, capsys, monkeypatch):
     """Each flag --cascade cannot run with exits 2 naming it, before any preflight; the --hold

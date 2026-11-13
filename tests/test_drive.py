@@ -2345,6 +2345,22 @@ def test_multi_arm_keeps_the_codex_audit(tmp_path, capsys, monkeypatch):
 
 SONNET = "claude-sonnet-5-5"
 TERRA = "gpt-6.1-terra"
+QWEN = "qwen-hosted"  # an egress arm in no committed routing row
+
+
+def _committed_egress() -> tuple[str, ...]:
+    """The committed routing table's arms that send the pack off the machine, in row order:
+    the --allow-egress a cascade night needs (read from the config, so a recalibrated table
+    does not break the gate tests)."""
+    arms = driver.backends.load_arms()
+    return tuple(arm for arm in driver.backends.routing_arms(driver.backends.load_routing())
+                 if arms[arm].egress)  # fmt: skip
+
+
+def _openrouter_keyed(rig: Rig) -> dict:
+    """The seams of a committed-table night: no real key in the env, a test OpenRouter key so
+    the table's OpenRouter arms pass their key check (never sent: no session runs)."""
+    return {"base_env": _keyed(rig.env, OPENROUTER_API_KEY="test-key")}
 
 
 def _cascade_night(tmp_path: Path, monkeypatch, picks) -> tuple[Rig, Night, list]:
@@ -2381,16 +2397,16 @@ def test_cascade_reaches_the_night_end_to_end(tmp_path, capsys, monkeypatch):
 
 
 @pytest.mark.parametrize(("allow", "words"), [
-    ((), f"--allow-egress {TERRA}"),
-    ((TERRA, GEMINI), f"--canary --night-model {TERRA}"),
-    ((DEEPSEEK,), DEEPSEEK),
+    ((), f"--allow-egress {_committed_egress()[0]}"),
+    (_committed_egress(), f"--canary --night-model {TERRA}"),
+    ((*_committed_egress(), QWEN), QWEN),
 ], ids=["no-egress", "no-canary", "stray-egress"])  # fmt: skip
 def test_cascade_arms_pass_every_per_arm_gate(tmp_path, capsys, allow, words):
     """T-261112-fds-01, -02: each cascade arm that sends the pack off the machine needs its own
     --allow-egress, an --allow-egress naming no cascade arm is refused, and each Codex or agy
     arm needs its canary PASS: exit 2 before any session."""
     rig = Rig(tmp_path)
-    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+    code, out, _ = rig.drive(capsys, json=True, seams=_openrouter_keyed(rig),
                              routing=driver.backends.load_routing(), allow_egress=allow)
     assert code == 2
     assert words in _refusal(out)["detail"]
@@ -2425,15 +2441,16 @@ def test_cascade_arm_caps_reach_the_night(tmp_path, capsys, monkeypatch):
 
 @pytest.mark.parametrize(("caps", "words"), [
     ((("gemini-flash", 21),), ("--arm-cap gemini-flash=21", "max_sessions 20")),
-    (((SONNET, 1),), (f"--arm-cap {SONNET}=1", f"{HAIKU}, {TERRA}, gemini-flash")),
+    (((SONNET, 1),), (f"--arm-cap {SONNET}=1", ", ".join(
+        driver.backends.routing_arms(driver.backends.load_routing())))),
 ], ids=["above-max-sessions", "not-a-cascade-arm"])  # fmt: skip
 def test_a_cascade_arm_cap_above_max_sessions_is_refused(tmp_path, capsys, caps, words):
     """An --arm-cap above the arm's backends.toml max_sessions, or naming no cascade arm, is
     refused before any session."""
     rig = Rig(tmp_path)
-    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+    code, out, _ = rig.drive(capsys, json=True, seams=_openrouter_keyed(rig),
                              routing=driver.backends.load_routing(), arm_caps=caps,
-                             allow_egress=(TERRA, GEMINI))  # fmt: skip
+                             allow_egress=_committed_egress())  # fmt: skip
     assert code == 2
     detail = _refusal(out)["detail"]
     assert all(word in detail for word in words), detail
@@ -2475,9 +2492,10 @@ def test_cascade_dry_run_prints_each_picks_bucket_and_attempts(tmp_path, capsys)
     """`--dry-run --cascade`: each pick's line ends with its bucket and the arm of each of its
     three attempts; each pick document gains `cascade` {bucket, pass, attempts}."""
     rows = driver.backends.load_routing()
-    egress = (TERRA, GEMINI)
+    egress = _committed_egress()
     rig = Rig(tmp_path / "text")
-    code, out, _ = rig.drive(capsys, dry_run=True, routing=rows, allow_egress=egress)
+    code, out, _ = rig.drive(capsys, dry_run=True, seams=_openrouter_keyed(rig), routing=rows,
+                             allow_egress=egress)
     assert code == 0
     lines = [line for line in out.splitlines() if line.startswith(("ufo2p", "tacp"))]
     assert lines
@@ -2487,7 +2505,8 @@ def test_cascade_dry_run_prints_each_picks_bucket_and_attempts(tmp_path, capsys)
         label, _, arms = _expected_cascade(rig, rows, words[0], int(words[1], 16), size)
         assert line.endswith(f" bucket {label} attempts {', '.join(arms)}"), line
     rig = Rig(tmp_path / "json")
-    code, out, _ = rig.drive(capsys, dry_run=True, json=True, routing=rows, allow_egress=egress)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams=_openrouter_keyed(rig),
+                             routing=rows, allow_egress=egress)
     assert code == 0
     for pick in json.loads(out)["picks"]:
         label, p, arms = _expected_cascade(rig, rows, pick["exe"], int(pick["start"], 16),
@@ -2532,10 +2551,11 @@ def test_a_cascade_dry_run_reads_the_arm_caps(tmp_path, capsys):
     """IN-05: `--dry-run --cascade --arm-cap` previews with the caps: with every arm capped at 1
     no arm is shown launching twice, and a pick past the caps shows its row capped."""
     rows = driver.backends.load_routing()
-    caps = ((HAIKU, 1), (TERRA, 1), (GEMINI, 1))
+    caps = tuple((arm, 1) for arm in driver.backends.routing_arms(rows))
     rig = Rig(tmp_path)
-    code, out, _ = rig.drive(capsys, dry_run=True, json=True, routing=rows, arm_caps=caps,
-                             allow_egress=(TERRA, GEMINI))  # fmt: skip
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams=_openrouter_keyed(rig),
+                             routing=rows, arm_caps=caps,
+                             allow_egress=_committed_egress())  # fmt: skip
     assert code == 0
     shown = [a for pick in json.loads(out)["picks"] for a in pick["cascade"]["attempts"]]
     launched = [a.split()[0] for a in shown if a.split()[0] in dict(caps)]
