@@ -294,6 +294,12 @@ PARKED = "parked"  # quick 261109-gzu: a pass a sweep hit ended (never a record 
 # The console line of a park: `label` is _label(pick, n), `spec` the record's check.sweep_hit.
 PARKED_LINE = ("{label}: parked for the night (sweep hit: needs flags {spec}); left for flags "
                "propose/regate")  # fmt: skip
+# Quick 261113 (drive 20261113-lanes): a pass whose context pack is over the cap (PackOverCap:
+# required sections are never cut, D-14) ends before any session, the way a park does (never a
+# record outcome). Its console line: `label` is _label(pick, n), `size` and `cap` the pack's.
+OVER_CAP = "pack over cap"
+OVER_CAP_LINE = ("{label}: left for tonight (its context pack is {size} bytes, over the {cap}-byte "
+                 "cap; required sections are never cut)")  # fmt: skip
 # Quick 261112-fds (backlog 999.12a), a cascade pass (never a record outcome). Quick
 # 261112-fdt (999.12b): an arm that is capped or paused passes the attempt to the row's next
 # arm, a busy one (its pause ready, every max_workers slot or night-cap slot taken) makes the
@@ -547,6 +553,7 @@ class DriveReport:
     detail: str | None = None
     checks_failed: tuple[str, ...] = ()  # the end-of-run checks that failed (L1)
     parked: int = 0  # quick 261109-gzu: the functions a sweep hit parked tonight
+    over_cap: int = 0  # quick 261113: the functions left tonight for a pack over the cap
 
     @property
     def exit_code(self) -> int:
@@ -2669,6 +2676,16 @@ class _Halt(Exception):
         self.note = note
 
 
+class _PackOver(Exception):
+    """Quick 261113: the attempt's context pack is over the cap (`over`, PackOverCap). `_launch`
+    raises it before any session, with the attempt directory and its view removed; the unwind
+    gives back the claim, the slot and a held probe, and `_announced` ends the pass OVER_CAP."""
+
+    def __init__(self, over: contextpack.PackOverCap) -> None:
+        super().__init__(str(over))
+        self.over = over
+
+
 _TICK_S = 0.2  # the coordinator's wait between checks, so the main thread sees an interrupt
 
 
@@ -2830,6 +2847,16 @@ class _Lane:
         self.done.add(key)
         self.deferred = [pick for pick in self.deferred if (pick.exe, pick.start) != key]
 
+    def park(self, key: Key) -> None:
+        """Quick 261113: a function whose context pack is over the cap (the pack is the same for
+        every arm): it leaves this arm's queue for tonight as a parked one does, and its pass
+        counts as finished, so a caller waiting on it may follow (D-08)."""
+        self.passes[key] = self.passes.get(key, 0) + 1
+        if self.tiers is not None:
+            self.tiers.finish(key, matched=False, parked=True)
+        self.done.add(key)
+        self.deferred = [pick for pick in self.deferred if (pick.exe, pick.start) != key]
+
 
 def _lanes(config: DriveConfig) -> list[_Lane]:
     """07.2-16 (D-22): the night's arms as lanes, numbering their workers in arm order; with
@@ -2970,7 +2997,8 @@ class _Coordinator:
         (`_Lane.drop`). Quick 261112-fds: an ARM_CAPPED pass (261112-fdt: every arm of its row
         capped) leaves the tier queue for tonight as a parked one does; an ARM_WAITING pass (a
         busy arm, or no arm of its row free) is a pass cut short (the tier queue keeps it
-        eligible; a pool queue's pick goes back on `deferred`). Neither counts a pass."""
+        eligible; a pool queue's pick goes back on `deferred`). Neither counts a pass. Quick
+        261113: an OVER_CAP pass leaves every arm's queue for tonight (`_Lane.park`)."""
         hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
         lane, key = worker.lane, (worker.pick.exe, worker.pick.start)
         with self.night.cond:
@@ -2986,6 +3014,9 @@ class _Coordinator:
                 for other in self.night.lanes:
                     if other is not lane:
                         other.drop(key)
+            if worker.outcome == OVER_CAP:  # quick 261113: no arm is offered it again tonight
+                for each in self.night.lanes:
+                    each.park(key)
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -3167,6 +3198,7 @@ class _Night:
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
         # quick 261109-gzu: tonight's parked functions, each with its hit's flag spec (under cond)
         self.parked: dict[Key, str] = {}
+        self.over_caps: set[Key] = set()  # quick 261113: tonight's packs over the cap (under cond)
         # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
         # totals are the sums over the night's own records (F19's cut drops a line from both).
         self.night_records: list[tuple[int, dict]] = []
@@ -3554,9 +3586,9 @@ class _Night:
         ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
         with self.cond:  # after the drain: every worker's parks are in
-            parked = len(self.parked)
+            parked, over_cap = len(self.parked), len(self.over_caps)
         return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed),
-                           parked)  # fmt: skip
+                           parked, over_cap)  # fmt: skip
 
     def _uncommitted_rows(self) -> list[str]:
         """Fix round 4 L2: each status.csv row that differs from HEAD (`<path>: <start>
@@ -3714,6 +3746,8 @@ class _Night:
         outcome; nothing goes to the difficult list. Quick 261109-gzu: PARKED when an attempt's
         record parks the function (`_parks`): a finished pass (its count in `passes` goes up,
         so its callers may follow) but no difficult-list entry; it comes back next night.
+        Quick 261113: OVER_CAP when an attempt's context pack is over the cap (`_over_cap`): no
+        session ran and nothing is written; the coordinator ends its pass as a park's.
         07.2-06 (D-17, D-22): a hold run attempts each function once (`_hold_done`); a resumed
         one (owner approval 2026-11-10) numbers a redo after the run's recorded attempts.
 
@@ -3748,7 +3782,7 @@ class _Night:
                     outcome = self._handed_off(pick, n)
                 if outcome in (ARM_WAITING, ARM_CAPPED):
                     return self._cascade_end(pick, n, outcome)
-                if readability or outcome in (MATCHED, ABORTED, None):
+                if readability or outcome in (MATCHED, ABORTED, OVER_CAP, None):
                     return outcome
                 if self.config.hold:
                     return self._hold_done(key, outcome)
@@ -3835,6 +3869,17 @@ class _Night:
         self.deps.say(PARKED_LINE.format(label=label, spec=spec))
         return PARKED
 
+    def _over_cap(self, pick: Pick, label: str, over: contextpack.PackOverCap) -> str:
+        """Quick 261113 (drive 20261113-lanes): the attempt's pack is over the cap, so no session
+        ran: its claim, slot and probe went back on the way here and `_launch` removed its
+        attempt directory. Its pass ends OVER_CAP with one console line, and nothing is written
+        for it (no record, no difficult-list entry); the coordinator takes it out of every arm's
+        queue for tonight (`_Lane.park`), and the report counts it."""
+        with self.cond:
+            self.over_caps.add((pick.exe, pick.start))
+        self.deps.say(OVER_CAP_LINE.format(label=label, size=over.size, cap=over.cap))
+        return OVER_CAP
+
     def _hold_done(self, key: Key, outcome: str) -> str:
         """07.2-06 (D-17): a hold run's function is done after its one counted attempt. Its pass
         counts as finished, so a caller waiting on it may follow (D-08), and the coordinator
@@ -3882,11 +3927,15 @@ class _Night:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
         attempt's wall time on Deps.clock, relaunches, backoffs and the gate included (the
         record's `seconds` is the session alone). A stop or an interrupt prints no outcome line:
-        the STOPPED summary names why."""
+        the STOPPED summary names why. Quick 261113: a pack over the cap prints OVER_CAP_LINE as
+        its outcome line and ends the pass OVER_CAP (`_over_cap`)."""
         label = self._label(pick, n)
         self.deps.say(f"{label}: started")
         start = self.deps.clock()
-        outcome = self._guarded(pick, n)
+        try:
+            outcome = self._guarded(pick, n)
+        except _PackOver as refused:
+            return self._over_cap(pick, label, refused.over)
         shown = f"ABORTED ({TRANSIENT})" if outcome in (ABORTED, None) else outcome
         self.deps.say(f"{label}: {shown} after {self.deps.clock() - start:.1f} s")
         return outcome
@@ -3897,7 +3946,7 @@ class _Night:
         with self._claimed(pick):
             try:
                 return self._attempt(pick, n)
-            except (_Stop, _Halt):
+            except (_Stop, _Halt, _PackOver):
                 raise
             except Exception as exc:
                 self._reset_live()
@@ -3966,7 +4015,12 @@ class _Night:
             else:
                 probe = self.arm_lane.pause.wait_to_launch()
             claim = self._claim(pick, n)
-            session = self._launch(claim)
+            try:
+                session = self._launch(claim)
+            except _PackOver:  # quick 261113: no verdict, so a probe this launch took goes back
+                if probe and not cascade:  # a cascade probe goes back in `_settled`
+                    self.arm_lane.pause.hand_back()
+                raise
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
                 self._reset(session)
                 raise _Halt()
@@ -4231,7 +4285,11 @@ class _Night:
         if claim.session == READABILITY:  # 07.2-07: <attempt dir>/unit-base.c, RL07's base text
             write_atomic(claim.attempt_dir / attempt.UNIT_BASE, unit_before)
         view_hashes = self._view_hashes(claim)
-        pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        try:  # the pack reads the view's src/, so it can only be built once the view is made
+            pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        except contextpack.PackOverCap as over:  # quick 261113: nothing launched; drop the attempt
+            _drop_tree(claim.attempt_dir)
+            raise _PackOver(over) from over
         launch_files = self._guard_launch(claim) if claim.signed_in else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
@@ -7939,10 +7997,12 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
         console(options, seams)(HOLD_RUN_LINE.format(run=options.run_id))
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
-           "matched": report.matched, "parked": report.parked, "detail": report.detail,
-           "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
+           "matched": report.matched, "parked": report.parked, "over_cap": report.over_cap,
+           "detail": report.detail, "checks_failed": list(report.checks_failed),
+           "exit_code": report.exit_code}  # fmt: skip
     detail = f" ({report.detail})" if report.detail else ""
     parked = f", {report.parked} parked" if report.parked else ""  # quick 261109-gzu
+    parked += f", {report.over_cap} over the pack cap" if report.over_cap else ""  # 261113
     _emit(options, doc, [f"{stamp(seams.now())}{report.event} {report.reason}: "
                          f"{report.sessions} sessions, {report.matched} matched{parked}{detail}"])
     return report.exit_code

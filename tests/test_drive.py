@@ -1360,6 +1360,25 @@ def test_the_night_summary_reports_what_it_parked(tmp_path, capsys, monkeypatch,
         assert out == "[21:04:05] ENDED max sessions: 5 sessions, 1 matched, 2 parked\n"
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+def test_the_night_summary_reports_its_over_cap_packs(tmp_path, capsys, monkeypatch, as_json):
+    """Quick 261113: a night that left 2 functions for their packs over the cap ends its
+    summary line with `, 2 over the pack cap`, and the --json document carries `over_cap`."""
+    rig = Rig(tmp_path)
+
+    def fake_drive(config, deps, *, lock=None):
+        return driver.DriveReport(driver.ENDED, driver.MAX_SESSIONS, 5, 1, parked=1, over_cap=2)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, out, _ = rig.drive(capsys, json=as_json, seams=dict(now=_fixed_now))
+    assert code == 0
+    if as_json:
+        assert json.loads(out)["over_cap"] == 2
+    else:
+        assert out == ("[21:04:05] ENDED max sessions: 5 sessions, 1 matched, 1 parked, "
+                       "2 over the pack cap\n")  # fmt: skip
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [

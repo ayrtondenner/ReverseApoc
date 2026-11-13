@@ -69,6 +69,20 @@ class ContextPackError(ValueError):
     build/driver/)."""
 
 
+class PackOverCap(ContextPackError):
+    """Quick 261113: `function`'s required sections, with the pack's frame and cut marks, are
+    `size` bytes with every optional section cut, over the `cap`-byte cap (D-14: required
+    sections are never cut). The driver leaves just that function for the night."""
+
+    def __init__(self, function: str, size: int, cap: int) -> None:
+        super().__init__(
+            f"the required sections plus the pack's frame and cut marks are {size} bytes "
+            f"in the context pack of {function} (every optional section cut), over the "
+            f"{cap}-byte cap; required sections are never cut"
+        )
+        self.function, self.size, self.cap = function, size, cap
+
+
 @dataclass(frozen=True, slots=True)
 class Neighbour:
     """A caller or callee of the target: its C name, row kind, match status and, when matched,
@@ -258,7 +272,7 @@ def build_pack(
     listed in `truncated` (and to_json); the header line `Truncated:` only counts them per
     section, so it stays a few dozen bytes however many are cut (review I-1). A cut section
     says so in place: `cut (N items)` when nothing is left, `... N more cut` after the items
-    it keeps. ContextPackError when the required sections
+    it keeps. PackOverCap (a ContextPackError) when the required sections
     plus the pack's frame (title, preamble, headings, the short header) and the cut marks are
     over the cap with every optional section (the earlier notes included) cut."""
     required = {
@@ -279,11 +293,7 @@ def build_pack(
             return Pack(text, sections, size, tuple(truncated))
         cut = optional.cut()
         if cut is None:
-            raise ContextPackError(
-                f"the required sections plus the pack's frame and cut marks are {size} bytes "
-                f"in the context pack of {function} (every optional section cut), over the "
-                f"{cap}-byte cap; required sections are never cut"
-            )
+            raise PackOverCap(function, size, cap)
         truncated.append(cut)
 
 
