@@ -806,14 +806,15 @@ hands the same attempt on.
   | Key | Arms, in order |
   |---|---|
   | `"[0, 64)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra` |
-  | `"[64, 256)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra`, `deepseek-flash`, `gemini-flash` |
+  | `"[64, 256)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra`, `deepseek-flash` |
   | `"[256, inf)"` | `gpt-6.1-terra`, `glm-5.3`, `deepseek-flash` |
 
   Owner, 2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash joined the rows to spend the remaining
   OpenRouter credit. In spike 012, GLM-5.3 held 4 of 20 for $4.27 (L), the best matches per
   dollar of the OpenRouter arms, and DeepSeek held 4 of 20 for $11.70 (L). Qwen (0 held) and
   Muse (the most per match) stay out. The first table above (Haiku, Terra, Gemini) was the
-  owner's default before this change.
+  owner's default before this change. Gemini Flash left the 64-255 B row the same night: its weekly agy
+  quota was spent, and agy 1.5.7 streams an `edit_file` step the agy audit does not know yet.
 
   A key that is no stats span, an empty row, a row that is not a list of arm names, an arm the
   table does not hold, a bucket in two rows, a bucket in no row, or a missing `[routing]` table

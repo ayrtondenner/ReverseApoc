@@ -1471,7 +1471,7 @@ def test_arm_flag_in_help(capsys):
 
 TERRA = "gpt-6.1-terra"
 GEMINI = "gemini-flash"
-_EGRESS = ["--allow-egress", TERRA, "--allow-egress", GEMINI]
+_EGRESS = ["--allow-egress", TERRA, "--allow-egress", DEEPSEEK]
 QWEN = "qwen-hosted"  # an egress arm in no committed routing row
 
 
@@ -1483,7 +1483,7 @@ def test_cascade_flag(monkeypatch):
     seen = _recorded_drive(monkeypatch)
     assert main(["drive", "--cascade", *_EGRESS]) == 0
     assert seen[-1].routing == backends.load_routing()
-    assert seen[-1].allow_egress == (TERRA, GEMINI)
+    assert seen[-1].allow_egress == (TERRA, DEEPSEEK)
     assert main(["drive"]) == 0
     assert (seen[-1].routing, seen[-1].arm_caps) == ((), ())
 
@@ -1492,8 +1492,8 @@ def test_arm_cap_flag(monkeypatch):
     """The owner's run: `--arm-cap NAME=N`, repeatable, reaches DriveOptions.arm_caps in order."""
     seen = _recorded_drive(monkeypatch)
     assert main(["drive", "--cascade", "--arm-cap", f"{HAIKU}=30", "--arm-cap", f"{TERRA}=20",
-                 "--arm-cap", f"{GEMINI}=1", *_EGRESS]) == 0  # fmt: skip
-    assert seen[-1].arm_caps == ((HAIKU, 30), (TERRA, 20), (GEMINI, 1))
+                 "--arm-cap", f"{DEEPSEEK}=1", *_EGRESS]) == 0  # fmt: skip
+    assert seen[-1].arm_caps == ((HAIKU, 30), (TERRA, 20), (DEEPSEEK, 1))
 
 
 @pytest.mark.parametrize(("argv", "conflict"), [

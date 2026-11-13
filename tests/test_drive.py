@@ -2447,10 +2447,14 @@ def test_cascade_arm_caps_reach_the_night(tmp_path, capsys, monkeypatch):
 def test_a_cascade_arm_cap_above_max_sessions_is_refused(tmp_path, capsys, caps, words):
     """An --arm-cap above the arm's backends.toml max_sessions, or naming no cascade arm, is
     refused before any session."""
+    from test_driver_workers import _every
+
     rig = Rig(tmp_path)
-    code, out, _ = rig.drive(capsys, json=True, seams=_openrouter_keyed(rig),
-                             routing=driver.backends.load_routing(), arm_caps=caps,
-                             allow_egress=_committed_egress())  # fmt: skip
+    rows, allow = driver.backends.load_routing(), _committed_egress()
+    if caps[0][0] == "gemini-flash":  # an arm with a max_sessions, in a row of its own
+        rows, allow = _every(HAIKU, "gemini-flash"), ("gemini-flash",)
+    code, out, _ = rig.drive(capsys, json=True, seams=_openrouter_keyed(rig), routing=rows,
+                             arm_caps=caps, allow_egress=allow)  # fmt: skip
     assert code == 2
     detail = _refusal(out)["detail"]
     assert all(word in detail for word in words), detail

@@ -110,9 +110,9 @@ model = "gpt-6.1-terra"
 sends_disassembly = true
 accepted_init = []
 coauthor = "GPT-6.1 Terra <noreply@openai.com>"
-# Owner, 2026-11-12: raised from 1 to 3 for cascade nights (a session limited by a Plus 5-hour
+# Owner, 2026-11-12: raised from 1 to 5 for cascade nights (a session limited by a Plus 5-hour
 # window hands its attempt to the row's next arm, 261112-fdt).
-max_workers = 3
+max_workers = 5
 
 # List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
 # `--land-held` ranking; confirm at setup. Source: OpenRouter's models list, which agrees with the
@@ -431,5 +431,5 @@ cache_creation = 0.0
 # OpenRouter credit; Qwen (0 matches) and Muse (the most per match) stay out.
 [routing]
 "[0, 64)" = ["claude-haiku-5-5", "glm-5.3", "gpt-6.1-terra"]
-"[64, 256)" = ["claude-haiku-5-5", "glm-5.3", "gpt-6.1-terra", "deepseek-flash", "gemini-flash"]
+"[64, 256)" = ["claude-haiku-5-5", "glm-5.3", "gpt-6.1-terra", "deepseek-flash"]
 "[256, inf)" = ["gpt-6.1-terra", "glm-5.3", "deepseek-flash"]

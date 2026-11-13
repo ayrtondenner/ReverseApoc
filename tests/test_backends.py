@@ -482,8 +482,8 @@ def test_codex_arms_load():
         assert (arm.harness, arm.backend, arm.model) == ("codex", "openai", name)
         assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, ())
         assert arm.prices == prices[name] and arm.coauthor == credit
-        # owner, 2026-11-12: Terra runs 3 at once on cascade nights; the others stay at 1
-        assert arm.max_workers == (3 if name == "gpt-6.1-terra" else 1) and arm.egress
+        # owner, 2026-11-12: Terra runs 5 at once on cascade nights; the others stay at 1
+        assert arm.max_workers == (5 if name == "gpt-6.1-terra" else 1) and arm.egress
         assert arm.billing == backends.SUBSCRIPTION
 
 
@@ -683,12 +683,12 @@ def test_committed_routing_table():
     rows = backends.load_routing()
     assert [(row.label, row.buckets, row.arms) for row in rows] == [
         ("[0, 64)", (0,), (HAIKU, GLM, TERRA)),
-        ("[64, 256)", (1,), (HAIKU, GLM, TERRA, DEEPSEEK, GEMINI)),
+        ("[64, 256)", (1,), (HAIKU, GLM, TERRA, DEEPSEEK)),
         ("[256, inf)", (2, 3), (TERRA, GLM, DEEPSEEK)),
     ]
     arms = _arms()
     assert {arm for row in rows for arm in row.arms} <= set(arms)
-    assert backends.routing_arms(rows) == (HAIKU, GLM, TERRA, DEEPSEEK, GEMINI)
+    assert backends.routing_arms(rows) == (HAIKU, GLM, TERRA, DEEPSEEK)
 
 
 def test_routing_rows_use_the_stats_buckets():
