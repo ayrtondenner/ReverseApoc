@@ -33,16 +33,17 @@ standard sort reproduces these orders and a table by count would not hold either
 refuses them, and some frames it refuses hold.
 07.2-14 measured past the 07.1 sweep and moved nothing: a `char[4]` beside a `short[2]` keeps M2
 (pr_arr_c4_s2), two `char[4]` beside a `short[2]` leave it (pr_arr_c4x2_s2), a `char[4]` and an
-`int` beside a `char[2]` hold though refused (pr_arr_c4_c2_int), and three `int[1]` keep M2
+`int` beside a `char[2]` hold (pr_arr_c4_c2_int, refused then, on line D since its refit), and
+three `int[1]` keep M2
 (pr_arr_int1_x3), which is why the lifter declares a 4-byte address-taken slot that way. Quick
 261112-fdx measured the pr_line_ frames past the sweep against four lines fixed beforehand, and
 drew A, B and C above. Line D, a 4-byte array and an int beside one 2-byte local, broke on
 pr_line_d_c4_i_c2 and pr_line_d_i_c4_h, which leave. The pr_line_k_ frames, called known, sit as
 modelled. The refit of 2026-11-13 drew a narrower line D from new pr_line_d_ frames, one change
-apart: in a frame of two sizes, 4-byte locals keep M2 beside one local of 1 or 2 bytes in one
-block, with at most two arrays, unless the small local is declared last and it, or any local
-after the first, is an array (_one_small_local). Every other frame of two sizes stays refused,
-and some of those hold.
+apart: in a frame of two sizes, 4-byte locals keep M2 beside one local of 1 or 2 bytes, all in
+the function's own block, with at most two arrays, unless the small local is declared last and
+it, or any local after the first, is an array (_one_small_local). Every other frame of two
+sizes stays refused, and some of those hold.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
@@ -89,7 +90,7 @@ def order_is_known(locals_: Sequence[Local]) -> bool:
     if len(sizes) == len(locals_):
         return True
     if len(sizes) == 2:
-        return _one_small_local(locals_)
+        return _one_small_local(locals_, sizes)
     if len(sizes) != 1 or not sizes <= _ORDERED_SIZES:
         return False
     arrays = sum(local.array for local in locals_)
@@ -126,22 +127,25 @@ def _arrays_then_ints(locals_: Sequence[Local], arrays: int) -> bool:
     return arrays < len(locals_) and all(local.array for local in locals_[:arrays])
 
 
-def _one_small_local(locals_: Sequence[Local]) -> bool:
-    """Line D, for a frame of two sizes: 4-byte locals beside one local of 1 or 2 bytes, all in
-    one block, with at most _LINE_D_ARRAYS arrays, the small local counted. It holds when the
-    small local is not declared last, and when it is last, plain, and no local after the first is
-    an array. Measured in both cells, from the pr_line_d_ frames and pr_arr_c4_c2_int and its
-    twin, as `char[4]` or `short[2]` beside `int`, `short` or `char` and a `char[2]`: 2 to 9
-    locals of 4 bytes, the small one in every place. Last, it leaves after an array in second
-    place or later (pr_line_d_i_c4_h, _c4x2_h, _c4x2_i2_h, though _c4x2_i_h holds) and as an
-    array (pr_line_d_c4_i_c2, _i2_c2); three arrays leave (pr_line_d_c4x2_c2_i, _c4_h_c4x2), and
-    so do two small locals (pr_line_d_c4_h_i_h, pr_tie_sizes)."""
+def _one_small_local(locals_: Sequence[Local], sizes: set[int]) -> bool:
+    """Line D, for a frame of the two `sizes`: 4-byte locals beside one local of 1 or 2 bytes, all
+    in the function's own block, with at most _LINE_D_ARRAYS arrays, the small local counted. It
+    holds when the small local is not declared last, and when it is last, plain, and no local
+    after the first is an array. Measured in both cells, from the pr_line_d_ frames and
+    pr_arr_c4_c2_int and its twin, as `char[4]` or `short[2]` beside `int`, `short` or `char` and
+    a `char[2]`: 2 to 9 locals of 4 bytes, the small one in every place. Last, it leaves after an
+    array in second place or later (pr_line_d_i_c4_h, _c4x2_h, _c4x2_i2_h, though _c4x2_i_h
+    holds) and as an array (pr_line_d_c4_i_c2, _i2_c2); three arrays leave (pr_line_d_c4x2_c2_i,
+    _c4_h_c4x2), and so do two small locals (pr_line_d_c4_h_i_h, pr_tie_sizes). A later block
+    is not on the line (only `c4 h | i` was measured, and it held), nor is a nested block alone."""
+    if _BLOCK_ORDERED_SIZE not in sizes or not sizes - {_BLOCK_ORDERED_SIZE} <= _SMALL_SIZES:
+        return False
     small = [n for n, local in enumerate(locals_) if local.size != _BLOCK_ORDERED_SIZE]
-    if len(small) != 1 or locals_[small[0]].size not in _SMALL_SIZES:
+    if len(small) != 1:
         return False
     (place,) = small
-    one_block = len({local.scope for local in locals_}) == 1
-    if not one_block or sum(local.array for local in locals_) > _LINE_D_ARRAYS:
+    top_block = all(local.scope == _TOP_SCOPE for local in locals_)
+    if not top_block or sum(local.array for local in locals_) > _LINE_D_ARRAYS:
         return False
     if place < len(locals_) - 1:
         return True
@@ -178,13 +182,18 @@ def declaration_order(
 ) -> tuple[str, ...] | None:
     """The names of `locals_` in the order whose frame_layout equals `target`, or None when no
     order can reach it. Only a tie has anything to move, and no local leaves its block. `locals_`
-    must have a known order."""
+    must have a known order. ValueError when the one order M2 would need is past order_is_known:
+    lines A to D turn on where a local is declared, so a known frame can need a refused order
+    (pr_line_d_c4_i_h's tie swapped is pr_line_d_i_c4_h), and the model cannot say whether it
+    reaches `target`."""
     ties: dict[tuple[int, int], list[Local]] = {}
     for local in locals_:
         ties.setdefault((local.size, local.scope), []).append(local)
     for tie in ties.values():
         tie.sort(key=lambda local: -target[local.name])  # M2: the first declared is highest
     order = [ties[local.size, local.scope].pop(0) for local in locals_]
+    if not order_is_known(order):
+        raise ValueError(f"the order {[local.name for local in order]} has no known layout")
     return tuple(local.name for local in order) if frame_layout(order) == target else None
 
 

@@ -597,9 +597,10 @@ def declaration_axis(
     if not _computable(text, span, memory, slot_map):
         yield from declaration_moves(text, span)
         return
+    target = _target(memory, slot_map)
     try:
-        order = slots.declaration_order(memory, _target(memory, slot_map))
-    except ValueError:  # frame_layout refused the order the target needs: nothing to compute
+        order = slots.declaration_order(memory, target)
+    except ValueError:  # the order the target needs has no known layout: nothing to compute
         yield from declaration_moves(text, span)
         return
     if order is not None and order != tuple(local.name for local in memory):
