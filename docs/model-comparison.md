@@ -285,6 +285,40 @@ provider's arms (D).
    `.planning/ROADMAP.md`, a size-routed cascade calibrated from these per-bucket figures, to be
    revisited after a few real nights because this run had 20 picks and one attempt per arm.
 
+## Cascade nights (2026-11-12 to 2026-11-13)
+
+The first size-routed cascade drives (quick batch 261112-fdr, backlog 999.12), not a held
+comparison: each function climbed its row's ladder with the earlier attempts' notes, so the arms
+did not see the same picks and the figures are not like-for-like with spike 012. Runs:
+`20261112-cascade` (stopped: a Git Bash `/c/` write path, fixed in 11b2d7f6),
+`20261113-cascade` (stopped: agy 1.5.7's `edit_file` step, todo `agy-157-edit-file-audit`),
+`20261113-cascade2` (interrupted by the owner to switch to Terra only for a fresh Codex
+window) and `20261113-terra` (Terra only, ENDED max sessions). The two stopped runs and the
+interrupted one lost some session records, so the session counts below (from
+`stats --run '20261113-*'`, 190 recorded sessions) undercount GLM-5.3 (about 30 ran by the
+console) and Terra. Nearly every pick was 64-255 B.
+
+| Arm | Recorded sessions | Matched | 64-255 B | 256 B and up | Paid (L) |
+|---|---|---|---|---|---|
+| Haiku 5.5 | 78 | 4 | 4 of 78 | - | $0 (subscription; $3.00 API-equivalent) |
+| DeepSeek V4.1-Flash | 5 | 2 | 2 of 5 | - | $1.21 |
+| GPT-6.1 Terra | 91 | 1 | 1 of 30 functions | 0 of 17 functions | $0 (Plus; $90.78 API-equivalent) |
+| GLM-5.3 | 15 | 0 | 0 of 12 | 0 of 3 | $3.76 |
+| Gemini 3.8 Flash | 1 | 0 | 0 of 1 | - | $0 (AI Plus) |
+
+Quota read from the owner's meters (S) and the OpenRouter credits API: 30 Haiku sessions moved
+the Claude weekly bar about 1% (S); about 15 Terra sessions moved the Codex 5-hour window about
+21% and its week about 3% (S), and 70 Terra-only sessions moved the week 36% to 50% (S); one
+Gemini Flash session took about 15% of its agy week (S); OpenRouter fell from $45.73 to about
+$36.6 left over the first two runs (credits API).
+
+Also landed the same morning: three flag proposals from the nights' sweep hits (F-0069,
+F-0070, F-0071; `flags approve` by the owner), so the two nights added 10 matched functions.
+
+Read for the routing table: DeepSeek held 2 of its first 5 sessions, Haiku 4 of 78, Terra 1 of
+91 and GLM-5.3 none of about 30. The next cascade moves DeepSeek to the second rung of the
+64-255 B row and keeps Terra first only where the owner wants a Codex window spent.
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks

@@ -805,10 +805,12 @@ hands the same attempt on.
 
   | Key | Arms, in order |
   |---|---|
-  | `"[0, 64)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra` |
-  | `"[64, 256)"` | `claude-haiku-5-5`, `glm-5.3`, `gpt-6.1-terra`, `deepseek-flash` |
-  | `"[256, inf)"` | `gpt-6.1-terra`, `glm-5.3`, `deepseek-flash` |
+  | `"[0, 64)"` | `gpt-6.1-terra`, `deepseek-flash`, `claude-haiku-5-5` |
+  | `"[64, 256)"` | `gpt-6.1-terra`, `deepseek-flash`, `claude-haiku-5-5`, `glm-5.3` |
+  | `"[256, inf)"` | `gpt-6.1-terra`, `deepseek-flash`, `glm-5.3` |
 
+  Owner, 2026-11-13: Terra first (spend each Codex 5-hour window), DeepSeek second (2 of its first
+  5 sessions held on the cascade nights, docs/model-comparison.md), then Haiku and GLM-5.3.
   Owner, 2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash joined the rows to spend the remaining
   OpenRouter credit. In spike 012, GLM-5.3 held 4 of 20 for $4.27 (L), the best matches per
   dollar of the OpenRouter arms, and DeepSeek held 4 of 20 for $11.70 (L). Qwen (0 held) and
