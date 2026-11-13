@@ -27,12 +27,23 @@ uv run reverseapoc check-orig      # verify orig/ against config/targets.toml
 uv run reverseapoc parse-le orig/UFO2P.EXE
 uv run pytest -q && uv run ruff check .
 docker compose build && docker compose run --rm test
+docker compose run --rm -T build uv run --frozen reverseapoc gate --all   # objdiff-cli is container-only
+docker compose run --rm -T build bash -lc "uv run --frozen python configure.py && ninja -t clean && ninja verify"
 ```
 
 ## Done gate
 
 Tooling: tests and ruff green, in the container too. Decompiled code (from Phase 3 on): the
 rebuilt EXE is SHA-1 identical to the original and objdiff reports 100% for the function.
+
+## Drives
+
+- While `reverseapoc drive` runs, nothing may write under the checkout (worktree agents, todos,
+  docs, commits included): the audit reads it as a stray. Queue such writes until it ends.
+- One drive per checkout; several arms run as `--arm NAME=N` lanes or a `--cascade` in one drive.
+- A drive stops only by a console Ctrl-C (ask the owner first). Wait for the driver process to
+  exit before committing its records, then run `ninja verify` and `gate --all` by hand.
+- `flags approve` is owner-only; size runs from docs/model-routing.md "Quota per session".
 
 ## Workflow
 
