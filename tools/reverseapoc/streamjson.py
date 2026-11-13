@@ -127,6 +127,7 @@ _ERROR_SUBTYPES = _CAP_SUBTYPES | {"error_during_execution"}
 _KNOWN_SUBTYPES = _ERROR_SUBTYPES | {_SUCCESS}
 _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
+_BOM = "\ufeff"  # spike 013: Copilot CLI 1.0.111's first line starts with one
 # The CLI's whole message when one reply overran CLAUDE_CODE_MAX_OUTPUT_TOKENS (spike012)
 _OUTPUT_CAP_TEXT = re.compile(
     r"API Error: Claude's response exceeded the \d+ output token maximum\. To configure this "
@@ -189,11 +190,12 @@ class ToolUse(NamedTuple):
 def parse_line(line: str | bytes) -> dict | None:
     """The JSON object on `line`, or None when the line is not one (malformed). Bytes are read
     as UTF-8, an undecodable byte replaced. A line nested too deeply for the parser
-    (RecursionError) is malformed too, never fatal."""
+    (RecursionError) is malformed too, never fatal. Spike 013: a leading UTF-8 BOM is taken
+    off (Copilot CLI 1.0.111 writes one before its first line)."""
     if isinstance(line, bytes):
         line = line.decode("utf-8", errors="replace")
     try:
-        value = json.loads(line)
+        value = json.loads(line.removeprefix(_BOM))
     except ValueError, RecursionError:
         return None
     return value if isinstance(value, dict) else None

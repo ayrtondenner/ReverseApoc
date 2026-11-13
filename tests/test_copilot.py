@@ -441,6 +441,13 @@ def test_copilotjson_unknown_steps_fail_closed():
         "bad poll": _call("u9", "read_powershell", {"shellId": "0", "kill": True}),
         "orphan": [{"type": "tool.execution_complete", "data": {"toolCallId": "zz",
                                                                 "success": True}}],
+        "id not a string": [{"type": "tool.execution_start", "data": {
+            "toolCallId": 7, "toolName": "powershell", "arguments": {"command": "whoami"}}}],
+        "second start": [*_call("s1", "view", {"path": "x"}),
+                         _call("s1", "create", {"path": "y", "file_text": "z"})[0]],
+        "second completion": [*_call("s2", "view", {"path": "x"}),
+                              _call("s2", "view", {"path": "x"}, ok=False,
+                                    error=NO_APPROVAL)[1]],
         "hook event": [{"type": "hook.start", "data": {"hookInvocationId": "h",
                                                        "hookType": "postToolUse"}}],
         "skill event": [{"type": "skill.invoked", "data": {}}],

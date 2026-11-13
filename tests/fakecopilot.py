@@ -15,10 +15,10 @@ builds after the executable and:
    `copilot -p --output-format json` streams; NAME is FAKECOPILOT_SCENARIO ([a-z0-9_]+, no path
    can be spelled). In every string of a line, `@cwd` becomes this process's working directory,
    `@parent` the directory above it, `@repo` the checkout (UV_PROJECT, which the driver
-   sets), `@unit` and `@notes` the session's view unit and notes file (their REVERSEAPOC_* variables) and `@model` the --model value, all
-   with forward slashes; a string that is exactly `@credits` becomes the --max-ai-credits
-   number. A line that starts with a UTF-8 BOM keeps it (Copilot CLI 1.0.111 writes one on its
-   first line);
+   sets), `@unit` and `@notes` the session's view unit and notes file (their REVERSEAPOC_*
+   variables) and `@model` the --model value, all with forward slashes; a string that is
+   exactly `@credits` becomes the --max-ai-credits number. A line that starts with a UTF-8
+   BOM keeps it (Copilot CLI 1.0.111 writes one on its first line);
 4. writes tests/fixtures/copilot/NAME.usage.json, slots filled the same way, to the
    --usage-output-file path when that fixture exists (else writes nothing there);
 5. exits 0.
