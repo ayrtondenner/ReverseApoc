@@ -40,7 +40,35 @@ struct unk_000E *func_00021370(void)
 }
 
 INCLUDE_ASM(func_000213A0);
-INCLUDE_ASM(func_00021410);
+/* 8-byte record of D_001B2BB2; the first word is 0 when the slot is free. */
+struct unk_0008 {
+    /* 0x00 */ s16 f_00;
+    /* 0x02 */ u8 data[0x06];
+}; /* size: 0x08 */
+
+extern struct unk_0008 D_001B2BB2[];
+
+/* Returns the first free record of D_001B2BB2 (50 records), or 0 when all are used. */
+struct unk_0008 *func_00021410(void)
+{
+    struct unk_0008 *p;
+    s16 i;
+
+    p = D_001B2BB2;
+    i = 0;
+    do {
+        if (p->f_00 == 0) {
+            break;
+        }
+        i++;
+        p++;
+    } while (i < 50);
+    if (i == 50) {
+        p = 0;
+    }
+    return p;
+}
+
 INCLUDE_ASM(func_00021440);
 INCLUDE_ASM(func_000214E0);
 INCLUDE_ASM(func_000217E0);
