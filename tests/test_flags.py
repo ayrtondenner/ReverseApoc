@@ -1241,6 +1241,16 @@ def test_approve_a_fable_candidate_names_fable(tmp_path):
     assert _trailers(a) == [FABLE_LINE]
 
 
+def test_approve_a_non_claude_arm_candidate_names_its_arm(tmp_path):
+    """2026-11-13 (F-0069, F-0070): a candidate an OpenRouter arm wrote (its record's requested
+    model is the provider id, `z-ai/glm-5.3`) approves with that arm's backends.toml co-author,
+    as the driver's own landing credits it; a model no arm and no Claude name holds still
+    refuses (REFUSALS "v2 unknown model")."""
+    a = approve_repo(tmp_path, records=(_v2_attempt(F30, 3, requested="z-ai/glm-5.3"),))
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == ["Co-Authored-By: GLM-5.3 <noreply@z.ai>"]
+
+
 def test_approve_finds_a_v2_record_named_by_its_c_name(tmp_path):
     """07-23: a v2 record's `function` is the C name, its attempt directory keeps the func_
     placeholder; the record is still found (by its start)."""
