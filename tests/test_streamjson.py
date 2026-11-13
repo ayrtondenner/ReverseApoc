@@ -22,6 +22,7 @@ from reverseapoc.streamjson import (
     parse,
     parse_line,
     parse_version,
+    refused_tool_use_ids,
     stream_usage,
     tool_use_ids,
     tool_uses,
@@ -499,6 +500,17 @@ def test_tool_use_ids_follow_tool_uses():
     )  # fmt: skip
     assert tool_use_ids(events) == ["toolu_a", None, None]
     assert tool_use_ids(_events("denied_write")) == ["toolu_fake_02"]
+
+
+def test_refused_tool_use_ids_are_the_ids_one_error_result_answers():
+    """The 20261113-lanes2 STOP: a tool_use id that exactly one tool_result answers, an error one
+    (`is_error: true`, or a body that opens with `<tool_use_error>`, as text or text blocks), is
+    a call the tool refused; a non-error result, no result, or two results for the id are not."""
+    assert refused_tool_use_ids(_events("refused_write")) == {"toolu_fake_a1"}
+    assert refused_tool_use_ids(_events("refused_write_body")) == {"toolu_fake_a2"}
+    assert refused_tool_use_ids(_events("denied_write")) == {"toolu_fake_02"}
+    for name in ("unrefused_edit", "unanswered_edit", "refused_write_shared_id", "success"):
+        assert refused_tool_use_ids(_events(name)) == frozenset(), name
 
 
 def test_malformed_lines_are_counted():

@@ -1864,6 +1864,19 @@ def test_any_other_stray_still_stops_every_arm(tmp_path, spec):
     assert DENIED_PATH in report.detail
 
 
+def test_a_write_the_tool_refused_stops_nothing(tmp_path):
+    """The 20261113-lanes2 STOP: an Edit Claude Code rejected before any hook ran (an error
+    tool_result, no permission_denials entry, no file written, not tracked) is no stray: no arm
+    stops, both arms attempt every pick and the night ENDS."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks, by_model={HAIKU: [Sess("refused_write", write=None)]})
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 3
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+    assert [r["abort_reason"] for r in night.kinds("attempt")].count("guardrail") == 0
+
+
 # ---- quick 261112-fds (backlog 999.12a): the size-routed cascade ----
 
 ROW_LABELS = (("[0, 64)", (0,)), ("[64, 256)", (1,)), ("[256, inf)", (2, 3)))

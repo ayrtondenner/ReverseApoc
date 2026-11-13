@@ -897,6 +897,73 @@ def test_other_spellings_of_a_transcript_write_are_judged_as_before(tmp_path):
     assert driver.transcript_paths(_transcript_writes(repo, *raws), repo) == want
 
 
+# ---- the 20261113-lanes2 STOP: a write Claude Code itself refused, so never written ----
+
+REFUSED_PATH = "/repo/tools/x.py"  # the refused_* and un*_edit stream fixtures' write
+
+
+@pytest.mark.parametrize("scenario", ["refused_write", "refused_write_body"])
+def test_a_write_the_tool_refused_is_not_a_stray(tmp_path, scenario):
+    """20261113-lanes2: Claude Code rejected an Edit of a file that does not exist before any
+    hook ran. Its tool_result is an error (`is_error: true`, or a `<tool_use_error>` body), no
+    permission_denials entry names it, the target does not exist after the session and is not
+    tracked: nothing was written, so it is no stray and the night goes on."""
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)),
+                  sessions=[Sess(scenario, write=None), Sess()])  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert report.event == "ENDED", report.detail
+    assert len(night.launched) == 2
+    assert [r["abort_reason"] for r in night.kinds("attempt")].count("guardrail") == 0
+    assert not (night.repo / "tools" / "x.py").exists()
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [Sess("unrefused_edit", write=None),
+     Sess("refused_write", write=None, files=(("tools/x.py", "# made up\n"),)),
+     Sess("unanswered_edit", write=None), Sess("refused_write_shared_id", write=None),
+     Sess("undenied_write", write=None)],
+    ids=["non-error-result", "error-result-but-the-target-exists", "no-tool-result",
+         "id-shared-by-two-writes", "write-not-denied"],
+)  # fmt: skip
+def test_any_other_off_allowlist_write_is_still_a_stray(tmp_path, spec):
+    """Anything else stays a stray, as before the 20261113-lanes2 fix: a non-error result, an
+    error result whose target now exists (a partial write), a call no tool_result answers, and
+    a call whose tool_use id another tool_use shares (hosted arms' ids come from the provider)."""
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)), sessions=[spec])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert f"{REFUSED_PATH} (transcript)" in report.detail
+    assert len(night.launched) == 1
+
+
+def test_a_hook_denied_write_is_classified_as_before(tmp_path):
+    """A write the hook denied (an error result too, and in permission_denials) is still a
+    transcript stray: with one arm it stops the night at the guardrail, naming the path."""
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)), sessions=[Sess("denied_write", write=None)])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert f"{REFUSED_PATH} (transcript)" in report.detail
+
+
+def test_a_refused_write_vouches_only_for_an_absent_untracked_target(tmp_path):
+    """`_never_written`: a refused write is no stray only when it names a path, no form of it
+    exists on disk and no repo-relative form is tracked."""
+    repo = _repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "here.c").write_text("int x;\n", encoding="utf-8")
+    raw = str(repo / "src" / "gone.c")
+    assert driver._never_written(raw, ["src/gone.c"], repo, frozenset())
+    assert not driver._never_written(raw, ["src/gone.c"], repo, frozenset({"src/gone.c"}))
+    assert not driver._never_written(str(repo / "src" / "here.c"), ["src/here.c"], repo,
+                                     frozenset())  # fmt: skip
+    assert not driver._never_written(None, None, repo, frozenset())
+    outside = tmp_path / "elsewhere.c"
+    assert driver._never_written(str(outside), None, repo, frozenset())
+    outside.write_text("int y;\n", encoding="utf-8")
+    assert not driver._never_written(str(outside), None, repo, frozenset())
+
+
 # ---- Security ruling (06-23 commit_match): only plain new headers, literal pathspecs ----
 
 
