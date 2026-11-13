@@ -354,10 +354,11 @@ CHAR = (1, 0, False)
         ((H, C4, INT), {"a": 8, "b": 4, "c": 0}),  # pr_line_d_h_c4_i
         ((C2, C4, INT), {"a": 8, "b": 4, "c": 0}),  # pr_line_d_c2_c4_i
         ((C4, H, C4), {"a": 4, "b": 8, "c": 0}),  # pr_line_d_c4_h_c4
-        ((C4, C4, H, INT, INT), {"a": 0xC, "b": 8, "c": 0x10, "d": 4, "e": 0}),
+        ((C4, C4, H, INT, INT), {"a": 0xC, "b": 8, "c": 0x10, "d": 4, "e": 0}),  # _c4x2_h_i2
         ((INT, CHAR, C4, INT), {"a": 8, "b": 0xC, "c": 4, "d": 0}),  # pr_line_d_i_c_c4_i
         ((H, C4, INT, INT, INT, INT, INT, C4),
-         {"a": 0x1C, "b": 0x18, "c": 0x14, "d": 0x10, "e": 0xC, "f": 8, "g": 4, "h": 0}),
+         {"a": 0x1C, "b": 0x18, "c": 0x14, "d": 0x10, "e": 0xC, "f": 8, "g": 4,
+          "h": 0}),  # pr_line_d_h_c4_i5_c4
     ],
 )  # fmt: skip
 def test_one_small_local_not_declared_last_keeps_the_rule(shape, layout):
@@ -377,7 +378,7 @@ def test_one_small_local_not_declared_last_keeps_the_rule(shape, layout):
          {"a": 0x20, "b": 0x1C, "c": 0x18, "d": 0x14, "e": 0x10, "f": 0xC, "g": 8, "h": 4,
           "i": 0, "j": 0x24}),  # pr_line_d_c4_i8_h
         ((INT, INT, INT, INT, INT, INT, H),
-         {"a": 0x14, "b": 0x10, "c": 0xC, "d": 8, "e": 4, "f": 0, "g": 0x18}),
+         {"a": 0x14, "b": 0x10, "c": 0xC, "d": 8, "e": 4, "f": 0, "g": 0x18}),  # _i6_h
     ],
 )  # fmt: skip
 def test_one_plain_small_local_declared_last_keeps_the_rule_after_plain_locals(shape, layout):
@@ -400,7 +401,17 @@ def test_one_plain_small_local_declared_last_keeps_the_rule_after_plain_locals(s
         (H, C4, C4, C4),  # pr_line_d_h_c4x3: it holds, off the line
         (C4, H, INT, H),  # pr_line_d_c4_h_i_h: two small locals, it leaves
         (C4, H, INT1),  # a later block: it held in the refit's sweep, off the line
+        ((4, 1, True), (2, 1, False), (4, 1, False)),  # a nested block alone: not measured
+        ((8, 0, True), (8, 0, True), H),  # a tie of 8 bytes: not line D
     ],
 )
 def test_frames_off_line_d_stay_refused(shape):
     assert slots.order_is_known(_shape(*shape)) is False
+
+
+def test_declaration_order_refuses_an_order_past_the_lines():
+    """pr_line_d_c4_i_h is known, and the int-first order this target needs is pr_line_d_i_c4_h,
+    which leaves: the model cannot say whether it reaches the target."""
+    declared = _shape(C4, INT, H)
+    with pytest.raises(ValueError, match="no known layout"):
+        slots.declaration_order(declared, {"a": 0, "b": 4, "c": 8})
