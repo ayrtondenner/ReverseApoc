@@ -347,6 +347,43 @@ def _with_guidance(text: str) -> list[dict]:
     return [_start(), *_call("t1", "view", {"path": f"{WS}\\x.txt"}, content=content)]
 
 
+def test_copilotjson_a_view_with_a_line_range_is_known():
+    """Night 20261114-nearmiss: Haiku viewed its unit with `view_range` [start, end]; that read
+    stopped the night as an unknown shape. Two integers are known; anything else is not."""
+    for good in ([1, 40], [10, -1]):
+        events = [_start(), *_call("t1", "view", {"path": f"{WS}\\x.txt", "view_range": good})]
+        assert copilotjson.unknown_steps(events) == [], good
+        assert copilotjson.read_targets(events) == [f"{WS}\\x.txt"]
+    for bad in ([1], [1, 2, 3], ["1", "2"], [True, 2], "1-40"):
+        events = [_start(), *_call("t1", "view", {"path": f"{WS}\\x.txt", "view_range": bad})]
+        assert copilotjson.unknown_steps(events), bad
+
+
+def _enoent(path: str) -> str:
+    return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
+
+
+def test_copilotjson_an_edit_of_a_missing_file_wrote_nothing():
+    """Night 20261114-nearmiss: Haiku tried an edit of `<run>/ufo2p/src/ufo2p/<unit>.c`, a path
+    that does not exist; Copilot failed it with code `failure` and ENOENT before its permission
+    check (the coordinator's probe the same night: an edit of an existing file outside the write
+    rules is refused, `denied`, and the file is unchanged). So an edit that failed with exactly
+    ENOENT on its own path wrote nothing: no write target, no denial. Any other failure text, or
+    another path, still counts as a write (fail closed); a create is never excused this way."""
+    outside = "C:\\made-up\\run\\ufo2p\\src\\ufo2p\\u_x.c"
+    edit = {"path": outside, "old_str": "a", "new_str": "b"}
+    missing = [_start(), *_call("t1", "edit", edit, ok=False, error=_enoent(outside),
+                                code="failure")]  # fmt: skip
+    assert copilotjson.write_targets(missing) == [] and copilotjson.denials(missing) == []
+    assert copilotjson.unknown_steps(missing) == []
+    for text in (_enoent(outside + "x"), "made-up: " + _enoent(outside), "Unhandled error: boom"):
+        other = [_start(), *_call("t1", "edit", edit, ok=False, error=text, code="failure")]
+        assert copilotjson.write_targets(other) == [outside], text
+    create = [_start(), *_call("t1", "create", {"path": outside, "file_text": "x"}, ok=False,
+                               error=_enoent(outside), code="failure")]  # fmt: skip
+    assert copilotjson.write_targets(create) == [outside]
+
+
 def test_copilotjson_the_credit_caps_own_line_is_no_hook():
     """Copilot's --max-ai-credits reports itself as postToolUse guidance, `[cost: N% used · $X
     left]` (the coordinator's check of 2026-11-13: the line appears with the cap and never
@@ -509,7 +546,7 @@ def test_copilotjson_unknown_steps_fail_closed():
     (hooks, skills and subagents among them)."""
     cases = {
         "unknown tool": _call("u1", "web_fetch", {"url": "https://example.com/"}),
-        "extra argument": _call("u2", "view", {"path": "x", "view_range": [1, 2]}),
+        "extra argument": _call("u2", "view", {"path": "x", "made_up_key": [1, 2]}),
         "missing argument": _call("u3", "create", {"path": "x"}),
         "not a string": _call("u4", "powershell", {"command": ["uv", "run"]}),
         "subagent": _call("u5", "view", {"path": "x"}, event={"agentId": "a1"}),
