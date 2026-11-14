@@ -384,6 +384,21 @@ def test_audit_passes_a_shell_wrapped_wrapper_call(command):
     assert driver.codex_command_strays(codexjson.commands(_ran(command))) == []
 
 
+def test_audit_passes_the_store_pwsh_alias_of_this_user():
+    """Night 20261114-cascade: with PowerShell 7.7 from the Store (installed 2026-11-13), Codex
+    runs its shell as the user's app alias LOCALAPPDATA/Microsoft/WindowsApps/pwsh.exe. That
+    exact path wraps a wrapper form; the same name in another folder or another user's alias
+    folder does not (a planted binary there would run while only its argument was judged)."""
+    alias = os.path.join(os.environ["LOCALAPPDATA"], "Microsoft", "WindowsApps", "pwsh.exe")
+    ok = f"\"{alias}\" -Command '{WRAPPER} context'"
+    assert driver.codex_command_strays(codexjson.commands(_ran(ok))) == []
+    others = (alias.replace("WindowsApps", "WindowsAppz"),
+              r"C:\Users\someone-else\AppData\Local\Microsoft\WindowsApps\pwsh.exe")
+    for other in others:
+        bad = f"\"{other}\" -Command '{WRAPPER} context'"
+        assert driver.codex_command_strays(codexjson.commands(_ran(bad))), other
+
+
 @pytest.mark.parametrize("command", [
     f"{POWERSHELL} -Command '{WRAPPER} check; echo x > f'",
     f"{POWERSHELL} -Command whoami",
