@@ -7,8 +7,40 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_0005E610);
 INCLUDE_ASM(func_0005E690);
+
+/* One 0x22-byte record at D_00142668; only the byte at 0x03 (active) is read here. */
+struct unk_0022 {
+    /* 0x00 */ u8 rest_00[0x03];
+    /* 0x03 */ u8 active;
+    /* 0x04 */ u8 rest_04[0x1E];
+}; /* size: 0x22 */
+
+extern struct unk_0022 D_00142668[];
+extern u8 D_00182E2C;
+
+int func_0005E610(void)
+{
+    struct unk_0022 *p;
+    s16 i;
+    int r;
+
+    p = D_00142668;
+    r = 0;
+    i = 0;
+    do {
+        if (p->active != 0) {
+            r = 1;
+            break;
+        }
+        i++;
+        p++;
+    } while (i < 64);
+    if (D_00182E2C != 0) {
+        r = 1;
+    }
+    return r;
+}
 
 /* Number of entries in the slot table at 0x0014D9F0 (the loop bound, 0x12C). */
 #define SLOT_TABLE_COUNT 300
