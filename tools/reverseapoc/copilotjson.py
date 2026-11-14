@@ -92,9 +92,13 @@ def _line_range(value: object) -> bool:
 _SHAPES: dict[str, tuple[dict, dict]] = {
     VIEW: ({"path": _text}, {"view_range": _line_range}),
     CREATE: ({"path": _text, "file_text": _text}, {}),
-    EDIT: ({"path": _text, "old_str": _text, "new_str": _text}, {}),
+    # edit: the CLI's own schema is {path, old_str, new_str?} (its bundled cli-main.js)
+    EDIT: ({"path": _text, "old_str": _text}, {"new_str": _text}),
+    # 1.0.111's own schema adds timeout and async (cli-main.js, read 2026-11-14); its shellId
+    # and sandbox-bypass requests stay unknown (fail closed)
     SHELL: ({"command": _text}, {"description": _text, "mode": lambda v: v in ("sync", "async"),
-                                 "initial_wait": _seconds}),
+                                 "initial_wait": _seconds, "timeout": _seconds,
+                                 "async": lambda v: isinstance(v, bool)}),
     POLL: ({"shellId": _text}, {"delay": _seconds}),
 }
 KNOWN_TOOLS = frozenset(_SHAPES)
@@ -415,11 +419,26 @@ def _why(call: Call) -> str:
     return f"with arguments {keys!r}, not its known shape"
 
 
+# night 20261114-nearmiss3: a call whose arguments fail the CLI's own schema is answered
+# `Invalid inputs: ...`, code `failure`, and never runs
+_INVALID = "Invalid inputs: "
+
+
+def _rejected(call: Call) -> bool:
+    """A main-agent call of a known tool that the CLI refused as invalid input: it never ran."""
+    done = _mapping(call.complete)
+    error = _mapping(done.get("error"))
+    message = error.get("message")
+    return (call.own and call.tool in _SHAPES and done.get("success") is False
+            and error.get("code") == _FAILURE_CODE and isinstance(message, str)
+            and message.startswith(_INVALID))  # fmt: skip
+
+
 def unknown_steps(events: Sequence[dict]) -> list[str]:
     """Fail closed: why each tool call, completion or event is one the audit cannot judge (see
     the module docstring)."""
     out = [f"tool call {call.ident!r}: tool {call.tool!r} {_why(call)}"
-           for call in calls(events) if not known(call)]  # fmt: skip
+           for call in calls(events) if not known(call) and not _rejected(call)]  # fmt: skip
     seen: dict[tuple[object, object], int] = {}
     for event in events:
         kind, ident = event.get("type"), _data(event).get("toolCallId")
