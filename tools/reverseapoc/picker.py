@@ -42,6 +42,9 @@ levels are built, like an asm row: it is never queued and no item waits on it; `
 lists it until the owner rules it.
 `TierQueue.only` (quick 261101-b5f, the owner's Fable trial) keeps the items of a key set in
 the queue's own order and drops every wait on a key outside it.
+
+The near-miss queue (todo near-miss-lane, 2026-11-13; `NearMissQueue`) is a tier queue over the
+partial rows at a minimum best_percent or more, ranked by bytes left, with no callee wait.
 """
 
 from __future__ import annotations
@@ -483,14 +486,21 @@ def _group_rows(rows: Sequence[MemberRow], ids: frozenset[str], tier_id: int,
 
 
 def _tier_pick(row: MemberRow, ranks: Ranks, units: Units) -> tuple[Rank, Pick]:
-    where = f"{row.exe} member 0x{row.address:08X}"
-    ranked = ranks.get(row.exe, {}).get(row.address)
+    return _ranked_pick(row.exe, row.address, ranks, units, "member")
+
+
+def _ranked_pick(exe: str, address: int, ranks: Ranks, units: Units,
+                 what: str) -> tuple[Rank, Pick]:  # fmt: skip
+    """The row's rank and pick from `ranks` and `units`; a PickerError naming the row as `what`
+    when either has none."""
+    where = f"{exe} {what} 0x{address:08X}"
+    ranked = ranks.get(exe, {}).get(address)
     if ranked is None:
         raise PickerError(f"{where} has no rank")
-    unit = units.get(row.exe, {}).get(row.address)
+    unit = units.get(exe, {}).get(address)
     if not unit:
         raise PickerError(f"{where} has no unit")
-    pick = Pick(row.exe, row.address, ranked.name, unit, ranked.size, ranked.score)
+    pick = Pick(exe, address, ranked.name, unit, ranked.size, ranked.score)
     return (ranked.chk, ranked.score, ranked.address), pick
 
 
@@ -570,6 +580,68 @@ def _group_items(mech: Mechanics, group: _Group, graph: CallGraph, ranks: Ranks,
         rank, pick = _tier_pick(row, ranks, units)
         item = TierItem(group.tier, level[row.address], rank, pick, group.hub)
         yield item, tuple((group.exe, d) for d in waits[row.address])
+
+
+# ---- the near-miss lane (todo near-miss-lane, 2026-11-13) ----
+
+NEAR_MISS_MIN = 80.0  # the lane's default minimum best_percent (`drive --near-miss` bare)
+
+
+@dataclass(frozen=True, slots=True)
+class NearMissItem(TierItem):
+    """One near-miss row: a TierItem (tier 0, level 0, score's own rank) with the row's
+    status.csv best_percent."""
+
+    best_percent: float = 0.0
+
+    @property
+    def bytes_left(self) -> float:
+        """The bytes still to match: size * (100 - best_percent) / 100."""
+        return self.pick.size * (100.0 - self.best_percent) / 100.0
+
+
+class NearMissQueue(TierQueue):
+    """The near-miss lane's queue: the tier queue's guards (never matched, in flight, parked or
+    in a claimed unit) over partial rows, ranked by bytes left ascending (the cheapest finish
+    first), ties by size descending, then start; a transient abort still sends a row behind the
+    others. Owner-delegated ruling (coordinator, 2026-11-13): callee-first does not apply, as a
+    near-miss row already passed its callee gate once, so no row waits on another. A finished
+    pass (matched, capped or parked) leaves the queue for its life (one drive): a later drive
+    retries it with what the pass learnt, where the tier queue would run its next pass at
+    once."""
+
+    def _order(self, item: TierItem) -> tuple:
+        key = item.key
+        return (self._aborts[key], item.bytes_left, -item.pick.size, item.pick.start,
+                EXE_ORDER.index(item.pick.exe))  # fmt: skip
+
+    def finish(self, key: Key, *, matched: bool, aborted: bool = False,
+               capped: bool = False, parked: bool = False) -> None:  # fmt: skip
+        super().finish(key, matched=matched, aborted=aborted, capped=capped,
+                       parked=parked or capped)  # fmt: skip
+
+    def preview(self, count: int) -> list[TierItem]:
+        """The first `count` eligible rows in the lane's order, each at its next pass (no wait,
+        each once: the dry run's and the drafts' list). Nothing is taken."""
+        eligible = sorted((item for item in self._items if self._eligible(item, frozenset())),
+                          key=self._order)  # fmt: skip
+        return [replace(item, pass_n=self._passes.get(item.key, 0) + 1)
+                for item in eligible[:count]]  # fmt: skip
+
+
+def near_miss_queue(percents: Mapping[Key, float], ranks: Ranks, units: Units, *,
+                    minimum: float = NEAR_MISS_MIN,
+                    excluded: Container[Key] = frozenset()) -> NearMissQueue:  # fmt: skip
+    """The near-miss queue of the partial rows in `percents` (key -> status.csv best_percent)
+    at `minimum` or more, minus the `excluded` keys (the signed asm list's asm and held rows).
+    A queued row without a rank or a unit is refused."""
+    items = []
+    for key in sorted(percents, key=lambda k: (EXE_ORDER.index(k[0]), k[1])):
+        if percents[key] < minimum or key in excluded:
+            continue
+        rank, pick = _ranked_pick(*key, ranks, units, "partial row")
+        items.append(NearMissItem(0, 0, rank, pick, best_percent=percents[key]))
+    return NearMissQueue(items, {})
 
 
 # ---- the readability queue (07-38; D-17, DEC-04) ----

@@ -2935,18 +2935,23 @@ def test_no_earlier_best_c_without_a_file(tmp_path: Path):
 
 
 def test_earlier_notes_name_the_best_attempt_whose_c_is_gone(tmp_path: Path):
-    """Todo near-miss-lane: when no best/<unit>.c of the records is on this machine (build/ is
-    never committed), `best_gone` names the record with the highest best_percent (ties: the
-    latest), so the pack can say plainly that its C is not available; with the C, or with no
-    record holding a percent, it is empty."""
+    """Todo near-miss-lane: when the best record's best/<unit>.c is not on this machine (build/
+    is never committed), `best_gone` names that record (the highest best_percent, ties: the
+    latest), so the pack can say plainly that its C is not available, also when a weaker
+    record's C is shown instead; with the best record's own C, or no record holding a percent,
+    it is empty."""
     repo = tmp_path / "repo"
     _log_records(repo, _attempt_record("run1", 1, percent=40.0),
                  _attempt_record("run2", 2, percent=98.333336),
                  _attempt_record("run3", 1, percent=None))  # fmt: skip
-    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_gone == (
-        "run2 attempt 2, 98.33%")
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert (notes.best_c, notes.best_gone) == (None, "run2 attempt 2, 98.33%")
     _best_file(repo, "run1", 1, 40)
-    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_gone == ""
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert (notes.best_c, notes.best_gone) == (_best_definition(40), "run2 attempt 2, 98.33%")
+    _best_file(repo, "run2", 2, 98)
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert (notes.best_c, notes.best_gone) == (_best_definition(98), "")
     bare = tmp_path / "bare"
     _log_records(bare, _attempt_record("run1", 1))
     assert attempt.earlier_notes(bare, "ufo2p", "func_00010010").best_gone == ""

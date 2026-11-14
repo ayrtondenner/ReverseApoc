@@ -1512,7 +1512,7 @@ def test_near_miss_ranks_by_bytes_left():
     shown = [(i.pick.start, i.best_percent, round(i.bytes_left, 2)) for i in q.preview(10)]
     assert shown == [(ND, 99.0, 2.0), (NC, 90.0, 4.0), (NF, 90.0, 4.0), (NB, 80.0, 4.0),
                      (NA, 95.0, 5.0)]  # fmt: skip
-    assert _serve(q, {}) == [ND, NC, NF, NB, NA]
+    assert _serve(q, {}, match=True) == [ND, NC, NF, NB, NA]
 
 
 def test_near_miss_minimum_and_excluded_rows():
@@ -1624,15 +1624,16 @@ def test_near_miss_dry_run_lists_the_lane_beside_the_tier_queue(tmp_path, capsys
 
 def test_near_miss_only_night_lists_no_tier_picks(tmp_path, capsys):
     """With only --near-miss-arm lanes the night has no tier lane: the dry run lists the lane's
-    picks only."""
+    picks only; without --near-miss the lane's minimum is 80%."""
     rig, worlds = _nm_rig(tmp_path)
-    code, out, _ = rig.drive(capsys, dry_run=True, json=True, near_miss=80.0,
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True,
                              near_miss_arms=(("claude-haiku-5-5", 2),),
                              seams={"world": lambda: worlds})  # fmt: skip
     assert code == 0, out
     doc = json.loads(out)
     assert [int(p["start"], 16) for p in doc["picks"]] == [TB, TS, TC]
-    assert doc["near_miss"]["arms"] == [["claude-haiku-5-5", 2]]
+    assert doc["near_miss"] == {"min_percent": 80.0, "rows": 3,
+                                "arms": [["claude-haiku-5-5", 2]]}  # fmt: skip
 
 
 def test_near_miss_lane_reaches_the_night(tmp_path, capsys, monkeypatch):

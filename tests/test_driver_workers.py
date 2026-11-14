@@ -3000,6 +3000,17 @@ def test_a_near_miss_lane_beside_an_arm_lane(tmp_path):
     assert by_run[_arm_run(SONNET)] == [picks[3].name, picks[2].name]
 
 
+def test_two_near_miss_lanes_share_one_queue(tmp_path):
+    """Two near-miss arms share the lane's one queue: each row runs once in all, on whichever
+    arm is free, not once per arm as two --arm lanes would."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": TWO_ARMS, "near_miss": (HAIKU, SONNET), "hold": True},
+                       near_miss=_near_miss(picks, (90.0, 95.0, 99.0)))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert sorted(r["function"] for r in night.kinds("attempt")) == sorted(p.name for p in picks)
+
+
 def test_a_near_miss_lane_runs_each_row_once(tmp_path):
     """A near-miss row that capped leaves the lane for tonight: two rows, one session each
     (attempts_per_function 1), then the lane is done, where a tier queue would run pass 2."""

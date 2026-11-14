@@ -32,6 +32,7 @@ from . import (
     locate,
     mechanics,
     meters,
+    picker,
     probe,
     quota,
     search,
@@ -1768,6 +1769,17 @@ def _arm_budget(value: str) -> tuple[str, quota.Budget]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _near_miss_percent(value: str) -> float:
+    """Todo near-miss-lane: `--near-miss MIN_PERCENT`, a best_percent from 0 to 100."""
+    try:
+        percent = float(value)
+    except ValueError:
+        percent = math.nan
+    if not 0.0 <= percent <= 100.0:  # NaN fails too
+        raise argparse.ArgumentTypeError(f"{value!r} is not a percent from 0 to 100")
+    return percent
+
+
 class _Cascade(argparse.Action):
     """Quick 261112-fds (backlog 999.12a): `--cascade` stores backends.load_routing()'s rows;
     a malformed [routing] table exits 2 here, as a bad --arm does."""
@@ -1841,7 +1853,9 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   allow_egress=tuple(args.allow_egress or ()),
                                   arms=arms, routing=tuple(args.cascade),
                                   arm_caps=tuple(args.arm_cap or ()),
-                                  arm_budgets=tuple(args.arm_budget or ()))  # fmt: skip
+                                  arm_budgets=tuple(args.arm_budget or ()),
+                                  near_miss=args.near_miss,
+                                  near_miss_arms=tuple(args.near_miss_arm or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1938,10 +1952,7 @@ def _arm_budget_conflict(args: argparse.Namespace) -> str | None:
     twice = sorted({name for name in names if names.count(name) > 1})
     if twice:
         return f"--arm-budget {twice[0]} is given twice; budget each arm once"
-    if args.cascade:
-        night = list(backends.routing_arms(args.cascade))
-    else:
-        night = [name for name, _ in args.arm or ()] or [args.night_model]
+    night = _night_names(args)
     stray = [name for name in names if name not in night]
     if stray:
         shown = ", ".join(name for name in night if name) or "no --arm, --night-model or --cascade"
@@ -1953,6 +1964,51 @@ def _arm_budget_conflict(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _night_names(args: argparse.Namespace) -> list[str | None]:
+    """The arms of this run: the --cascade rows' arms, else the --arm arms (or the --night-model
+    one, None without it), then (todo near-miss-lane) the --near-miss-arm arms."""
+    if args.cascade:
+        return list(backends.routing_arms(args.cascade))
+    own = [name for name, _ in args.arm or ()] or [args.night_model]
+    return [*own, *(name for name, _ in args.near_miss_arm or ())]
+
+
+# todo near-miss-lane: what `--near-miss` and `--near-miss-arm` cannot run with
+_NEAR_MISS_WITH = (("cascade", "--cascade"), ("fable_trial", "--fable-trial"),
+                   ("picks", "--picks"), ("stratify", "--stratify"), ("canary", "--canary"),
+                   ("land_held", "--land-held"))  # fmt: skip
+
+
+def _near_miss_conflict(args: argparse.Namespace) -> str | None:
+    """Todo near-miss-lane: a flag the lane cannot run with, a --near-miss night without a
+    --near-miss-arm (a dry run lists the lane without one), an arm named twice or also an
+    --arm or the --night-model arm (an arm runs one lane), or --workers with no --night-model
+    lane to give them to; None otherwise."""
+    names = [name for name, _ in args.near_miss_arm or ()]
+    if args.near_miss is None and not names:
+        return None
+    clash = [flag for name, flag in _NEAR_MISS_WITH if getattr(args, name)]
+    if args.session == driver.READABILITY:
+        clash.append("--session readability")
+    if clash:
+        return f"the near-miss lane cannot be used with {', '.join(clash)}"
+    if not names and not args.dry_run:
+        return ("--near-miss needs --near-miss-arm NAME=WORKERS for its lane (--dry-run lists "
+                "the lane without one)")  # fmt: skip
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        return f"--near-miss-arm {twice[0]} is given twice; name each arm once"
+    own = {name for name, _ in args.arm or ()} | {args.night_model}
+    both = [name for name in names if name in own]
+    if both:
+        return (f"--near-miss-arm {both[0]} is also an --arm or the --night-model; an arm runs "
+                "one lane")  # fmt: skip
+    if getattr(args, "workers_given", False) and args.night_model is None:
+        return ("--workers names no lane beside --near-miss-arm (give --night-model, or --arm "
+                "NAME=WORKERS)")  # fmt: skip
+    return None
+
+
 def _harness_conflict(args: argparse.Namespace) -> str | None:
     """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
     model is for a matching night that is no Fable trial; a hold run is a matching night that
@@ -1961,14 +2017,11 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
     the --night-model arm or an --arm; quick 261112-fds: an arm of the --cascade rows), and
     that arm sends the context pack to a non-Anthropic backend."""
     for conflict in (_cascade_conflict(args), _arm_cap_conflict(args),
-                     _arm_budget_conflict(args)):  # fmt: skip
+                     _near_miss_conflict(args), _arm_budget_conflict(args)):  # fmt: skip
         if conflict is not None:
             return conflict
     readability = args.session == driver.READABILITY
-    if args.cascade:
-        night = list(backends.routing_arms(args.cascade))
-    else:
-        night = [name for name, _ in args.arm or ()] or [args.night_model]
+    night = _night_names(args)
     for name in args.allow_egress or ():
         if name not in night and args.cascade:
             return f"--allow-egress {name} names no arm of the cascade's rows (D-11)"
@@ -2057,6 +2110,22 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    "spent; --dry-run prints each budget's sessions and expected matches; "
                    "refused for an arm with no quota entry and beside its own "
                    "--arm-cap")  # fmt: skip
+    p.add_argument("--near-miss", type=_near_miss_percent, nargs="?", const=picker.NEAR_MISS_MIN,
+                   default=None, metavar="MIN_PERCENT",
+                   help="the near-miss lane: only status.csv's partial rows at MIN_PERCENT "
+                   f"best_percent or more (bare: {picker.NEAR_MISS_MIN:g}), ranked by bytes left "
+                   "(size * (100 - best_percent) / 100, cheapest first), each once tonight, no "
+                   "callee wait; the night's other lanes leave its rows out; with --dry-run "
+                   "it lists the lane's first --max-sessions rows with best_percent and bytes "
+                   "left; a night needs --near-miss-arm")  # fmt: skip
+    p.add_argument("--near-miss-arm", type=_arm_spec, action="append", default=None,
+                   metavar="NAME=WORKERS",
+                   help="repeatable: run the near-miss lane on arm NAME with WORKERS sessions at "
+                   "once, beside the --arm or --night-model lanes in this one drive (one lock, "
+                   "one audit, one commit queue), under run id <run>-NAME when the night has "
+                   "more than one lane; it takes --arm-budget and --allow-egress like an --arm; "
+                   "several near-miss arms share the lane's one queue; without --arm or "
+                   "--night-model the night runs the near-miss lane only")  # fmt: skip
     p.add_argument("--allow-egress", action="append", default=None, metavar="ARM",
                    help="the owner's opt-in for --night-model or --arm ARM to send context "
                    "packs to its non-Anthropic backend (D-11); without it such an arm is "

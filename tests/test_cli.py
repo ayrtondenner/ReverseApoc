@@ -1617,18 +1617,19 @@ COPILOT_HAIKU = "copilot-haiku-5-5"
 @pytest.mark.parametrize(("argv", "minimum", "arms", "near"), [
     (["--dry-run", "--near-miss"], 80.0, (), ()),
     (["--dry-run", "--near-miss", "90"], 90.0, (), ()),
-    (["--arm", f"{HAIKU}=6", "--near-miss-arm", f"{COPILOT_HAIKU}=2"], 80.0, ((HAIKU, 6),),
+    (["--arm", f"{HAIKU}=6", "--near-miss-arm", f"{COPILOT_HAIKU}=2"], None, ((HAIKU, 6),),
      ((COPILOT_HAIKU, 2),)),
     (["--arm", f"{HAIKU}=6", "--near-miss", "92.5", "--near-miss-arm", f"{COPILOT_HAIKU}=2",
       "--arm-budget", f"{COPILOT_HAIKU}=100credits"], 92.5, ((HAIKU, 6),),
      ((COPILOT_HAIKU, 2),)),
-    (["--near-miss-arm", f"{SONNET}=1"], 80.0, (), ((SONNET, 1),)),
+    (["--near-miss-arm", f"{SONNET}=1"], None, (), ((SONNET, 1),)),
     ([], None, (), ()),
 ], ids=["bare", "ninety", "beside-arm", "with-budget", "lane-only", "off"])  # fmt: skip
 def test_near_miss_flags(argv, minimum, arms, near, monkeypatch):
     """`--near-miss [MIN]` (bare: 80) and `--near-miss-arm NAME=WORKERS`, repeatable, reach
-    DriveOptions; a --near-miss-arm without --near-miss runs the lane at 80%; an --arm-budget
-    may name a near-miss arm."""
+    DriveOptions; without --near-miss the driver runs the lane at its default (80%,
+    test_near_miss_only_night_lists_no_tier_picks); an --arm-budget may name a near-miss
+    arm."""
     seen = _recorded_drive(monkeypatch)
     assert main(["drive", *argv]) == 0
     options = seen[-1]

@@ -46,6 +46,15 @@ TITLE_EXTERNS = "D_ externs"
 TITLE_COMMON_H = "include/common.h"
 TITLE_DRAFT = "Ghidra draft"
 TITLE_BEST_C = "Earlier best C"  # 07.2-02 (999.5): the best earlier attempt's definition
+# todo near-miss-lane: what the section says when the best earlier attempt's own C is not
+# readable on this machine: alone (no earlier C at all), or before a weaker attempt's C
+_BEST_C_MISSING = ("the best earlier attempt ({best}, progress/attempts.jsonl) has no readable "
+                   "definition of this function in a best/<unit>.c under build/driver/ on this "
+                   "machine (build/ is never committed)")  # fmt: skip
+BEST_C_GONE = ("not available: " + _BEST_C_MISSING + ", so this attempt starts from the unit "
+               "file; the earlier give-ups and notes below are all that is kept of it")
+BEST_C_WEAKER = ("not the best: " + _BEST_C_MISSING + "; this is the best earlier C that is, "
+                 "from a weaker attempt:")  # fmt: skip
 TITLE_IDIOMS = "Matching idioms"
 TITLE_GIVEUPS = "Earlier give-ups"  # 07.2-02 (999.5): one line per committed give-up
 TITLE_NOTES = "Earlier notes"
@@ -131,13 +140,17 @@ class Notes:
     first, so they never crowd out a note; then the texts, oldest first, so the newest note is
     the last thing cut. 07.2-02 (999.5): `giveups`, one line per committed give-up (their own
     section, cut after the records and before the texts), and `best_c`, the best earlier
-    attempt's definition of the function (its own section, cut right after the look-alikes)."""
+    attempt's definition of the function (its own section, cut right after the look-alikes).
+    Todo near-miss-lane: `best_gone`, the best earlier attempt (`<run> attempt <n>, <p>%`)
+    when its own C is not readable here (empty otherwise), so the section says so plainly,
+    alone or before the weaker attempt's `best_c`."""
 
     texts: tuple[str, ...] = ()
     records: tuple[str, ...] = ()
     records_label: str = ""
     giveups: tuple[str, ...] = ()
     best_c: str | None = None
+    best_gone: str = ""
 
     @classmethod
     def of(cls, notes: str | Notes | None) -> Notes:
@@ -374,6 +387,11 @@ class _Optional:
         draft = _fenced(self.draft, "c") if self.draft_kept or not self.draft else _cut_mark(1)
         best_c = self.notes.best_c
         best = _fenced(best_c, "c") if self.best_c_kept or not best_c else _cut_mark(1)
+        gone = self.notes.best_gone  # todo near-miss-lane
+        if gone and not best_c:
+            best = BEST_C_GONE.format(best=gone)
+        elif gone and self.best_c_kept:
+            best = f"{BEST_C_WEAKER.format(best=gone)}\n\n{best}"
         bodies = {
             **required,
             TITLE_CALLERS: _kept(callers, len(self.callers), "\n"),
