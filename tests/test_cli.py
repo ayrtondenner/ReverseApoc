@@ -1607,3 +1607,74 @@ def test_arm_budget_flag_refuses_a_bad_spec(value, capsys):
 def test_arm_budget_in_help(capsys):
     text = _drive_help(capsys)
     assert "--arm-budget NAME=BUDGET" in text and "config/driver/quota.toml" in text
+
+
+# ---- todo near-miss-lane (2026-11-13): drive --near-miss [MIN] and --near-miss-arm ----
+
+COPILOT_HAIKU = "copilot-haiku-5-5"
+
+
+@pytest.mark.parametrize(("argv", "minimum", "arms", "near"), [
+    (["--dry-run", "--near-miss"], 80.0, (), ()),
+    (["--dry-run", "--near-miss", "90"], 90.0, (), ()),
+    (["--arm", f"{HAIKU}=6", "--near-miss-arm", f"{COPILOT_HAIKU}=2"], 80.0, ((HAIKU, 6),),
+     ((COPILOT_HAIKU, 2),)),
+    (["--arm", f"{HAIKU}=6", "--near-miss", "92.5", "--near-miss-arm", f"{COPILOT_HAIKU}=2",
+      "--arm-budget", f"{COPILOT_HAIKU}=100credits"], 92.5, ((HAIKU, 6),),
+     ((COPILOT_HAIKU, 2),)),
+    (["--near-miss-arm", f"{SONNET}=1"], 80.0, (), ((SONNET, 1),)),
+    ([], None, (), ()),
+], ids=["bare", "ninety", "beside-arm", "with-budget", "lane-only", "off"])  # fmt: skip
+def test_near_miss_flags(argv, minimum, arms, near, monkeypatch):
+    """`--near-miss [MIN]` (bare: 80) and `--near-miss-arm NAME=WORKERS`, repeatable, reach
+    DriveOptions; a --near-miss-arm without --near-miss runs the lane at 80%; an --arm-budget
+    may name a near-miss arm."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 0
+    options = seen[-1]
+    assert (options.near_miss, options.arms, options.near_miss_arms) == (minimum, arms, near)
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--near-miss", "90"], "--near-miss needs --near-miss-arm"),
+    (["--arm", f"{HAIKU}=1", "--near-miss-arm", f"{HAIKU}=1"],
+     f"--near-miss-arm {HAIKU} is also an --arm"),
+    (["--night-model", HAIKU, "--near-miss-arm", f"{HAIKU}=1"],
+     f"--near-miss-arm {HAIKU} is also an --arm"),
+    (["--near-miss-arm", f"{HAIKU}=1", "--near-miss-arm", f"{HAIKU}=2"],
+     f"--near-miss-arm {HAIKU} is given twice"),
+    (["--near-miss-arm", f"{HAIKU}=1", "--workers", "2"], "--workers"),
+    (["--cascade", *_EGRESS, "--near-miss-arm", f"{HAIKU}=1"], "--cascade"),
+    (["--near-miss-arm", f"{HAIKU}=1", "--fable-trial"], "--fable-trial"),
+    (["--near-miss-arm", f"{HAIKU}=1", "--picks", "x.txt"], "--picks"),
+    (["--near-miss-arm", f"{HAIKU}=1", "--session", "readability"], "--session readability"),
+    (["--canary", "--near-miss"], "--canary"),
+], ids=["no-lane", "also-arm", "also-night-model", "twice", "workers", "cascade", "fable",
+        "picks", "readability", "canary"])  # fmt: skip
+def test_near_miss_flag_refusals(argv, conflict, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+@pytest.mark.parametrize("value", ["x", "-1", "100.5"])
+def test_near_miss_flag_refuses_a_bad_percent(value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--near-miss", value])
+    assert exc.value.code == 2
+    assert "--near-miss" in capsys.readouterr().err
+
+
+def test_near_miss_allows_egress_for_its_arm(monkeypatch):
+    """--allow-egress may name a --near-miss-arm arm: it is an arm of the night."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--near-miss-arm", f"{TERRA}=1", "--allow-egress", TERRA]) == 0
+    assert seen[-1].allow_egress == (TERRA,)
+
+
+def test_near_miss_in_help(capsys):
+    text = _drive_help(capsys)
+    assert "--near-miss [MIN_PERCENT]" in text and "--near-miss-arm NAME=WORKERS" in text
+    assert "bytes left" in text

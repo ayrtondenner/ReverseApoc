@@ -1484,3 +1484,181 @@ def test_stratify_sizes_match_stats(tmp_path, capsys):
     picked = sorted(driver.read_picks(path))
     assert [sizes[key] for key in picked] == list(STRATA_SIZES)
     assert picked == [(UFO2P, s) for s in starts[:3]]
+
+
+# ---- todo near-miss-lane (2026-11-13): partial rows ranked by bytes left ----
+
+NA, NB, NC, ND, NE, NF = (0x00040000 + 0x100 * i for i in range(6))
+
+
+def _nm_ranks(sizes: dict[int, int]) -> dict[str, dict[int, Candidate]]:
+    return {UFO2P: {s: Candidate(s, f"func_{s:08X}", size, 50, ()) for s, size in sizes.items()}}
+
+
+def _nmq(percents: dict[int, float], sizes: dict[int, int], **kwargs) -> picker.NearMissQueue:
+    """The near-miss queue of UFO2P partial rows (start -> best_percent), each in its own unit."""
+    units = {UFO2P: {s: f"u_{s:08x}" for s in sizes}}
+    return picker.near_miss_queue({(UFO2P, s): p for s, p in percents.items()},
+                                  _nm_ranks(sizes), units, **kwargs)  # fmt: skip
+
+
+def test_near_miss_ranks_by_bytes_left():
+    """Bytes left, size * (100 - best_percent) / 100, ascending; ties by size descending, then
+    start. Rows below the minimum (default 80) are never queued."""
+    percents = {NA: 95.0, NB: 80.0, NC: 90.0, ND: 99.0, NE: 79.99, NF: 90.0}
+    sizes = {NA: 100, NB: 20, NC: 40, ND: 200, NE: 10, NF: 40}
+    q = _nmq(percents, sizes)
+    assert picker.NEAR_MISS_MIN == 80.0
+    shown = [(i.pick.start, i.best_percent, round(i.bytes_left, 2)) for i in q.preview(10)]
+    assert shown == [(ND, 99.0, 2.0), (NC, 90.0, 4.0), (NF, 90.0, 4.0), (NB, 80.0, 4.0),
+                     (NA, 95.0, 5.0)]  # fmt: skip
+    assert _serve(q, {}) == [ND, NC, NF, NB, NA]
+
+
+def test_near_miss_minimum_and_excluded_rows():
+    """`minimum` filters by best_percent (inclusive); an `excluded` row (the signed asm list's
+    asm and held rows) is never queued."""
+    q = _nmq({NA: 90.0, NB: 89.99, NC: 95.0}, {NA: 20, NB: 20, NC: 20}, minimum=90.0,
+             excluded=frozenset({(UFO2P, NC)}))  # fmt: skip
+    assert [i.pick.start for i in q.preview(10)] == [NA]
+
+
+def test_near_miss_keeps_the_tier_queue_guards():
+    """A claimed unit is skipped (not dropped), an in-flight row is not offered twice, a matched
+    one leaves; no row waits on another (callee-first does not apply to this lane)."""
+    q = _nmq({NA: 99.0, NB: 90.0}, {NA: 20, NB: 20})
+    assert q.next_eligible(frozenset({(UFO2P, f"u_{NA:08x}")})).start == NB
+    q.take((UFO2P, NA))
+    assert q.next_eligible().start == NB
+    q.finish((UFO2P, NA), matched=True)
+    assert [i.pick.start for i in q.preview(10)] == [NB]
+
+
+def test_near_miss_runs_each_row_once_a_night():
+    """A finished pass (capped) leaves the lane for tonight, unlike the tier queue's next pass;
+    a transient abort sends the row behind the others, still eligible; the pass number is the
+    committed log's next one."""
+    passes = {(UFO2P, NA): 3}
+    q = _nmq({NA: 99.0, NB: 90.0}, {NA: 20, NB: 20})
+    q.use_passes(passes)
+    first = q.next_item()
+    assert (first.pick.start, first.pass_n) == (NA, 4)
+    q.take(first.key)
+    q.finish(first.key, matched=False, aborted=True)
+    assert q.next_eligible().start == NB
+    q.take((UFO2P, NB))
+    passes[(UFO2P, NB)] = 1
+    q.finish((UFO2P, NB), matched=False, capped=True)
+    assert q.next_eligible().start == NA
+    q.take((UFO2P, NA))
+    q.finish((UFO2P, NA), matched=False, capped=True)
+    assert q.next_eligible() is None
+
+
+def test_near_miss_refuses_a_row_without_a_rank():
+    with pytest.raises(PickerError, match=f"partial row 0x{NB:08X}"):
+        picker.near_miss_queue({(UFO2P, NB): 90.0}, _nm_ranks({NA: 20}),
+                               {UFO2P: {NB: "u_x"}})  # fmt: skip
+
+
+def _partial(start: int, percent: float) -> status.StatusRow:
+    return status.StatusRow(start, f"func_{start:08X}", f"u_{start:08x}", status.PARTIAL,
+                            percent, 3, "0" * 64, "2026-11-01")  # fmt: skip
+
+
+def _nm_rig(tmp_path):
+    """A signed rig: Tier 1 leaf members TA, TB, TC; UFO2P's status.csv holds TA matched and the
+    partial rows TB 95%, TC 85%, TD 90% (the signed list's asm row), TE 99% (a held row), TS 90%
+    and TH 60%. Every row is 20 bytes, so bytes left go TB 1.0, TS 2.0, TC 3.0."""
+    from test_drive import _git
+
+    asm = [_asm_row(TD, "no-terminator", "asm"), _asm_row(TE, "no-terminator")]
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)], asm=asm)
+    matched = status.StatusRow(TA, f"func_{TA:08X}", f"u_{TA:08x}", status.MATCHED, 100.0, 1,
+                               "0" * 64, "2026-11-01")  # fmt: skip
+    rows = [matched, *(_partial(s, p) for s, p in ((TB, 95.0), (TC, 85.0), (TD, 90.0),
+                                                   (TE, 99.0), (TS, 90.0), (TH, 60.0)))]
+    status.write_status(rig.repo / "config/ufo2p/status.csv", sorted(rows, key=lambda r: r.start))
+    _git(rig.repo, rig.env, "add", "--", "config/ufo2p/status.csv")
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "partial rows (made up)")
+    return rig, _rig_world(rig.packs, (TA, TB, TC, TD, TE, TS, TH), ())
+
+
+def test_near_miss_source_reads_the_committed_partial_rows(tmp_path):
+    """status.csv's partial rows at or above the minimum, minus the signed asm list's asm and
+    held rows, each a fresh queue per call."""
+    rig, worlds = _nm_rig(tmp_path)
+    build = driver.near_miss_source(rig.repo / "config", worlds, 80.0)
+    assert [i.pick.start for i in build().preview(10)] == [TB, TS, TC]
+    assert build() is not build()
+    strict = driver.near_miss_source(rig.repo / "config", worlds, 90.0)
+    assert [(i.pick.start, i.best_percent) for i in strict().preview(10)] == [(TB, 95.0),
+                                                                              (TS, 90.0)]
+
+
+def test_near_miss_dry_run_lists_the_lane_beside_the_tier_queue(tmp_path, capsys):
+    """`--dry-run --near-miss 90` beside a tier lane: the tier lane's picks leave out the lane's
+    rows (TC, at 85%, stays a tier pick); the lane's picks follow, best first by bytes left, each
+    with best_percent, bytes left and pass; the document names the lane's minimum, rows and
+    arms."""
+    rig, worlds = _nm_rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, near_miss=90.0,
+                             seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, out
+    doc = json.loads(out)
+    tier = [int(p["start"], 16) for p in doc["picks"] if "tier" in p]
+    near = [p for p in doc["picks"] if "near_miss" in p]
+    assert tier == [TC]
+    assert [(int(p["start"], 16), p["near_miss"]) for p in near] == [
+        (TB, {"best_percent": 95.0, "bytes_left": 1.0, "pass": 1}),
+        (TS, {"best_percent": 90.0, "bytes_left": 2.0, "pass": 1})]  # fmt: skip
+    assert doc["near_miss"] == {"min_percent": 90.0, "rows": 2, "arms": []}
+    code, out, _ = rig.drive(capsys, dry_run=True, near_miss=90.0,
+                             seams={"world": lambda: worlds})  # fmt: skip
+    lines = out.splitlines()
+    head = next(i for i, line in enumerate(lines) if line.startswith("near-miss lane:"))
+    assert "90.00%" in lines[head] and "2 rows" in lines[head], lines[head]
+    assert lines[head + 1].split()[:2] == [UFO2P, f"0x{TB:08X}"]
+    assert lines[head + 1].endswith("near-miss best 95.00% bytes left 1.00 pass 1")
+
+
+def test_near_miss_only_night_lists_no_tier_picks(tmp_path, capsys):
+    """With only --near-miss-arm lanes the night has no tier lane: the dry run lists the lane's
+    picks only."""
+    rig, worlds = _nm_rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, near_miss=80.0,
+                             near_miss_arms=(("claude-haiku-5-5", 2),),
+                             seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, out
+    doc = json.loads(out)
+    assert [int(p["start"], 16) for p in doc["picks"]] == [TB, TS, TC]
+    assert doc["near_miss"]["arms"] == [["claude-haiku-5-5", 2]]
+
+
+def test_near_miss_lane_reaches_the_night(tmp_path, capsys, monkeypatch):
+    """run_drive: the night's lanes are the --arm ones, then the --near-miss-arm ones, named in
+    DriveConfig.near_miss; an --arm-budget on the near-miss arm caps it; Deps.near_miss builds
+    the lane's queue; the lane's picks get their Ghidra drafts; the console names the lane."""
+    haiku, sonnet = "claude-haiku-5-5", "claude-sonnet-5-5"
+    rig, worlds = _nm_rig(tmp_path)
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append((config, deps))
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    budget = driver.quota.parse_budget("5%week")
+    code, _, err = rig.drive(capsys, arms=((sonnet, 2),), near_miss=90.0,
+                             near_miss_arms=((haiku, 1),), arm_budgets=((haiku, budget),),
+                             seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, err
+    ((config, deps),) = seen
+    assert (config.arms, config.near_miss, config.workers) == (((sonnet, 2), (haiku, 1)),
+                                                              (haiku,), 3)  # fmt: skip
+    assert config.arm_caps == ((haiku, 166),)
+    assert [i.pick.start for i in deps.near_miss().preview(10)] == [TB, TS]
+    drafts = [c for c in rig.runner.calls if "ghidra-export" in c]
+    assert f"0x{TB:08X}" in drafts[0] and f"0x{TS:08X}" in drafts[0]
+    line = next(line for line in err.splitlines() if "near-miss lane:" in line)
+    assert haiku in line and "90.00%" in line, line
