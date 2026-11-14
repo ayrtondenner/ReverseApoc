@@ -11,6 +11,8 @@ dependencies = [
 
 [project.scripts]
 reverseapoc = "reverseapoc.cli:main"
+# spike 013: a Copilot session's attempt wrapper, the one command its shell rule allows
+reverseapoc-attempt = "reverseapoc.cli:attempt_main"
 
 [dependency-groups]
 dev = [

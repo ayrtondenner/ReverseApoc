@@ -445,6 +445,7 @@ kept in the repo, in `.env`, or in any log or record (CLAUDE.md, hard rules). Ea
 | z.ai direct | `ZAI_API_KEY`: not used. GLM runs through OpenRouter since 2026-11-10 | none; the driver strips it from every session |
 | GPT-6 Luna, GPT-6.1 Sol, GPT-6.1 Terra, GPT-6 Astra | the ChatGPT sign-in of the Codex CLI (`codex login`) | the Codex CLI's own store |
 | Gemini 3.8 Flash, GPT-OSS 120B, Claude Sonnet 4.6, Claude Opus 4.6 (through agy) | the Google sign-in of the Antigravity CLI (run `agy` once) | the Antigravity CLI's own store |
+| Claude Haiku 5.5, Claude Sonnet 5.5, GPT-6 Luna (through Copilot) | the GitHub sign-in of the Copilot CLI (`copilot login`, Copilot Pro) | the OS credential store (the owner's `~/.copilot/config.json` holds no account); each session runs under its own `COPILOT_HOME` in build/, and every session loses `GH_TOKEN`, `GITHUB_TOKEN` and every `COPILOT_*` variable |
 | Local Qwen3.6-35B-A3B | none | llama.cpp on localhost |
 
 Set a variable once, in PowerShell, then restart the shell or launcher that runs `drive`:

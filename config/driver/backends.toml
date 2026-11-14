@@ -8,7 +8,7 @@
 # The endpoints, model ids and prices of the non-Anthropic arms were read on 2026-11-09
 # (07.2-RESEARCH Q7) and are re-checked by the owner at setup, before each arm's canary.
 #
-# Fields: harness (claude, codex, agy), backend (the provider: anthropic is the Claude Code
+# Fields: harness (claude, codex, agy, copilot), backend (the provider: anthropic is the Claude Code
 # login), model (the --model id), base_url (absent on the Claude login), key_env (absent on the
 # Claude login), sends_disassembly (true: the context pack leaves the machine, so a
 # non-Anthropic arm needs --allow-egress, D-11), accepted_init (the init `model` strings
@@ -16,7 +16,9 @@
 # arm's list price for the API-equivalent figure of `stats --run` and the `--land-held` ranking;
 # a subscription or free arm records cost 0, backends.Arm.billing), coauthor (the commit
 # credit line, D-26), max_workers, and the optional max_sessions (07.2-16, D-22: the sessions
-# the arm may launch in one night; absent, only the night's --max-sessions caps it). The Claude
+# the arm may launch in one night; absent, only the night's --max-sessions caps it), and on a
+# Copilot arm the optional max_ai_credits (spike 013: each session's --max-ai-credits, 30 when
+# absent). The Claude
 # arms are keyed by their model id and keep streamjson's tables and driver.coauthor (RULINGS
 # "Harness").
 
@@ -241,6 +243,67 @@ input = 5.00
 output = 25.00
 cache_read = 0.50
 cache_creation = 5.00
+
+# The GitHub Copilot CLI arms (spike 013, owner ruling 2026-11-13): models on the owner's Copilot
+# Pro AI credits (1,500 a month), billed per token at each model's credit rate (1 credit = $0.01).
+# Like the other signed-in arms: subscription billing (cost 0 recorded; each attempt record
+# carries the session's real `credits`, read from --usage-output-file), the pack goes to GitHub
+# and the model's vendor (--allow-egress), and each needs its own canary PASS on the installed
+# CLI. max_ai_credits is each session's --max-ai-credits (a soft cap, Copilot's minimum 30). The
+# ids are in `copilot help config`'s model list (1.0.111, 2026-11-13). The prices are GitHub's
+# AI-credit rates per million tokens (docs.github.com "Models and pricing", read 2026-11-13) in
+# USD: input, cache read, cache write (cache_creation), output. Haiku 5.5's are its <=100K-context
+# tier (10 / 1 / 12.5 / 50 credits; >100K is 50 / 5 / 62.5 / 250): the default context tier caps
+# a session at 100K tokens (1.0.111 telemetry: context_token_limit 100000; `--context
+# long_context` is never passed), so the higher tier never applies. GPT-6 Luna's are its <=272K
+# tier (10 / 1 / 12.5 / 50) on the same reasoning; Sonnet 5.5 has one tier (200 / 10 / 250 / 1000).
+[arms."copilot-haiku-5-5"]
+harness = "copilot"
+backend = "github"
+model = "claude-haiku-5.5"
+sends_disassembly = true
+accepted_init = ["claude-haiku-5.5"]
+coauthor = "Claude Haiku 5.5 <noreply@anthropic.com>"
+max_workers = 4
+max_ai_credits = 30
+
+[arms."copilot-haiku-5-5".prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_creation = 0.125
+
+[arms."copilot-sonnet-5-5"]
+harness = "copilot"
+backend = "github"
+model = "claude-sonnet-5.5"
+sends_disassembly = true
+accepted_init = ["claude-sonnet-5.5"]
+coauthor = "Claude Sonnet 5.5 <noreply@anthropic.com>"
+max_workers = 4
+max_ai_credits = 30
+
+[arms."copilot-sonnet-5-5".prices]
+input = 2.00
+output = 10.00
+cache_read = 0.10
+cache_creation = 2.50
+
+[arms."copilot-gpt-6-luna"]
+harness = "copilot"
+backend = "github"
+model = "gpt-6-luna"
+sends_disassembly = true
+accepted_init = ["gpt-6-luna"]
+coauthor = "GPT-6 Luna <noreply@openai.com>"
+max_workers = 4
+max_ai_credits = 30
+
+[arms."copilot-gpt-6-luna".prices]
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_creation = 0.125
 
 # The OpenRouter arms below: the owner runs DeepSeek and GLM only through OpenRouter (ruling of
 # 2026-11-10: no direct DeepSeek or z.ai arm), so DEEPSEEK_API_KEY and ZAI_API_KEY are named by

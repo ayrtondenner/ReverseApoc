@@ -37,6 +37,13 @@ loses the same set: OPENAI_API_KEY and OPENAI_BASE_URL, every ANTHROPIC_* variab
 Google key variable (GEMINI_API_KEY and GOOGLE_API_KEY among them, which would move agy off the
 sign-in), plus every arm key.
 
+Spike 013 (owner ruling 2026-11-13): a Copilot arm (harness `copilot`) runs the GitHub Copilot
+CLI on the owner's Copilot Pro sign-in; like a Codex arm it takes no base URL and no key
+variable, and its optional `max_ai_credits` (at least COPILOT_MIN_AI_CREDITS, that when absent)
+is each session's --max-ai-credits. Every session, whatever its harness, now also loses every
+COPILOT_* variable and GH_TOKEN and GITHUB_TOKEN (Copilot CLI takes a GitHub token over its
+sign-in); the driver sets a Copilot session's own COPILOT_* variables after.
+
 07.2 review WR-09: a Claude-harness session loses the same families too: every ANTHROPIC_*
 and CLAUDE_CODE_USE_* variable (custom headers would reach a hosted endpoint, and Bedrock or
 Vertex would reroute the session off its base URL), every OPENAI_* variable and every Google
@@ -77,7 +84,7 @@ from .targets import REPO_ROOT
 
 ARMS_TOML = REPO_ROOT / "config" / "driver" / "backends.toml"
 ROUTING = "routing"  # quick 261112-fds: the top-level table of `drive --cascade`'s rows
-HARNESSES = ("claude", "codex", "agy")  # the agent CLI a session runs under (schema 3)
+HARNESSES = ("claude", "codex", "agy", "copilot")  # the agent CLI a session runs under (schema 3)
 ANTHROPIC = "anthropic"  # the backend of the Claude Code login (no base URL, no key variable)
 # D-18, D-26: the bearer token of a loopback arm with no key variable (the local llama.cpp
 # server), non-empty so Claude Code never falls back to the claude.ai login; loopback only.
@@ -105,16 +112,24 @@ RETIRED_KEY_ENVS = ("DEEPSEEK_API_KEY", "ZAI_API_KEY")
 CLAUDE = HARNESSES[0]  # the Claude Code harness: hooks, its login or an Anthropic endpoint
 CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
 AGY = "agy"  # the Antigravity CLI harness (07.2-15, D-21)
+COPILOT = "copilot"  # the GitHub Copilot CLI harness (spike 013, owner ruling 2026-11-13)
+COPILOT_MIN_AI_CREDITS = 30  # Copilot CLI's --max-ai-credits floor (`copilot help limits`)
 OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"  # the Claude Code login's own token (WR-09)
 _ANTHROPIC_PREFIX = "ANTHROPIC_"
-# 07.2 review WR-09: stripped from every session, Claude-harness ones included
-_VENDOR_PREFIXES = (_ANTHROPIC_PREFIX, "CLAUDE_CODE_USE_", "OPENAI_")
+# 07.2 review WR-09: stripped from every session, Claude-harness ones included. Spike 013: every
+# COPILOT_* variable too (COPILOT_ALLOW_ALL approves every tool, COPILOT_PROVIDER_* reroutes the
+# model, COPILOT_HOME moves the config; the driver sets a Copilot session's own after).
+_VENDOR_PREFIXES = (_ANTHROPIC_PREFIX, "CLAUDE_CODE_USE_", "OPENAI_", "COPILOT_")
+# spike 013: GitHub tokens, which Copilot CLI takes over its sign-in (`copilot help environment`)
+_GITHUB_TOKENS = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
 _GOOGLE_KEY = re.compile(r"(?:GOOGLE|GEMINI)[A-Z0-9_]*_(?:KEY|CREDENTIALS)", re.IGNORECASE)
 
 _REQUIRED = ("harness", "backend", "model", "sends_disassembly", "max_workers")
 _HOSTED = ("accepted_init", "prices", "coauthor")  # required off the Claude login
 _ENDPOINT = ("base_url", "key_env")  # a claude-harness arm off the Claude login
-_OPTIONAL = ("max_sessions",)  # 07.2-16 (D-22): the arm's own session cap in a night
+# 07.2-16 (D-22): the arm's own session cap in a night; spike 013: a Copilot arm's AI-credit cap
+# per session (--max-ai-credits; COPILOT_MIN_AI_CREDITS when absent)
+_OPTIONAL = ("max_sessions", "max_ai_credits")
 _FIELDS = (*_REQUIRED, *_ENDPOINT, *_HOSTED, *_OPTIONAL)
 _PRICE_FIELDS = Price._fields
 _NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
@@ -146,6 +161,9 @@ class Arm:
     # 07.2-16 (D-22): the sessions this arm may launch in one night (a Plus window, a weekly
     # quota); None: no cap of its own, the night's --max-sessions only
     max_sessions: int | None = None
+    # spike 013: a Copilot arm's --max-ai-credits per session (a soft cap of at least 30); None
+    # off the Copilot harness
+    max_ai_credits: int | None = None
 
     @property
     def egress(self) -> bool:
@@ -290,7 +308,23 @@ def _arm(name: str, table: object) -> Arm:
                coauthor=_text(table, "coauthor", _COAUTHOR) if "coauthor" in table
                else None,
                max_sessions=_count(table, "max_sessions") if "max_sessions" in table
-               else None)  # fmt: skip
+               else None, max_ai_credits=_credits(table, harness))  # fmt: skip
+
+
+def _credits(table: Mapping, harness: str) -> int | None:
+    """Spike 013: a Copilot arm's `max_ai_credits`, a whole number of at least
+    COPILOT_MIN_AI_CREDITS (Copilot CLI's floor), that floor when absent; no other harness
+    takes one."""
+    if harness != COPILOT:
+        if "max_ai_credits" in table:
+            raise ArmError(f"max_ai_credits: not allowed on the {harness} harness (a Copilot "
+                           "CLI session cap)")  # fmt: skip
+        return None
+    value = table.get("max_ai_credits", COPILOT_MIN_AI_CREDITS)
+    if isinstance(value, bool) or not isinstance(value, int) or value < COPILOT_MIN_AI_CREDITS:
+        raise ArmError(f"max_ai_credits: {value!r} is not an integer >= "
+                       f"{COPILOT_MIN_AI_CREDITS} (Copilot CLI's minimum)")  # fmt: skip
+    return value
 
 
 def _read(path: Path) -> dict:
@@ -424,10 +458,12 @@ def _foreign(name: str, arm: Arm) -> bool:
     """A variable no session inherits (07.2 review WR-09; case-insensitive: Windows names
     are): any ANTHROPIC_* name (custom headers, model, Bedrock and Vertex URLs: a hosted arm
     would send them to its endpoint), any CLAUDE_CODE_USE_* name (it reroutes Claude Code off
-    the base URL), any OPENAI_* name and any Google key or credentials name; and the Claude
+    the base URL), any OPENAI_* name, any Google key or credentials name, any COPILOT_* name
+    and GH_TOKEN and GITHUB_TOKEN (spike 013: Copilot CLI's settings and tokens); and the Claude
     Code login's token off the Anthropic login. The arm's own variables are set after."""
     upper = name.upper()
     return (upper.startswith(_VENDOR_PREFIXES) or bool(_GOOGLE_KEY.fullmatch(name))
+            or upper in _GITHUB_TOKENS
             or (upper == OAUTH_TOKEN_ENV and arm.backend != ANTHROPIC))  # fmt: skip
 
 

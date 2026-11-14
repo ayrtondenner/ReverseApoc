@@ -22,6 +22,10 @@ no skill and runs no hook); run_session runs it the same way.
 
 07.2-15 (D-21, D-24): `build_agy_argv` is an Antigravity arm's `agy -p --output-format
 stream-json` argv and `agy_prompt` its prompt (codex_prompt's).
+
+Spike 013 (owner ruling 2026-11-13): `build_copilot_argv` is a Copilot arm's `copilot -p
+--output-format json` argv and `copilot_prompt` its prompt (codex_prompt's, with the view tool's
+one read).
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from .copilotjson import AVAILABLE_TOOLS
 from .hooks import _NOTES_NAME as _NOTES_FILE
 from .hooks import ATTEMPT_NAME, ATTEMPT_PREFIX, SESSION_FILE_NAMES
 from .streamjson import EXPECTED_TOOLS, parse_line
@@ -214,6 +219,46 @@ def build_agy_argv(prompt: str, *, agy: str, model: str, attempt_dir: Path, sett
             "-p", prompt]  # fmt: skip
 
 
+# Spike 013: Copilot CLI 1.0.111's shell rules name a command plus at most its first subcommand
+# (`copilot help permissions`: "shell(gh pr create)" does not cover "gh pr create --fill"), so no
+# rule can name `uv run --frozen reverseapoc attempt <form>`, and `shell(uv:*)` would pre-approve
+# every uv command, `uv run python -c ...` among them, before the audit could stop it (security
+# review, coordinator 2026-11-13). A Copilot session's wrapper is therefore its own executable,
+# the package's `reverseapoc-attempt` console script (`reverseapoc attempt <form>`, whose first
+# step refuses anything but an exact form; an .exe on Windows, so no cmd.exe parses its
+# arguments), and the one shell rule names that command alone; every other command, uv's
+# included, has no allow rule and Copilot refuses it in a -p run.
+COPILOT_WRAPPER = "reverseapoc-attempt"
+COPILOT_SHELL_RULE = f"shell({COPILOT_WRAPPER})"
+
+
+def build_copilot_argv(prompt: str, *, copilot: str, model: str, writes: Sequence[Path],
+                       forbidden: Sequence[Path], usage_file: Path,
+                       max_ai_credits: int) -> list[str]:  # fmt: skip
+    """Spike 013 (owner ruling 2026-11-13): the argv of one Copilot CLI session, `copilot`
+    being the CLI executable: `-p` and the prompt first (the rule flags are variadic), the
+    model, JSONL output streamed, no CLI update (the canary-proved version is the one that
+    runs), no custom instructions (the checkout's CLAUDE.md, rules and AGENTS.md), no built-in
+    MCP server, no ask_user tool, no temp-dir access, only the tools copilotjson knows
+    visible, COPILOT_SHELL_RULE, a write rule for each of the session's own files (`writes`),
+    reads and writes denied under each `forbidden` root, every URL and memory denied, the
+    session's AI-credit cap (a soft cap, minimum 30) and the file its usage goes to. Paths in
+    rules use forward slashes, as 1.0.111's own denials name them. Never an allow-everything
+    flag, an added directory or a trusted folder (tests/test_copilot.py pins the list); the
+    driver runs it with cwd = the attempt dir, the only directory it may touch."""
+    roots = [Path(root).as_posix() for root in forbidden]
+    return [copilot, "-p", prompt, "--model", model, "--output-format", "json",
+            "--stream", "on", "--no-auto-update", "--no-custom-instructions",
+            "--disable-builtin-mcps", "--no-ask-user", "--disallow-temp-dir",
+            "--available-tools", *AVAILABLE_TOOLS, "--allow-tool", COPILOT_SHELL_RULE,
+            *(arg for path in writes for arg in ("--allow-tool", f"write({path.as_posix()})")),
+            *(arg for root in roots for kind in ("read", "write")
+              for arg in ("--deny-tool", f"{kind}({root}/**)")),
+            "--deny-tool", "url", "--deny-tool", "memory",
+            "--max-ai-credits", str(max_ai_credits),
+            "--usage-output-file", str(usage_file)]  # fmt: skip
+
+
 def _skill_body(skill_text: str) -> str:
     """A SKILL.md without its `---` front matter (the name and description lines)."""
     lines = skill_text.splitlines(keepends=True)
@@ -250,6 +295,9 @@ _HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so 
 # agy's settings (driver.agy_settings) also allow read_file inside the attempt dir, nowhere else
 _AGY_READS = (" Your read_file tool may also read files inside this attempt's directory (your "
               "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
+# spike 013: a Copilot session's file access is its cwd, the attempt dir (no --add-dir)
+_COPILOT_READS = (" Your view tool may also read files inside this attempt's directory (your "
+                  "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
 
 
 def _signed_in_prompt(goal: str, skill_text: str, note: str) -> str:
@@ -280,6 +328,16 @@ def agy_prompt(goal: str, skill_text: str) -> str:
     loader, no /goal and no hooks: codex_prompt's text, its harness note extended by the one
     read agy's settings allow (read_file inside the attempt dir, WR-10)."""
     return _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _AGY_READS)
+
+
+def copilot_prompt(goal: str, skill_text: str) -> str:
+    """Spike 013: the prompt of a Copilot session, which loads no skill of ours (custom
+    instructions are off) and runs no hook: codex_prompt's text, its harness note extended by
+    the one read the session's file access allows (its view tool inside the attempt dir), with
+    every `uv run --frozen reverseapoc attempt` in it (goal, skill, rules) spelled as the
+    session's wrapper, COPILOT_WRAPPER."""
+    text = _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS)
+    return text.replace(_WRAPPER, COPILOT_WRAPPER)
 
 
 def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:

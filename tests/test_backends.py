@@ -359,9 +359,12 @@ def test_every_hosted_cache_price_is_at_least_the_input_price():
     """Until the owner records the providers' cache prices, a metered arm prices both cache
     classes as input, so an estimate may overstate and never understate. Quick 261110-f30: a
     subscription arm's prices are public list prices with their published cache-read price,
-    and only its unrecorded cache_creation class is priced as input."""
+    and only its unrecorded cache_creation class is priced as input. Spike 013: a Copilot arm's
+    cache-write rate is recorded (GitHub's published AI-credit rates), and it is above input."""
     for arm in _arms().values():
-        if arm.egress:
+        if arm.harness == backends.COPILOT:
+            assert arm.prices.cache_creation >= arm.prices.input, arm.name
+        elif arm.egress:
             assert arm.prices.cache_creation == arm.prices.input, arm.name
         if arm.billing == backends.METERED:
             assert arm.prices.cache_read == arm.prices.input, arm.name
@@ -603,7 +606,8 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
 # ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
 
 SUBSCRIBED = (*CLAUDE_ARMS, *CODEX_ARMS, "gemini-flash", "gpt-oss", "agy-sonnet-4-6",
-              "agy-opus-4-6")  # fmt: skip
+              "agy-opus-4-6", "copilot-haiku-5-5", "copilot-sonnet-5-5",
+              "copilot-gpt-6-luna")  # fmt: skip
 METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "gpt-oss-20b", "muse-spark-open",
                 "gemini-3.8-flash-openrouter", "qwen-hosted")  # fmt: skip
 
