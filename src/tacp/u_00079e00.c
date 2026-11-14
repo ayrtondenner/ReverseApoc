@@ -43,7 +43,12 @@ L7A081:;
     return 0;
 }
 
-INCLUDE_ASM(func_0007A090);
+unsigned char func_0007A090(unsigned char r_eax)
+{
+    if (r_eax != 0) r_eax = r_eax | 0xc0;
+    return r_eax;
+}
+
 INCLUDE_ASM(func_0007A0A0);
 extern unsigned char D_00293050[];
 
