@@ -7,9 +7,22 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_0001DF90);
 INCLUDE_ASM(func_0001E000);
 INCLUDE_ASM(func_0001E660);
+
+struct unk_049C {
+    /* 0x00 */ char pad_00[0x20];
+    /* 0x20 */ short f_20;
+    /* 0x22 */ char pad_22[2];
+    /* 0x24 */ short f_24;
+}; /* size: at least 0x26 */
+
+extern struct unk_049C *func_0001DEF0(int, int, int);
+extern char func_00021B30(int, int);
+extern short D_000E4D6E;
+extern short D_000E6D60;
+extern short D_000E6D62;
+
 typedef struct {
     short type;
     char pad2[184];
@@ -18,7 +31,6 @@ typedef struct {
     short z;
 } Obj0001E860;
 
-extern short D_000E4D6E;
 extern int D_000E6BF8;
 extern int D_000E6BFC;
 
@@ -74,6 +86,27 @@ void func_0001E5D0(short x, short y, short w, short h, unsigned char color)
         if (bottom > D_000E4D7A) bottom = D_000E4D7A;
         func_00027841(x, y, right, bottom, color);
     }
+}
+
+int func_0001DF90(int a1, int a2)
+{
+    struct unk_049C *p;
+    int r;
+
+    r = 0;
+    p = func_0001DEF0(a1, a2, D_000E4D6E);
+    if (p != 0) {
+        if (D_000E6D62 == p->f_24) {
+            r = 2;
+        }
+        if (*((char *)p + D_000E6D60 + 0x25e) != 0) {
+            if (func_00021B30(p->f_20, D_000E6D60) != 0 ||
+                func_00021B30(D_000E6D60, p->f_20) != 0) {
+                r = 4;
+            }
+        }
+    }
+    return r;
 }
 
 typedef struct {
