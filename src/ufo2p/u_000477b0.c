@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_000477B0);
 INCLUDE_ASM(func_000477F0);
-INCLUDE_ASM(func_00047B70);
 INCLUDE_ASM(func_00047D70);
 INCLUDE_ASM(func_00047FB0);
 INCLUDE_ASM(func_000480B0);
@@ -30,6 +29,47 @@ extern char *D_00182DB4;
 void func_00017C79(void);
 void func_00017C17(void);
 void func_00016F2B(char *, int, int);
+
+extern u8 D_000D5060;
+extern int D_000E0CCC;
+void func_00049FC0(void);
+
+void func_00047B70(u8 layers)
+{
+    s16 k;
+    s16 row;
+    s16 col;
+    u16 *p;
+    s16 s;
+
+    p = *D_00182DFC + D_000D4D72 + D_000D4D74 * 100;
+    D_000E7188 = D_000D5060 == 0 ? 0x1c5 : 5;
+    for (k = 0; k < layers; k++) {
+        for (row = D_000D4D74; row < D_000D4D74 + 44; row++) {
+            for (col = D_000D4D72; col < D_000D4D72 + 80; col++, p++) {
+                if (col < 100 && row < 100 && col >= 0 && row >= 0) {
+                    if (*p != 0) {
+                        s = D_0015309A[*p].sprite;
+                        if (s != 0) {
+                            func_00016F2B(D_00182DB4 + D_00182D68[s], (u16)((col - D_000D4D72) * 8), (u16)((row - D_000D4D74) * 8));
+                        }
+                    }
+                } else if (k == 0) {
+                    if (col == 120 || col == -20 || row == 120 || row == -20) {
+                        func_00016F2B(D_00182DB4 + D_00182D68[D_000E7188], (u16)((col - D_000D4D72) * 8), (u16)((row - D_000D4D74) * 8));
+                    } else {
+                        func_00016F2B(D_00182DB4 + D_00182D68[D_000E7188], (u16)((col - D_000D4D72) * 8), (u16)((row - D_000D4D74) * 8));
+                    }
+                }
+            }
+            p += 20;
+        }
+        p += 5600;
+    }
+    if (D_000E0CCC != 0) {
+        func_00049FC0();
+    }
+}
 
 void func_00048250(s16 rows)
 {
