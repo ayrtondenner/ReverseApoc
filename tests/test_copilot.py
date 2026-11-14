@@ -396,13 +396,18 @@ def test_copilotjson_edit_follows_the_clis_own_schema():
     assert copilotjson.write_targets(events) == [f"{WS}\\x.txt"]
 
 
-def test_copilotjson_powershell_takes_the_clis_timeout_and_async_only():
-    """1.0.111's powershell schema adds timeout (number) and async (bool), both harmless; its
-    shellId (write to a running shell) and the sandbox-bypass requests stay unknown."""
-    for extra in ({"timeout": 600}, {"async": False}, {"timeout": 60, "async": True}):
+def test_copilotjson_powershell_takes_the_clis_timeout_async_and_shell_id():
+    """1.0.111's powershell schema adds timeout (number), async (bool) and shellId (the shell
+    the command runs in; night 20261114-nearmiss6 ran `reverseapoc-attempt context` in a shell
+    named "ctx"): the command is still Copilot's permission check's and the audit's to judge,
+    so these are known (and the command is still a command). The sandbox-bypass requests and
+    wrongly typed values stay unknown."""
+    for extra in ({"timeout": 600}, {"async": False}, {"timeout": 60, "async": True},
+                  {"shellId": "ctx"}):
         call = _call("t1", "powershell", {"command": "reverseapoc-attempt check", **extra})
         assert copilotjson.unknown_steps([_start(), *call]) == [], extra
-    for extra in ({"shellId": "0"}, {"requestSandboxBypass": True}, {"timeout": "60"},
+        assert copilotjson.commands([_start(), *call]) == ["reverseapoc-attempt check"]
+    for extra in ({"shellId": 0}, {"requestSandboxBypass": True}, {"timeout": "60"},
                   {"async": "yes"}, {"requestSandboxPermissive": True}):
         call = _call("t1", "powershell", {"command": "reverseapoc-attempt check", **extra})
         assert copilotjson.unknown_steps([_start(), *call]), extra
