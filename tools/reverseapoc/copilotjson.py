@@ -94,11 +94,12 @@ _SHAPES: dict[str, tuple[dict, dict]] = {
     CREATE: ({"path": _text, "file_text": _text}, {}),
     # edit: the CLI's own schema is {path, old_str, new_str?} (its bundled cli-main.js)
     EDIT: ({"path": _text, "old_str": _text}, {"new_str": _text}),
-    # 1.0.111's own schema adds timeout and async (cli-main.js, read 2026-11-14); its shellId
-    # and sandbox-bypass requests stay unknown (fail closed)
+    # 1.0.111's own schema adds timeout, async and shellId (cli-main.js, read 2026-11-14; night
+    # 20261114-nearmiss6 named a shell "ctx" for the wrapper): the command stays Copilot's
+    # permission check's and the audit's to judge. Its sandbox-bypass requests stay unknown.
     SHELL: ({"command": _text}, {"description": _text, "mode": lambda v: v in ("sync", "async"),
                                  "initial_wait": _seconds, "timeout": _seconds,
-                                 "async": lambda v: isinstance(v, bool)}),
+                                 "async": lambda v: isinstance(v, bool), "shellId": _text}),
     POLL: ({"shellId": _text}, {"delay": _seconds}),
 }
 KNOWN_TOOLS = frozenset(_SHAPES)
