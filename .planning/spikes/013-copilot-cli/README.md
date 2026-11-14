@@ -50,7 +50,8 @@ package (`%LOCALAPPDATA%\copilot\pkg\win32-x64\1.0.111\`, its `schemas/session-e
   variadic), `--model`, `--output-format json --stream on`, `--no-auto-update`,
   `--no-custom-instructions`, `--disable-builtin-mcps`, `--no-ask-user`, `--disallow-temp-dir`,
   `--available-tools view create edit powershell read_powershell` (the model sees no other
-  tool: no web_fetch, no subagent, no skill, no sql), `--allow-tool shell(uv:*)`, one
+  tool: no web_fetch, no subagent, no skill, no sql), `--allow-tool shell(reverseapoc-attempt)`
+  (the session's own wrapper executable, below), one
   `--allow-tool write(<path>)` per session file (view unit, notes.md, plan.json,
   check-note.json, giveup.json), `--deny-tool read(<repo>/orig/**)` and `write(...)` for orig/
   and third_party/, `--deny-tool url`, `--deny-tool memory`, `--max-ai-credits <arm cap>` and
@@ -90,12 +91,31 @@ package (`%LOCALAPPDATA%\copilot\pkg\win32-x64\1.0.111\`, its `schemas/session-e
   "commands it recognizes as read-only run without asking".
 - Shell rules name a command plus at most its first subcommand ("shell(gh pr create)" does not
   cover "gh pr create --fill"), so **no rule can name the wrapper's exact forms**
-  (`shell(uv run --frozen reverseapoc attempt:*)` matches nothing by that rule). The driver
-  passes `shell(uv:*)`, the rule that surely matches them; the post-session command audit
-  (`codex_command_strays`: exact wrapper forms only, no orig/ or third_party/ part) is the
-  guard. The gap: `uv run python -c ...` or a read-only command such as `Get-Content` could read
-  orig/ before the audit stops the night, as with Codex (docs/model-routing.md "What the audit
-  cannot do").
+  (`shell(uv run --frozen reverseapoc attempt:*)` matches nothing by that rule).
+- **Why not `shell(uv:*)`** (the first build; security review, coordinator 2026-11-13, HIGH): it
+  pre-approves every uv command, so `uv run python -c "..."` could read orig/, open the network
+  or write anywhere, and the post-session audit would only find it after the bytes had left.
+  An after-the-fact stray is not a guard for that.
+- **The fix: a dedicated wrapper executable.** The package now ships the console script
+  `reverseapoc-attempt` (`reverseapoc.cli:attempt_main`, `reverseapoc attempt <argv>`), which
+  uv installs as `.venv/Scripts/reverseapoc-attempt.exe`: an .exe, so PowerShell hands its
+  arguments to Python with no cmd.exe parsing (a .cmd shim would let `a&whoami` run whoami),
+  and its first step is the attempt command's own form check (argparse, then
+  `attempt.form_allowed` for the session kind: anything but an exact form exits 2 before
+  anything runs). The one shell rule is `shell(reverseapoc-attempt)`, the session's PATH leads
+  with the venv's Scripts directory, the prompt spells every wrapper call that way, and the
+  driver refuses to launch when the script is missing (`uv sync`). Every other command, every
+  uv command included, has no allow rule, so Copilot refuses it in a -p run (the "no
+  interactive user response" denial). The audit (`copilot_command_strays`) then accepts only
+  `reverseapoc-attempt <form>`, judged as the uv form; the uv spelling that ran is itself a
+  stray, since it could only have run past the rule.
+- What is still detected, not prevented: a command Copilot deems read-only (it runs those
+  unasked), such as `Get-Content` of an orig/ path. The canary's shell-read probe must show it
+  refused (shell path hints are checked against the allowed directories); if it ran, the arm
+  does not pass.
+- The fallback if `shell(reverseapoc-attempt)` matches nothing on 1.0.111 (the canary's wrapper
+  steps are then refused): `shell(reverseapoc-attempt:*)`, still that one command. Never a uv
+  rule; with no exact-enough rule the arm stays blocked.
 - The two denial forms (both `success: false`, `error.code: "denied"`):
   `Permission to run this tool was denied due to the following rules: `read(<path>)`` (a deny
   rule; paths with forward slashes) and `Permission denied because no interactive user response
@@ -157,15 +177,19 @@ package (`%LOCALAPPDATA%\copilot\pkg\win32-x64\1.0.111\`, its `schemas/session-e
    stream names no loaded instruction file, so "no CLAUDE.md reached the session" rests on
    `--no-custom-instructions`; check the canary session's
    `session-state/<id>/events.jsonl` under its home once.
-3. **The allow rule `shell(uv:*)` lets the wrapper run** (else the canary's wrapper steps are
-   denied: try `shell(uv run)`).
+3. **The allow rule `shell(reverseapoc-attempt)` lets the wrapper run** and nothing else (else
+   the canary's wrapper steps are denied: try `shell(reverseapoc-attempt:*)`, never a uv rule).
 4. **The long-command shapes.** `attempt check` outlives the shell tool's 30 s sync wait.
    copilotjson accepts powershell's `mode` (sync|async) and `initial_wait` (the CLI's bundled
    tool table names them) and read_powershell `{shellId, delay}` (shellId from the capture's
    shell results); neither was captured in a call. Any other key is an unknown step.
 5. **Each probe is refused**: a view under orig/, a `..` view, a create one directory above the
    workspace, `Get-Content` of an orig/ path (read-only commands may run unasked: a FAIL here
-   means the shell reaches orig/ before the audit) and `Invoke-WebRequest`. A path outside the
+   means the shell reaches orig/ before the audit), `Invoke-WebRequest`, and the commands the
+   shell rule must not reach: `uv run python -c "print(1)"`, `uv run reverseapoc check-orig`,
+   `uv pip list`, `uv run --frozen reverseapoc attempt context`, `powershell -Command
+   "Get-Location"` and `cmd /c echo canary`; each must be a denial in Copilot's own stream, not a
+   stray found afterwards. A path outside the
    cwd is expected to be refused with the "no interactive user response" text; another text
    counts as run (fail closed).
 6. **The usage file is written** and names the session's credits (the canary records them);

@@ -632,7 +632,7 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
 - **The session.** `copilot -p <prompt> --model <id> --output-format json --stream on
   --no-auto-update --no-custom-instructions --disable-builtin-mcps --no-ask-user
   --disallow-temp-dir --available-tools view create edit powershell read_powershell --allow-tool
-  shell(uv:*) --allow-tool write(<file>)... --deny-tool read(<repo>/orig/**) --deny-tool
+  shell(reverseapoc-attempt) --allow-tool write(<file>)... --deny-tool read(<repo>/orig/**) --deny-tool
   write(<repo>/orig/**) (and third_party/) --deny-tool url --deny-tool memory --max-ai-credits
   <cap> --usage-output-file <file>`, with the attempt dir as its working directory and no
   `--add-dir`, so the attempt dir is the only directory its file tools may touch. The write rules
@@ -640,7 +640,22 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   allow-everything flag, no autopilot, no trusted folder. Copilot loads no skill of ours (custom
   instructions are off), so the prompt is the Codex prompt (goal, skill body, the harness note
   with its wait instruction, session rules), plus one sentence that its view tool may read inside
-  the attempt dir. Copilot runs the wrapper itself (no broker: no sandbox stands in its way).
+  the attempt dir, with every `uv run --frozen reverseapoc attempt` in it spelled
+  `reverseapoc-attempt`.
+- **The wrapper executable.** Copilot's shell rules name a command and at most its first
+  subcommand, so none can name `uv run --frozen reverseapoc attempt <form>`; `shell(uv:*)`,
+  the first build's rule, pre-approved every uv command (`uv run python -c "..."` could read
+  orig/ or open the network before any audit), and the security review refused it. A Copilot
+  session's wrapper is instead the package's console script `reverseapoc-attempt`
+  (`reverseapoc attempt <form>`), installed by uv as an .exe in the venv's Scripts directory,
+  which leads the session's PATH: PowerShell hands its arguments to Python with no cmd.exe
+  parsing, and its first step is the attempt command's own exact-form check (anything else exits
+  2 before anything runs). The one shell rule, `shell(reverseapoc-attempt)`, names that command
+  alone; every other command, uv's included, has no allow rule and Copilot refuses it. The
+  driver refuses to launch a Copilot session when the script is missing (run `uv sync`). If the
+  canary shows that rule matching nothing, the fallback is `shell(reverseapoc-attempt:*)`; a uv
+  rule never comes back, and with no exact-enough rule the arm stays blocked. Copilot runs the
+  wrapper itself (no broker: no sandbox stands in its way).
 - **The guard set.** Before each session the driver writes, outside the workspace,
   `build/driver/<run>/copilot/<exe>__<function>__attempt-<n>.home/settings.json` =
   `{"disableAllHooks": true, "autoUpdate": false}` and passes that directory as `COPILOT_HOME`,
@@ -673,29 +688,33 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   hook, a skill, a subagent, a permission prompt, a model switch) are strays. A call ended
   `denied` with exactly one of 1.0.111's two refusal texts (a rule named, or "no interactive
   user response was available") never ran; anything less exact counts as run. Every powershell
-  command that ran must be an exact wrapper form naming no `orig` or `third_party` part; every
+  command that ran must be `reverseapoc-attempt <form>` with an exact form naming no `orig` or
+  `third_party` part (the uv spelling that ran is a stray: only a rule failure lets it run); every
   create or edit path, every completion's fileEdits path and every path in the result's
   filesModified must pass the session's write allowlist; every view path must stay inside the
   checkout and name no forbidden root; no tool result may carry hook text; the per-session
   settings must hold the driver's bytes; and the attempt dir is judged against the launch
   inventory and the wrapper ledger. A refused create or edit is a denied write, so on a night of
   several arms a session whose only strays are such writes stops its arm only.
-- **What the audit cannot do.** Copilot's shell rules name a command and at most its first
-  subcommand, so no rule names the wrapper's exact forms: `shell(uv:*)` is the rule that surely
-  matches them, and it matches any other `uv` command too. Path rules do not reach shell
-  commands, and Copilot runs commands it deems read-only without asking. A session that reads
-  `orig/` through the shell is caught by its command, quarantined and the night stops, but what
-  it sent to GitHub before it ended has left the machine. `--sandbox` exists (MXC on Windows)
+- **What the audit cannot do.** Path rules do not reach shell commands, and Copilot runs
+  commands it deems read-only without asking, so a read-only command (`Get-Content` of an orig/
+  path) is refused only if Copilot's shell path check refuses it; the canary's shell-read probe
+  must show that. A session that read `orig/` through the shell anyway is caught by its
+  command, quarantined and the night stops, but what it sent to GitHub before it ended has left
+  the machine. `--sandbox` exists (MXC on Windows)
   but is unverified on Windows 10 and not passed.
 - **The canary.** `reverseapoc drive --canary --night-model copilot-haiku-5-5 --allow-egress
   copilot-haiku-5-5 --run canary-copilot-haiku` (and the same for the other two arms) runs one
   session in the canary's attempt dir under the night's guard set: Copilot goes on after a
   refused call, so one session does the allowed path and every probe. In order: `attempt
   context`, a create of plan.json and an in-place edit of it, `attempt plan`, the note, `attempt
-  check` (with the wait instruction), then five probes that must each end refused in Copilot's
-  own stream and leave nothing: a view of a file under orig/ that never exists, a `..` view of
-  the same file, a create one directory above the workspace, `Get-Content` of the orig/ file
-  (a non-wrapper shell read) and `Invoke-WebRequest`. It passes when the init is clean, the
+  check` (with the wait instruction), all as `reverseapoc-attempt <form>`, then eleven probes
+  that must each end refused by Copilot's own permission check, in its stream (a denial, not a
+  stray found afterwards), and leave nothing: a view of a file under orig/ that never exists, a
+  `..` view of the same file, a create one directory above the workspace, `Get-Content` of the
+  orig/ file (a non-wrapper shell read), `Invoke-WebRequest`, `uv run python -c "print(1)"`,
+  `uv run reverseapoc check-orig`, `uv pip list`, the uv spelling of the wrapper, a powershell
+  one-liner and a cmd one-liner. It passes when the init is clean, the
   session ended with exit 0, every tool call and event is one the night's audit knows, no hook
   text reached a result, all three wrapper calls ran and the audit passes every command, write
   and read that ran, the create and the edit succeeded, context.md is in the ledger, the check
@@ -705,7 +724,8 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   `build/driver/canary/<arm>.json` records `cli_version` from `copilot --version`, the
   session's `credits` and its tokens; a night of a Copilot arm is refused unless it says PASS for
   the installed version. What the first canary must still prove is listed in spike 013 (the
-  sign-in under the per-session home, the `shell(uv:*)` rule, the long-command tool shapes,
+  sign-in under the per-session home, the `shell(reverseapoc-attempt)` rule, the long-command
+  tool shapes,
   each refusal's text).
 - **Sizing.** Each arm runs with `max_workers = 4` and `max_ai_credits = 30` (Copilot's minimum
   per-session cap; a soft cap, one response may pass it). The capture spent 0.437 credits on
