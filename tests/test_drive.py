@@ -2658,7 +2658,8 @@ def test_a_dry_run_without_budgets_has_no_budget_lines(tmp_path, capsys):
 
 
 @pytest.mark.parametrize(("arms", "budgets", "words"), [
-    (((SONNET, 1),), _budgets((SONNET, "$5")), (SONNET, "quota.toml", HAIKU)),
+    ((("claude-fable-5-1", 1),), _budgets(("claude-fable-5-1", "$5")),
+     ("claude-fable-5-1", "quota.toml", HAIKU)),
     (((HAIKU, 1),), _budgets((HAIKU, "100%5h")), (HAIKU, "%5h", "%week")),
     (((HAIKU, 1),), _budgets((HAIKU, "0.005%week")), (HAIKU, "0 sessions")),
     (((HAIKU, 1),), _budgets((SONNET, "$5")), (SONNET, "no arm of this run")),

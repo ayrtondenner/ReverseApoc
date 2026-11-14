@@ -50,6 +50,17 @@ def test_parse_budget_refuses(text):
 # ---- config/driver/quota.toml ----
 
 
+def test_sonnet_has_an_estimated_quota_entry():
+    """Owner, 2026-11-14: half of a 20%week spend goes to Sonnet 5.5 beside Opus. No meter
+    reading exists yet, so its figure is an estimate (half of Opus's 0.1, as GitHub's per-token
+    prices for Sonnet 5.5 are half of Opus 5.5's), marked to re-measure."""
+    entry = load_quota()["claude-sonnet-5-5"]
+    assert entry.plan.name == "Claude Code Ultra" and entry.estimate
+    assert entry.per_session == {quota.WEEK: Decimal("0.05")}
+    sizing = size("claude-sonnet-5-5", parse_budget("10%week"), load_quota(), max_sessions=None)
+    assert sizing.sessions == 200
+
+
 def test_the_committed_table_loads_with_its_plans_named_in_config():
     """The plans come from the file, the seeded per-session figures from docs/model-routing.md
     "Quota per session", and the measured rates from docs/model-comparison.md "Cascade
