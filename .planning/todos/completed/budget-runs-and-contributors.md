@@ -34,3 +34,12 @@ depends_on: the usage-meter todo (measured quota per arm) and docs/model-routing
   the commit trailers.
 - Rules from CLAUDE.md that apply to them (no game files or build output in commits, the
   hard rules, the agent runtimes allowed).
+
+## Result (2026-11-13, batch unit 6)
+
+Built: `--arm-budget`, `config/driver/quota.toml`, the dry-run budget table, the meter seam
+(`Deps.meter`, default no reading), the README contributor guide and the `drive-budget` skill.
+Not wired: the meter seam to `reverseapoc meters`. On 2026-11-13 no meter moves during a night
+(Claude's figure is the usage panel's cache, Codex's is the last interactive session, Copilot
+drive sessions log under their own COPILOT_HOME), so the session cap is the budget's real bound;
+wire it when a meter reads live (todo `budget-meter-wiring`).

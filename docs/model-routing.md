@@ -538,7 +538,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   has one known refusal, 1.5.8's deny-rule one with no warning line: `permission check failed
   for write_file "<target>": Permission denied for write_file(<target>). Matches
   user-configured deny rule.`. Its soft-deny form was never captured, so such a step counts as
-  run (fail closed). The action must fit
+  run (fail closed). A `read_file` step a deny rule refused on 1.5.8 has the same form with
+  `read_file` (the coordinator's capture of 2026-11-13; the canary's orig/ read probes meet
+  it), and both forms are denials. The same capture shows 1.5.8 no longer soft-denying an
+  unconfigured `edit_file` (or read) inside the session's workspace: it ran with no rule
+  naming it, so only the audit's write allowlist catches a stray edit there, and it stops the
+  night instead of the edit being refused. The action must fit
   the tool, and the target must be the step's own request: the command as written, or the
   path as agy canonicalizes it (slashes forward, `..` folded, case kept). Anything less exact
   counts as run, and an unknown or subagent step stays a stray whatever state it ends in. The
