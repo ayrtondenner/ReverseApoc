@@ -32,6 +32,7 @@ from test_progress import (
     item_toml,
     load_progress,
     member,
+    shown,
     synthetic_config,
     tick_config,
     tick_members,
@@ -189,8 +190,10 @@ def test_page_headline_shows_three_figures(tmp_path):
 
 
 def test_page_headline_on_committed_csvs():
+    """On the progress main publishes (signed asm rows moved out), the headline is
+    progress.json's three figures."""
     progress = page_module()
-    derived = progress.derive(CONFIG)
+    derived = shown(progress, CONFIG)
     page = progress.render_html(derived, SHA)
     for exe in derived.exes:
         t = progress.build_progress(derived)["exes"][exe.stem]

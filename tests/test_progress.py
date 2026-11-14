@@ -348,13 +348,35 @@ def test_fuzzy_counts_a_small_partial_row(tmp_path):
     assert doc["combined"]["fuzzy_percent"] == round((1600 + 1600 + 320 / 100) / 276, 4)
 
 
+def test_best_percent_above_100_is_refused(tmp_path):
+    """status.py's writer caps best_percent at 100 (check_row); the reader refuses a row past it,
+    which would otherwise push the fuzzy figure past its bound."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    path = status_path(config, "ufo2p")
+    text = path.read_text(encoding="utf-8")
+    assert ",50.00," in text
+    path.write_text(text.replace(",50.00,", ",150.00,"), encoding="utf-8")
+    with pytest.raises(progress.ProgressError, match="best_percent '150.00'"):
+        progress.derive(config)
+    assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 2
+
+
+def shown(progress, config: Path):
+    """What main publishes from `config`: derive's progress with the signed asm rows moved out."""
+    derived = progress.derive(config)
+    found = progress.derive_mechanics(config, derived)
+    return progress.exclude_assembler(derived, found.assembler) if found else derived
+
+
 @pytest.mark.parametrize("which", ["synthetic", "committed"])
 def test_report_reuses_the_figures(tmp_path, which):
     """report.json's fuzzy_match_percent and matched_functions_percent are progress.json's
-    fuzzy_percent and functions_percent, per EXE category and combined: derived once."""
+    fuzzy_percent and functions_percent, per EXE category and combined: derived once, on the
+    progress main publishes (signed asm rows moved out)."""
     progress = load_progress()
     config = synthetic_config(tmp_path) if which == "synthetic" else CONFIG
-    derived = progress.derive(config)
+    derived = shown(progress, config)
     report = progress.build_report(derived)
     doc = progress.build_progress(derived)
     pairs = [(report["measures"], doc["combined"])]
