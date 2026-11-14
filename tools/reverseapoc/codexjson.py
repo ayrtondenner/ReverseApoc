@@ -34,6 +34,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import stat
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
@@ -65,6 +66,22 @@ _WINDOWS_SHELLS = frozenset({r"c:\windows\system32\windowspowershell\v1.0\powers
                              r"c:\program files\powershell\7\pwsh.exe",
                              *([_STORE_PWSH] if _STORE_PWSH else [])})  # fmt: skip
 _SHELL_FLAGS = (["-command"], ["-noprofile", "-command"])  # casefolded, before the one <cmd>
+
+
+def _reparse_tag(path: str) -> int:
+    """The path's reparse tag (0: none, or no such file); never follows it."""
+    try:
+        return getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return 0
+
+
+def _a_shell(path: str) -> bool:
+    """One of _WINDOWS_SHELLS; the Store alias only while it is still an app-execution link,
+    as its folder is the user's to write (security review of c52f82c5)."""
+    if path not in _WINDOWS_SHELLS:
+        return False
+    return path != _STORE_PWSH or _reparse_tag(path) == stat.IO_REPARSE_TAG_APPEXECLINK
 
 
 def _mapping(value: object) -> Mapping:
@@ -167,7 +184,7 @@ def _unwrapped(text: str) -> str:
     if found is None:
         return text
     program = found.group("dq") or found.group("sq") or found.group("bare")
-    if _PATH_SEPARATORS.sub(r"\\", program).casefold() not in _WINDOWS_SHELLS:
+    if not _a_shell(_PATH_SEPARATORS.sub(r"\\", program).casefold()):
         return text
     try:
         args = shlex.split(text[found.end():])
