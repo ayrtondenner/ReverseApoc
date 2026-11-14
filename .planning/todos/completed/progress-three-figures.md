@@ -36,3 +36,10 @@ Do (test first, in `tools/progress.py`, stdlib-only, same determinism rules as t
 
 Done when tests and ruff pass in the container, two runs over the same CSVs give the same bytes,
 and the page shows the three figures for both EXEs.
+
+## Result (2026-11-14)
+
+Built: `functions_percent` and `fuzzy_percent` in progress.json (shared with report.json), the
+page headline with three defined figures, `progress-shield-functions*` and `progress-shield-fuzzy*`
+endpoints, and README badges per EXE. Existing shields and report.json unchanged byte for byte;
+`decomphub.progress.json` and `.recomp.json` left as they are.
