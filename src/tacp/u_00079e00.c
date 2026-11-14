@@ -29,7 +29,11 @@ L7A051:;
     return 0;
 }
 
-INCLUDE_ASM(func_0007A060);
+unsigned char func_0007A060(unsigned char r_eax)
+{
+    if (r_eax != 0) r_eax = r_eax | 0x40;
+    return r_eax;
+}
 
 unsigned char func_0007A070(unsigned char r_eax)
 {
