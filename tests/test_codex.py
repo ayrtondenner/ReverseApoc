@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import replace
@@ -397,6 +398,20 @@ def test_audit_passes_the_store_pwsh_alias_of_this_user():
     for other in others:
         bad = f"\"{other}\" -Command '{WRAPPER} context'"
         assert driver.codex_command_strays(codexjson.commands(_ran(bad))), other
+
+
+def test_the_store_pwsh_alias_counts_only_while_it_is_an_app_execution_link(monkeypatch):
+    """Security review of c52f82c5: the alias folder is the user's to write, so the path alone
+    is not trusted. At audit time the alias must still be an app-execution link (reparse tag
+    IO_REPARSE_TAG_APPEXECLINK); a regular file or another reparse point there is no shell, and
+    the command is audited as written (a stray)."""
+    alias = os.path.join(os.environ["LOCALAPPDATA"], "Microsoft", "WindowsApps", "pwsh.exe")
+    command = f"\"{alias}\" -Command '{WRAPPER} context'"
+    for tag in (0, 0xA000000C):  # a regular file; a symbolic link
+        monkeypatch.setattr(codexjson, "_reparse_tag", lambda path, tag=tag: tag)
+        assert driver.codex_command_strays(codexjson.commands(_ran(command))), hex(tag)
+    monkeypatch.setattr(codexjson, "_reparse_tag", lambda path: stat.IO_REPARSE_TAG_APPEXECLINK)
+    assert driver.codex_command_strays(codexjson.commands(_ran(command))) == []
 
 
 @pytest.mark.parametrize("command", [
