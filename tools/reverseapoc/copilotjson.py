@@ -82,8 +82,14 @@ def _seconds(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and value >= 0
 
 
+def _line_range(value: object) -> bool:
+    """view's `view_range` (night 20261114-nearmiss): [start, end], two integers."""
+    return (isinstance(value, list) and len(value) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in value))  # fmt: skip
+
+
 _SHAPES: dict[str, tuple[dict, dict]] = {
-    VIEW: ({"path": _text}, {}),
+    VIEW: ({"path": _text}, {"view_range": _line_range}),
     CREATE: ({"path": _text, "file_text": _text}, {}),
     EDIT: ({"path": _text, "old_str": _text, "new_str": _text}, {}),
     SHELL: ({"command": _text}, {"description": _text, "mode": lambda v: v in ("sync", "async"),
@@ -311,9 +317,26 @@ def denials(events: Sequence[dict]) -> list[Denial]:
     return [found for call in calls(events) if (found := denial(call)) is not None]
 
 
+# night 20261114-nearmiss: an edit of a path that does not exist fails with code `failure` and
+# this exact text before Copilot's permission check (an edit of an existing file outside the
+# write rules is refused, `denied`: the coordinator's probe the same night), so it wrote nothing
+_FAILURE_CODE = "failure"
+_ENOENT = "Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
+
+
+def _missing_edit(call: Call) -> bool:
+    """A known edit that failed with exactly ENOENT on its own path: it wrote nothing."""
+    done = _mapping(call.complete)
+    error = _mapping(done.get("error"))
+    return (call.tool == EDIT and known(call) and done.get("success") is False
+            and error.get("code") == _FAILURE_CODE
+            and error.get("message") == _ENOENT.format(path=request(call)))  # fmt: skip
+
+
 def _ran(events: Sequence[dict], tools: frozenset[str]) -> list[Call]:
     return [call for call in calls(events)
-            if call.tool in tools and known(call) and denial(call) is None]  # fmt: skip
+            if call.tool in tools and known(call) and denial(call) is None
+            and not _missing_edit(call)]  # fmt: skip
 
 
 def commands(events: Sequence[dict]) -> list[str]:
