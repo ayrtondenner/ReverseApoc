@@ -388,23 +388,44 @@ def test_copilotjson_a_view_of_the_sessions_own_spill_is_no_read():
                                      *_call("t2", "view", {"path": elsewhere})]) == [elsewhere]
 
 
+def test_copilot_audit_passes_wrapper_forms_chained_with_semicolons_only():
+    """Night 20261114-lanesC4: Copilot ran `reverseapoc-attempt context; reverseapoc-attempt
+    asm` in one powershell call (its shell rule allowed each part). A chain whose every part,
+    split on `;`, is an exact wrapper form is those forms; an empty part, another separator, or
+    any part that is not an exact form is still a stray."""
+    wrapper = session.COPILOT_WRAPPER
+    ok = (f"{wrapper} context; {wrapper} asm", f"{wrapper} context;{wrapper} plan")
+    for command in ok:
+        assert driver.copilot_command_strays([command]) == [], command
+    bad = (f"{wrapper} context; whoami", f"{wrapper} context && {wrapper} asm",
+           f"{wrapper} context;", f"; {wrapper} context", f"{wrapper} context | {wrapper} asm",
+           f"{wrapper} context; uv run --frozen reverseapoc attempt asm")
+    for command in bad:
+        assert driver.copilot_command_strays([command]), command
+
+
 def test_copilotjson_a_file_tool_ignores_keys_no_cli_schema_has():
     """Nights 20261114-nearmiss7 and -lanesC3: create carried `file_path: "x"` and
-    `description: "Create check-note.json"`; the CLI's schemas have neither, drop them, and
-    wrote through `path` (the write is still judged from path and fileEdits). An extra key is
-    known on view, create and edit only if no CLI file-tool schema defines it; a key some
-    schema gives a meaning (command, insert_line, actions, view_range[0]) stays unknown, and so
-    does any extra key on powershell (todo copilot-extra-argument-keys)."""
+    `description: "Create check-note.json"`, which the CLI drops; it wrote through `path`.
+    Security review of 469cab57 (an allowlist, not a denylist): only those two observed keys,
+    only on create and edit, and only when the completion's fileEdits name exactly the call's
+    own path, are excused. Any other extra key, any extra key on view or powershell, and a
+    completion with no fileEdits or with another path stay unknown (fail closed)."""
     note = f"{WS}\\check-note.json"
     for extra in ({"description": "Create check-note.json"}, {"file_path": "x"}):
         call = _call("t1", "create", {"path": note, "file_text": "{}", **extra},
                      edits=((note, "create"),))
         assert copilotjson.unknown_steps([_start(), *call]) == [], extra
         assert copilotjson.write_targets([_start(), *call]) == [note]
-    for extra in ({"command": "str_replace"}, {"insert_line": 3}, {"actions": []},
-                  {"view_range[0]": 1}):
-        call = _call("t1", "create", {"path": note, "file_text": "{}", **extra})
+        for edits in ((), ((f"{WS}\\other.json", "create"),)):
+            call = _call("t1", "create", {"path": note, "file_text": "{}", **extra}, edits=edits)
+            assert copilotjson.unknown_steps([_start(), *call]), (extra, edits)
+    for extra in ({"label": "x"}, {"command": "str_replace"}, {"insert_line": 3}):
+        call = _call("t1", "create", {"path": note, "file_text": "{}", **extra},
+                     edits=((note, "create"),))
         assert copilotjson.unknown_steps([_start(), *call]), extra
+    view = _call("t1", "view", {"path": note, "description": "read it"})
+    assert copilotjson.unknown_steps([_start(), *view])
     shell = _call("t1", "powershell", {"command": "reverseapoc-attempt check", "label": "x"})
     assert copilotjson.unknown_steps([_start(), *shell])
 
