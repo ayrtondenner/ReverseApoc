@@ -142,6 +142,46 @@ def test_build_copilot_argv(tmp_path):
                    "--allow-all-urls", "--add-dir", "--trust-folder", "--autopilot"):
         assert banned not in argv, banned
     assert list(copilotjson.AVAILABLE_TOOLS) == argv[15:20]
+    # security review (coordinator, 2026-11-13): the one shell rule names the dedicated wrapper
+    # executable only, never uv (uv:* would pre-approve `uv run python -c ...`)
+    assert session.COPILOT_SHELL_RULE == "shell(reverseapoc-attempt)"
+    shell = [arg for arg in argv if arg.startswith("shell(")]
+    assert shell == [session.COPILOT_SHELL_RULE]
+
+
+def test_the_wrapper_executable_is_the_attempt_wrapper(monkeypatch):
+    """`reverseapoc-attempt <form>` (a console script of the package, so Windows starts it as
+    an .exe with no cmd.exe parsing) is `reverseapoc attempt <form>`, whose own first step
+    refuses anything but an exact form of the session's kind."""
+    import tomllib
+
+    from reverseapoc import cli
+
+    scripts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert scripts["project"]["scripts"][session.COPILOT_WRAPPER] == "reverseapoc.cli:attempt_main"
+    seen = []
+    monkeypatch.setattr(cli, "main", lambda argv=None: seen.append(argv) or 0)
+    assert cli.attempt_main(["check", "--sweep"]) == 0
+    assert seen == [["attempt", "check", "--sweep"]]
+
+
+def test_the_wrapper_executable_refuses_a_non_form(monkeypatch, capsys):
+    """A form outside the session kind's list exits 2 before anything runs: refused by the
+    parser (extra arguments) or by the wrapper's own form check (a matching-only verb in a
+    readability session)."""
+    from reverseapoc import attempt, cli
+
+    ran = []
+    for name in ("cmd_check", "cmd_plan", "cmd_context", "cmd_asm"):
+        monkeypatch.setattr(attempt, name, lambda *a, **kw: ran.append(a) or 0)
+    for bad in (["context", "extra"], ["asm", "a", "b"], ["check", "--src", "x"]):
+        with pytest.raises(SystemExit) as stop:
+            cli.attempt_main(bad)
+        assert stop.value.code == 2, bad
+    monkeypatch.setenv(attempt.SESSION_KIND_ENV, "readability")
+    assert cli.attempt_main(["plan"]) == 2
+    assert ran == []
+    assert "accepts only" in capsys.readouterr().err
 
 
 def test_copilot_arms_load():
@@ -219,7 +259,25 @@ def test_copilot_prompt():
     assert "name: watcom-decomp" not in text
     assert session.WAIT_NOTE in text and "Harness note" in text
     assert "view tool may also read files inside this attempt's directory" in text
-    assert "Session rules" in text and WRAPPER in text
+    # the session's wrapper is the dedicated executable, in the goal, the skill and the rules
+    assert "Session rules" in text and f"`{session.COPILOT_WRAPPER} check`" in text
+    assert WRAPPER not in text
+
+
+def test_copilot_session_path_leads_with_the_wrapper_executable(tmp_path, capsys, monkeypatch):
+    """The session's PATH starts with the directory of the driver's own interpreter (the
+    package's console scripts, reverseapoc-attempt among them), so the bare name the shell
+    rule allows resolves to the checkout's wrapper."""
+    import os
+
+    rig, night, env = copilot_night(tmp_path, monkeypatch)
+    code, _, err = _run(capsys, rig, env)
+    assert code == 0, err
+    launched = night.launched[0].env
+    (key,) = [name for name in launched if name.upper() == "PATH"]
+    first = launched[key].split(os.pathsep)[0]
+    assert Path(first) == Path(sys.executable).parent
+    assert driver.copilot_wrapper_exe() is not None
 
 
 LEAKS = {"OPENAI_API_KEY": "made-up-openai-0001", "OPENROUTER_API_KEY": "made-up-0004",
@@ -556,6 +614,9 @@ def test_copilot_guard_set_and_env(tmp_path, capsys, monkeypatch):
 
 AUDIT_CASES = {  # name: (scenario, spec, words in the STOPPED detail)
     "non-wrapper command": ("stray_command", None, "Get-Content notes.md"),
+    # Copilot's rule allows only reverseapoc-attempt, so a uv form that ran is a stray
+    "uv wrapper form": ("uv_wrapper", None, "uv run --frozen reverseapoc attempt check"),
+    "wrapper with an extra argument": ("wrapper_extra", None, "check --src x"),
     "read naming third_party": ("orig_read", None, "third_party"),
     "write outside the allowlist": ("stray_write", None, "tools/x.py"),
     "unknown tool": ("unknown_tool", None, "web_fetch"),
@@ -718,14 +779,19 @@ def test_copilot_canary_prompt(tmp_path):
     attempt_dir = tmp_path / "build" / "driver" / "canary" / "r" / "ufo2p" / "f" / "attempt-1"
     text = driver.copilot_canary_prompt(attempt_dir, 13, repo=tmp_path)
     probe = f"{tmp_path.as_posix()}/orig/{driver.COPILOT_CANARY_PROBE}"
-    for needle in (f"{WRAPPER} context", f"{WRAPPER} plan", f"{WRAPPER} check",
+    wrapper = session.COPILOT_WRAPPER
+    for needle in ('uv run python -c "print(1)"', "uv run reverseapoc check-orig", "uv pip list",
+                   f"{WRAPPER} context", 'powershell -Command "Get-Location"',
+                   "cmd /c echo canary"):
+        assert needle in text, needle
+    for needle in (f"{wrapper} context", f"{wrapper} plan", f"{wrapper} check",
                    f"{attempt_dir.as_posix()}/plan.json", '"frame": "canary-edited"',
                    f"{attempt_dir.as_posix()}/check-note.json", probe,
                    f"{attempt_dir.as_posix()}/../../../../../../../orig/",
                    f"{attempt_dir.parent.as_posix()}/{driver.COPILOT_CANARY_OUTSIDE}",
                    f"Get-Content -Path '{probe}'", driver.CODEX_CANARY_FETCH, session.WAIT_NOTE):
         assert needle in text, needle
-    assert text.index(f"{WRAPPER} check") < text.index(probe)
+    assert text.index(f"{wrapper} check") < text.index(probe)
 
 
 def test_copilot_canary_pass(tmp_path, capsys):
@@ -739,7 +805,9 @@ def test_copilot_canary_pass(tmp_path, capsys):
     for needle in ("init", COPILOT_VERSION, "attempt context", "attempt plan", "attempt check",
                    "context.md", "0001.note.json", "ledger", "settings", "hook",
                    "plan.json", "credits", *(f"the {name} probe was refused" for name in (
-                       "orig read", "dot-dot read", "outside write", "shell read", "fetch"))):
+                       "orig read", "dot-dot read", "outside write", "shell read", "fetch",
+                       "uv python", "uv check-orig", "uv pip", "uv wrapper form",
+                       "powershell one-liner", "cmd one-liner"))):
         assert needle in texts, needle
     (launch,) = rig.launches
     assert launch.cwd == rig.repo / doc["attempt_dir"]
