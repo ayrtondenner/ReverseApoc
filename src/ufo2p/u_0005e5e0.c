@@ -8,7 +8,6 @@
 #include "common.h"
 
 INCLUDE_ASM(func_0005E610);
-INCLUDE_ASM(func_0005E650);
 INCLUDE_ASM(func_0005E690);
 
 /* Number of entries in the slot table at 0x0014D9F0 (the loop bound, 0x12C). */
@@ -22,7 +21,38 @@ struct slot_entry {
     /* 0x02 */ u8 rest_02[SLOT_ENTRY_REST_SIZE];
 }; /* size: 0x10 */
 
+/* One 10-byte record at D_0017DF1C; only the leading s16 state is read here. */
+struct unk_000A {
+    /* 0x00 */ s16 state;
+    /* 0x02 */ u8 rest_02[0x08];
+}; /* size: 0x0A */
+
 extern struct slot_entry slot_table[];
+extern char D_0017DF1C[];
+
+/* func_0005E650: report whether any record from index 10 to 149 has a state other than 0 or 12.
+ * Returns 1 at the first such record, else 0. What the states mean is not known yet.
+ * Evidence: the listing walks 140 records of 0x0A bytes from D_0017DF1C, starting at index 10.
+ */
+int func_0005E650(void)
+{
+    struct unk_000A *p;
+    s16 i;
+    int r;
+
+    p = (struct unk_000A *)D_0017DF1C;
+    i = 10;
+    r = 0;
+    do {
+        if (p->state != 0 && p->state != 12) {
+            r = 1;
+            break;
+        }
+        i++;
+        p++;
+    } while (i < 150);
+    return r;
+}
 
 /* slot_table_has_zero_id: report whether any slot has id zero
  * Walks all 300 entries of the table at 0x0014D9F0 and returns 1 at the first
