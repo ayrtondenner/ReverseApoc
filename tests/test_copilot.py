@@ -424,6 +424,31 @@ def test_copilotjson_a_call_the_cli_rejected_as_invalid_never_ran():
     assert copilotjson.unknown_steps([_start(), *_call("t1", "edit", bad)])
 
 
+def test_copilotjson_only_an_edit_missing_a_required_field_is_excused():
+    """Security review of the rejected-call rule: only an edit, rejected in one of the CLI's two
+    exact forms (`Invalid inputs: <f> is required`; night 20261114-nearmiss4's `"<f>": Required`)
+    naming a required field (path, old_str) that the call really lacks, with no fileEdits, is
+    excused. A named field the call has, another tool, a sandbox-bypass request, or edits on
+    the completion stay unknown (fail closed)."""
+    no_path = {"old_str": "a", "new_str": "b"}
+    seen = [_start(), *_call("t1", "edit", no_path, ok=False, error='"path": Required',
+                             code="failure")]  # fmt: skip
+    assert copilotjson.unknown_steps(seen) == [] and copilotjson.write_targets(seen) == []
+    has_old = {"path": f"{WS}\\x.txt", "old_str": "a", "made_up": 1}
+    assert copilotjson.unknown_steps([_start(), *_call(
+        "t1", "edit", has_old, ok=False, error="Invalid inputs: old_str is required",
+        code="failure")])  # fmt: skip
+    assert copilotjson.unknown_steps([_start(), *_call(
+        "t1", "edit", no_path, ok=False, error='"new_str": Required', code="failure")])
+    bypass = {"command": "x", "requestSandboxBypass": True}
+    assert copilotjson.unknown_steps([_start(), *_call(
+        "t1", "powershell", bypass, ok=False, error="Invalid inputs: command is required",
+        code="failure")])  # fmt: skip
+    edited = [_start(), *_call("t1", "edit", no_path, ok=False, error='"path": Required',
+                               code="failure", edits=((f"{WS}\\x.txt", "edit"),))]  # fmt: skip
+    assert copilotjson.unknown_steps(edited)
+
+
 def _enoent(path: str) -> str:
     return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
 
