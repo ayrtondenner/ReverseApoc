@@ -72,7 +72,25 @@ void func_00095800(int who, int index, short value)
     }
 }
 
-INCLUDE_ASM(func_00095850);
+extern unsigned char D_00276BD4[];
+void func_00095630(int who);
+
+void func_00095850(void)
+{
+    int who;
+    int off;
+
+    who = 0;
+    off = 0;
+    do {
+        if (D_00276BD4[off] == 1) {
+            func_00095630(who);
+        }
+        who++;
+        off += 0x72;
+    } while (who < 0x64);
+}
+
 INCLUDE_ASM(func_00095880);
 INCLUDE_ASM(func_00095CA0);
 INCLUDE_ASM(func_00096130);
