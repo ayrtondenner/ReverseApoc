@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import cli, driver, hooks
+from reverseapoc import cli, contextpack, driver, hooks
 from reverseapoc.driver import DriveOptions, ExeWorld, PackInfo, Seams
 from reverseapoc.functions import FunctionRow, write_functions_csv
 from reverseapoc.picker import Pick
@@ -72,9 +72,12 @@ class Packs:
     """The fake pack builder: writes a context.md where the real one would and records it."""
 
     built: list[tuple[str, int, Path]] = field(default_factory=list)
+    over_cap: frozenset[int] = frozenset()  # starts whose pack raises PackOverCap
 
     def for_exe(self, exe: str):
         def pack(pick: Pick, directory: Path) -> PackInfo:
+            if pick.start in self.over_cap:
+                raise contextpack.PackOverCap(pick.name, 25462, contextpack.PACK_CAP)
             _write(directory / "context.md", f"made-up pack of {pick.name}\n")
             self.built.append((pick.exe, pick.start, directory))
             return PackInfo(1000 + len(self.built), ())
@@ -225,6 +228,29 @@ def test_dry_run_text_lists_the_picks(tmp_path, capsys):
     lines = [line for line in out.splitlines() if line.startswith(("ufo2p", "tacp"))]
     assert len(lines) == 10
     assert lines[0].split()[:3] == ["ufo2p", "0x00010000", "ufo2p_f0"]
+
+
+def test_dry_run_lists_an_over_cap_pack_instead_of_refusing(tmp_path, capsys):
+    """Quick 261113 left a function whose pack is over the cap for the night; the dry run
+    refused the whole run on it (night 20261114, func_00042790, 25462 bytes). It now prints the
+    night's OVER_CAP_LINE for that pick, its document carries `over_cap` {size, cap} and no
+    pack, and the other picks are listed as before."""
+    rig = Rig(tmp_path)
+    rig.packs.over_cap = frozenset({0x00010000})
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    picks = json.loads(out)["picks"]
+    assert len(picks) == 10
+    first = picks[0]
+    assert (first["start"], first["over_cap"]) == (
+        "0x00010000", {"size": 25462, "cap": contextpack.PACK_CAP})  # fmt: skip
+    assert "pack" not in first and all("pack" in p for p in picks[1:])
+    rig = Rig(tmp_path / "text")
+    rig.packs.over_cap = frozenset({0x00010000})
+    code, out, _ = rig.drive(capsys, dry_run=True)
+    assert code == 0
+    assert driver.OVER_CAP_LINE.format(label="ufo2p func_00010000 (ufo2p_f0)", size=25462,
+                                       cap=contextpack.PACK_CAP) in out  # fmt: skip
 
 
 def test_drive_builds_gate_argv(tmp_path):
