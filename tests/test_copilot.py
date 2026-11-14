@@ -388,6 +388,42 @@ def test_copilotjson_a_view_of_the_sessions_own_spill_is_no_read():
                                      *_call("t2", "view", {"path": elsewhere})]) == [elsewhere]
 
 
+def test_copilotjson_edit_follows_the_clis_own_schema():
+    """Copilot 1.0.111's bundled schema for edit is {path, old_str, new_str?} (cli-main.js,
+    read 2026-11-14): an edit without new_str is known and its path is a write."""
+    events = [_start(), *_call("t1", "edit", {"path": f"{WS}\\x.txt", "old_str": "a"})]
+    assert copilotjson.unknown_steps(events) == []
+    assert copilotjson.write_targets(events) == [f"{WS}\\x.txt"]
+
+
+def test_copilotjson_powershell_takes_the_clis_timeout_and_async_only():
+    """1.0.111's powershell schema adds timeout (number) and async (bool), both harmless; its
+    shellId (write to a running shell) and the sandbox-bypass requests stay unknown."""
+    for extra in ({"timeout": 600}, {"async": False}, {"timeout": 60, "async": True}):
+        call = _call("t1", "powershell", {"command": "reverseapoc-attempt check", **extra})
+        assert copilotjson.unknown_steps([_start(), *call]) == [], extra
+    for extra in ({"shellId": "0"}, {"requestSandboxBypass": True}, {"timeout": "60"},
+                  {"async": "yes"}, {"requestSandboxPermissive": True}):
+        call = _call("t1", "powershell", {"command": "reverseapoc-attempt check", **extra})
+        assert copilotjson.unknown_steps([_start(), *call]), extra
+
+
+def test_copilotjson_a_call_the_cli_rejected_as_invalid_never_ran():
+    """Night 20261114-nearmiss3: Haiku called edit with {path, new_str}; Copilot answered
+    `Invalid inputs: old_str is required`, code `failure`, and ran nothing. Such a rejected call
+    is not an unknown step and no write; the same shape completed any other way still is one,
+    and so is a call with no completion (fail closed)."""
+    bad = {"path": f"{WS}\\x.txt", "new_str": "b"}
+    rejected = [_start(), *_call("t1", "edit", bad, ok=False,
+                                 error="Invalid inputs: old_str is required", code="failure")]
+    assert copilotjson.unknown_steps(rejected) == [] and copilotjson.write_targets(rejected) == []
+    for error, code in (("made-up: Invalid inputs: old_str is required", "failure"),
+                        ("Invalid inputs: old_str is required", "denied"), ("boom", "failure")):
+        other = [_start(), *_call("t1", "edit", bad, ok=False, error=error, code=code)]
+        assert copilotjson.unknown_steps(other), (error, code)
+    assert copilotjson.unknown_steps([_start(), *_call("t1", "edit", bad)])
+
+
 def _enoent(path: str) -> str:
     return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
 
