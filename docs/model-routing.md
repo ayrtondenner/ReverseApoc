@@ -1154,3 +1154,50 @@ reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-
 
 The project skill `drive-budget` turns a plain request ("5% of my Claude plan via Haiku and $10
 of OpenRouter") into this command, shows the dry run and asks before it launches anything.
+
+## Near-miss lane
+
+The partial rows of `config/<exe>/status.csv` hold far more bytes than the matched ones, and
+many are close. The near-miss lane queues only those rows, so a night can spend some of its
+sessions where the byte percent moves most per session.
+
+- `--near-miss [MIN_PERCENT]` (bare: 80) sets the lane's minimum best_percent.
+  `--near-miss-arm NAME=WORKERS` (repeatable) runs the lane on arm NAME beside the `--arm` or
+  `--night-model` lanes, in the same drive: one lock, one audit, one commit queue. Its run id
+  is `<run>-NAME` when the night has more than one lane. With no `--arm` or `--night-model`,
+  the night runs only the near-miss lane. A `--near-miss-arm` without `--near-miss` uses 80.
+  Several near-miss arms share the lane's one queue, so each row runs on one of them.
+- Order: bytes left, `size * (100 - best_percent) / 100`, smallest first (the cheapest
+  finish). Ties go to the larger row, then the lower start.
+- Guards, as in the tier queue: never a matched row, a row already in flight, a row whose unit
+  another session holds, or a row on the signed asm list (verdict `asm`, or held). The other
+  lanes skip every row the near-miss lane queues, so no row is offered by two lanes.
+- No callee-first wait. The coordinator ruled on 2026-11-13, with the owner's delegation, that a
+  near-miss row already passed its callee gate once. Each row runs one pass per drive: a
+  capped pass leaves the lane until the drive ends. A drive that is stopped and started again
+  offers those rows again.
+- Each near-miss arm passes the same per-arm checks as an `--arm` arm: the backends.toml
+  entry, max_workers, `--allow-egress`, its canary PASS, and `--arm-budget`. An arm runs one
+  lane only, so the same arm cannot also be an `--arm`.
+- Refused with `--cascade`, `--fable-trial`, `--picks`, `--stratify`, `--canary`,
+  `--land-held` and `--session readability`. A night with `--near-miss` must also name a
+  `--near-miss-arm`. A dry run lists the lane without one.
+- The pack: a near-miss row's pack already carries its best earlier C ("Earlier best C", read
+  from `build/driver/<run>/.../best/<unit>.c`). The committed records hold only
+  `check.best_percent` and the give-up's first-difference text; they hold no C and no objdiff
+  diff. `build/` is never committed, so the best attempt's C may be missing from the machine
+  running the night. The section then says so plainly and names that attempt (`<run> attempt
+  <n>, <p>%`). With no earlier C at all, it says the attempt starts from the unit file. If a
+  weaker attempt's C is there, it says that this C is not the best one, then shows it.
+- `--dry-run` lists the other lanes' picks, then a `near-miss lane:` line (rows, minimum,
+  arms), then the lane's first `--max-sessions` rows, each line ending
+  `near-miss best <p>% bytes left <b> pass <n>`. The JSON document adds `near_miss`
+  {min_percent, rows, arms} and a `near_miss` {best_percent, bytes_left, pass} on each of the
+  lane's picks.
+
+```
+reverseapoc drive --dry-run --near-miss 90
+reverseapoc drive --arm claude-haiku-5-5=6 --arm gpt-6.1-terra=3 --allow-egress gpt-6.1-terra \
+  --near-miss 90 --near-miss-arm copilot-haiku-5-5=2 --allow-egress copilot-haiku-5-5 \
+  --arm-budget copilot-haiku-5-5=100credits
+```

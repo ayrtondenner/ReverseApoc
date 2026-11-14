@@ -2967,3 +2967,66 @@ def test_a_spent_budget_passes_the_cascade_attempt_on(tmp_path):
     runs = [r["run"] for r in night.kinds("attempt")]
     assert runs.count(_arm_run(HAIKU)) == 1 and runs[0] == _arm_run(HAIKU)
     assert set(runs[1:]) == {_arm_run(SONNET)}
+
+
+# ---- todo near-miss-lane (2026-11-13): a near-miss lane beside the normal queue ----
+
+
+def _near_miss(picks, percents):
+    """Deps.near_miss over `picks`, pick i at best_percent percents[i]: a fresh queue a call."""
+    from reverseapoc import picker
+    from reverseapoc.score import Candidate
+
+    ranks = {EXE: {p.start: Candidate(p.start, p.name, p.size, p.score, ()) for p in picks}}
+    units = {EXE: {p.start: p.unit for p in picks}}
+    keyed = {(p.exe, p.start): pct for p, pct in zip(picks, percents, strict=True)}
+    return lambda: picker.near_miss_queue(keyed, ranks, units)
+
+
+def test_a_near_miss_lane_beside_an_arm_lane(tmp_path):
+    """One drive, two lanes: HAIKU takes the normal queue, SONNET the near-miss lane. The lanes
+    never share a row: the normal lane skips every row of the near-miss queue (picks 2 and 3),
+    and the near-miss lane takes them best first by bytes left (pick 3 at 99% before pick 2 at
+    90%)."""
+    picks = tuple(_wpick(i) for i in range(4))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": TWO_ARMS, "near_miss": (SONNET,), "hold": True},
+                       near_miss=_near_miss(picks[2:], (90.0, 99.0)))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    attempts = night.kinds("attempt")
+    by_run = {run: [r["function"] for r in attempts if r["run"] == run]
+              for run in (_arm_run(HAIKU), _arm_run(SONNET))}  # fmt: skip
+    assert sorted(by_run[_arm_run(HAIKU)]) == [picks[0].name, picks[1].name]
+    assert by_run[_arm_run(SONNET)] == [picks[3].name, picks[2].name]
+
+
+def test_two_near_miss_lanes_share_one_queue(tmp_path):
+    """Two near-miss arms share the lane's one queue: each row runs once in all, on whichever
+    arm is free, not once per arm as two --arm lanes would."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": TWO_ARMS, "near_miss": (HAIKU, SONNET), "hold": True},
+                       near_miss=_near_miss(picks, (90.0, 95.0, 99.0)))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert sorted(r["function"] for r in night.kinds("attempt")) == sorted(p.name for p in picks)
+
+
+def test_a_near_miss_lane_runs_each_row_once(tmp_path):
+    """A near-miss row that capped leaves the lane for tonight: two rows, one session each
+    (attempts_per_function 1), then the lane is done, where a tier queue would run pass 2."""
+    picks = (_wpick(0), _wpick(1))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": ((SONNET, 1),), "near_miss": (SONNET,),
+                               "attempts_per_function": 1, "max_sessions": 10},
+                       near_miss=_near_miss(picks, (95.0, 90.0)))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert [r["function"] for r in night.kinds("attempt")] == [picks[0].name, picks[1].name]
+
+
+def test_a_near_miss_lane_needs_its_queue(tmp_path):
+    night = ArmNight(tmp_path, picks=(_wpick(0),))
+    with pytest.raises(driver.DriverError, match="near-miss"):
+        night.run(config={"arms": ((SONNET, 1),), "near_miss": (SONNET,)})
+    with pytest.raises(driver.DriverError, match="near-miss"):
+        night.run(config={"arms": ((SONNET, 1),), "near_miss": (HAIKU,)},
+                  near_miss=_near_miss((_wpick(0),), (90.0,)))  # fmt: skip

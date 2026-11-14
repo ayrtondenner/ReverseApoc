@@ -200,11 +200,15 @@ from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
 from .picker import (
     EXE_ORDER,
+    NEAR_MISS_MIN,
     PILOT_PER_EXE,
     Key,
+    NearMissItem,
+    NearMissQueue,
     Pick,
     TierItem,
     TierQueue,
+    near_miss_queue,
     readability_queue,
     tier_queue,
 )
@@ -447,6 +451,9 @@ class DriveConfig:
     # todo budget-runs-and-contributors: each `--arm-budget` arm and its budget, which the night
     # holds against the meter seam (Deps.meter) between launches (`_Night._read_meters`)
     budgets: tuple[tuple[str, quota.Budget], ...] = ()
+    # todo near-miss-lane: the `arms` whose lanes take the near-miss queue (Deps.near_miss)
+    # instead of the night's queue (`drive --near-miss-arm`); the other lanes skip its rows
+    near_miss: tuple[str, ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -575,6 +582,9 @@ class Deps:
     # workers at once, so it must be thread-safe; it never raises (a reading it cannot take
     # is None). The default reads nothing: a budget then caps its arm by session count only.
     meter: Callable[[str], MeterReading | None] = _no_meter
+    # Todo near-miss-lane: a builder of a fresh near-miss queue (picker.NearMissQueue), built
+    # once a night and shared by the lanes of DriveConfig.near_miss; None: no near-miss lane.
+    near_miss: Callable[[], NearMissQueue] | None = None
 
 
 def _which(name: str) -> str:
@@ -3044,6 +3054,7 @@ class _Lane:
     live_cap: int | None = None  # quick 261112-fds: a cascade arm's sessions at once
     resume: dict[Key, int] = field(default_factory=dict)  # 261112-fds: ARM_WAITING's attempt
     budget_spent: bool = False  # the meter read the arm's --arm-budget spent (_read_meters)
+    near_miss: bool = False  # todo near-miss-lane: its queue is Deps.near_miss's
 
     def drop(self, key: Key) -> None:
         """A function another arm matched tonight: no more work for this arm."""
@@ -3067,7 +3078,11 @@ def _lanes(config: DriveConfig) -> list[_Lane]:
     """07.2-16 (D-22): the night's arms as lanes, numbering their workers in arm order; with
     several arms each runs under `<run>-<arm>`. DriverError for an arm named twice, a worker
     count below 1, or arms on a readability night (its sessions take no arm). Quick
-    261112-fds: a cascade night (`routing`) runs no other mode."""
+    261112-fds: a cascade night (`routing`) runs no other mode. Todo near-miss-lane: each arm
+    of `near_miss` (one of `arms`) is a near-miss lane."""
+    stray = [name for name in config.near_miss if name not in dict(config.arms)]
+    if stray:
+        raise DriverError(f"near-miss arm {stray[0]} is no arm of the night")
     clash = [name for name, on in (("arms", config.arms), ("night_model", config.night_model),
                                    ("hold", config.hold), ("fable_trial", config.fable_trial),
                                    ("readability", config.session == READABILITY)) if on]
@@ -3086,7 +3101,8 @@ def _lanes(config: DriveConfig) -> list[_Lane]:
         run = f"{config.run_id}-{name}" if len(arms) > 1 else config.run_id
         if not _RUN_ID.fullmatch(run):
             raise DriverError(f"run id {run!r} is not [A-Za-z0-9_.-]+")
-        lanes.append(_Lane(name, run, tuple(range(first, first + workers))))
+        lanes.append(_Lane(name, run, tuple(range(first, first + workers)),
+                           near_miss=name in config.near_miss))  # fmt: skip
         first += workers
     return lanes
 
@@ -3168,8 +3184,17 @@ class _Coordinator:
     def run(self) -> str:
         night = self.night
         difficult = night._difficult()
+        # todo near-miss-lane: the near-miss lanes share one near-miss queue (a row one of them
+        # took or finished is no work for the others), and every other lane skips that queue's
+        # rows (as taken), so no row is ever offered by two lanes. The shared queue's passes
+        # (`use_passes`) only number its previews; each record's pass is its own lane's.
+        near = night.deps.near_miss() if any(lane.near_miss for lane in night.lanes) else None
+        near_keys = frozenset(() if near is None else (item.key for item in near.items))
         for lane in night.lanes:
-            source = night.deps.queue(frozenset(difficult))
+            source = near if lane.near_miss else None
+            if source is None:
+                source = night.deps.queue(frozenset(difficult))
+                lane.done.update(near_keys)
             if isinstance(source, TierQueue):
                 source.use_passes(lane.passes)  # one pass index: the records' and the queue's
                 for key in lane.done:  # a resumed hold run's counted functions (`release`)
@@ -3350,6 +3375,8 @@ class _Night:
         self.arms = config.arm_table if config.arm_table is not None else backends.load_arms()
         # 07.2-16 (D-22): the night's arms side by side, one lane each; the workers are theirs
         self.lanes = _lanes(config)
+        if config.near_miss and deps.near_miss is None:  # todo near-miss-lane
+            raise DriverError("a near-miss lane needs Deps.near_miss, its queue")
         self.workers = sum(len(lane.workers) for lane in self.lanes)
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
@@ -7064,6 +7091,11 @@ class DriveOptions:
     # --night-model or --cascade: the arm's cap tonight from config/driver/quota.toml
     # (refuse_budgets), and its budget for the meter seam (Deps.meter)
     arm_budgets: tuple[tuple[str, quota.Budget], ...] = ()
+    # todo near-miss-lane: `--near-miss [MIN]`, the lane's minimum best_percent (None: not
+    # given, so NEAR_MISS_MIN when there is a lane, `_near_miss_min`), and `--near-miss-arm
+    # NAME=WORKERS`, repeatable: the lane's arms, beside `arms` in this drive
+    near_miss: float | None = None
+    near_miss_arms: tuple[tuple[str, int], ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -7439,6 +7471,38 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     return build
 
 
+def near_miss_source(config_root: Path, worlds: Mapping[str, ExeWorld],
+                     minimum: float) -> Callable[[], NearMissQueue]:  # fmt: skip
+    """Todo near-miss-lane: a builder of a fresh near-miss queue (picker.near_miss_queue) over
+    each EXE's status.csv partial rows at `minimum` best_percent or more, read when it is called,
+    with the worlds' ranks and units. The signed asm list's asm and held rows are never queued
+    (D-23, 07-44: no pass on a span that cannot compile from C); an unsigned or changed list
+    raises, as `tier_source` does."""
+    root = Path(config_root)
+    excluded: frozenset[Key] = frozenset()
+    if (root / mechanics.MECHANICS_TOML).is_file():
+        mech = mechanics.load(root / mechanics.MECHANICS_TOML)
+        excluded = mechanics.signed_asm(root, mech) | mechanics.signed_held(root, mech)
+    ranks = {exe: world.ranks for exe, world in worlds.items()}
+
+    def build() -> NearMissQueue:
+        percents = {(exe, row.start): row.best_percent for exe in EXE_ORDER
+                    for row in _status_rows(root, exe) if row.status == STATUS_PARTIAL}
+        return near_miss_queue(percents, ranks, _units(worlds), minimum=minimum,
+                               excluded=excluded)  # fmt: skip
+
+    return build
+
+
+def near_miss_on(options: DriveOptions) -> bool:
+    """The run has a near-miss lane, or (a dry run's --near-miss alone) lists one."""
+    return options.near_miss is not None or bool(options.near_miss_arms)
+
+
+def _near_miss_min(options: DriveOptions) -> float:
+    return NEAR_MISS_MIN if options.near_miss is None else options.near_miss
+
+
 def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
               today: str | None = None) -> Deps:  # fmt: skip
     """The Deps a real night uses: the picker over both pools minus status.csv's matched and
@@ -7453,7 +7517,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     order, the pools without a signed tier with only the matched rows excluded (a partial row
     of today is a trial row), and `requeue` gives back trial keys only, so the night never
     takes another function off the difficult list. 07.2-06 (D-17): a `--picks` night is
-    restricted the same way, to its picks (`restricted_keys`)."""
+    restricted the same way, to its picks (`restricted_keys`). Todo near-miss-lane: with
+    --near-miss-arm lanes, `near_miss` is `near_miss_source` at the run's minimum."""
     day = today or _today()
     config_root = options.config_root
     say = console(options, seams)
@@ -7496,7 +7561,9 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         code = seams.run([*CONTAINER_CLI, "lint", *paths, "--json"]).returncode
         return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
 
-    return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
+    near = (near_miss_source(config_root, worlds, _near_miss_min(options))
+            if options.near_miss_arms else None)  # fmt: skip
+    return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees, near_miss=near,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
                 argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
@@ -7530,25 +7597,42 @@ def _pick_of(entry: DryPick) -> Pick:
 
 
 def _pick_doc(options: DriveOptions, entry: DryPick, pack: Path, info: PackInfo) -> dict:
-    """One dry-run pick; a tier pick (07-26, ruling F8) adds its tier, level and pass."""
+    """One dry-run pick; a tier pick (07-26, ruling F8) adds its tier, level and pass; a
+    near-miss pick (todo near-miss-lane) its best_percent, bytes left and pass instead."""
     pick = _pick_of(entry)
     doc = {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
            "unit": pick.unit, "size": pick.size, "score": pick.score,
            "pack": pack.relative_to(options.repo).as_posix(),
            "pack_bytes": info.pack_bytes}  # fmt: skip
-    if isinstance(entry, TierItem):
+    if isinstance(entry, NearMissItem):
+        doc["near_miss"] = {"best_percent": entry.best_percent,
+                            "bytes_left": round(entry.bytes_left, 2), "pass": entry.pass_n}
+    elif isinstance(entry, TierItem):
         doc.update({"tier": entry.tier, "level": entry.level, "pass": entry.pass_n})
     return doc
 
 
-def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
-               count: int) -> list[TierItem] | None:  # fmt: skip
+def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], count: int,
+               skip: Iterable[Key] = ()) -> list[TierItem] | None:  # fmt: skip
     """07-26 (ruling F8): the tier queue's first `count` distinct picks (TierQueue.preview), each
-    at its next pass by the committed log's pass index; None without a signed tier."""
+    at its next pass by the committed log's pass index; None without a signed tier. Todo
+    near-miss-lane: the `skip` keys (the near-miss lane's) are left out, as the night's
+    coordinator leaves them out of every other lane."""
     source = tier_source(options.config_root, worlds)
     if source is None:
         return None
-    return source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count)
+    queue = source(pass_index(Path(options.repo) / ATTEMPT_LOG))
+    for key in skip:
+        queue.finish(key, matched=False, parked=True)
+    return queue.preview(count)
+
+
+def near_miss_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> list[NearMissItem]:
+    """Todo near-miss-lane: every row of the near-miss lane (`near_miss_source` at the run's
+    minimum) in the lane's order, each at its next pass by the committed log's pass index."""
+    queue = near_miss_source(options.config_root, worlds, _near_miss_min(options))()
+    queue.use_passes(pass_index(Path(options.repo) / ATTEMPT_LOG))
+    return queue.preview(len(queue.items))
 
 
 def restricted_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
@@ -7636,41 +7720,55 @@ def tier_held(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> tuple[Ke
 
 
 def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
-                today: str) -> list[DryPick]:  # fmt: skip
+                today: str, skip: frozenset[Key] = frozenset()) -> list[DryPick]:  # fmt: skip
     """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule), skipping status.csv's
     matched and this pass's partial rows and the difficult list. With a signed tier (07-26,
     ruling F8): the tier queue's first 10 picks instead, with their tier, level and pass. On a
     Fable trial (quick 261101-b5f) or a `--picks` night (07.2-06): `restricted_picks` up to
-    `max_sessions`."""
+    `max_sessions`. Todo near-miss-lane: the `skip` keys (the near-miss lane's) never."""
     if options.fable_trial or options.picks is not None:
         return restricted_picks(options, worlds, options.max_sessions)
-    tiers = tier_picks(options, worlds, DRY_RUN_TIER_PICKS)
+    tiers = tier_picks(options, worlds, DRY_RUN_TIER_PICKS, skip)
     if tiers is not None:
         return list(tiers)
     difficult = load_difficult(Path(options.repo) / DIFFICULT)
     return picker_pilot(_pools(worlds), units=_units(worlds),
-                        excluded=excluded_keys(options.config_root, today),
+                        excluded=excluded_keys(options.config_root, today) | skip,
                         difficult=frozenset(difficult))  # fmt: skip
 
 
 def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
-                    today: str) -> list[Pick]:  # fmt: skip
+                    today: str, skip: frozenset[Key] = frozenset()) -> list[Pick]:  # fmt: skip
     """The queue's first `max_sessions` picks: no night attempts more functions than that, so
     their Ghidra drafts are the ones worth precomputing (D-13). With a signed tier (07-26,
     ruling F8): the tier queue's first `max_sessions` distinct picks. On a Fable trial (quick
     261101-b5f, discretion (b)) or a `--picks` night (07.2-06): the picks of
-    `restricted_picks`, as its dry run lists them."""
+    `restricted_picks`, as its dry run lists them. Todo near-miss-lane: the `skip` keys (the
+    near-miss lane's) never."""
     if options.fable_trial or options.picks is not None:
         return [_pick_of(entry) for entry in
                 restricted_picks(options, worlds, options.max_sessions)]  # fmt: skip
-    tiers = tier_picks(options, worlds, options.max_sessions)
+    tiers = tier_picks(options, worlds, options.max_sessions, skip)
     if tiers is not None:
         return [item.pick for item in tiers]
     difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
     stream = picker_queue(_pools(worlds), units=_units(worlds),
-                          excluded=excluded_keys(options.config_root, today),
+                          excluded=excluded_keys(options.config_root, today) | skip,
                           difficult=difficult)  # fmt: skip
     return [pick for _, pick in zip(range(options.max_sessions), stream, strict=False)]
+
+
+def _lane_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
+                today: str) -> tuple[list[DryPick], list[NearMissItem]]:  # fmt: skip
+    """The dry run's picks (`pilot_picks`) or the night's top picks (`night_top_picks`), and
+    (todo near-miss-lane) the near-miss lane's rows (`near_miss_picks`), all of them, which the
+    other picks leave out. A run whose only lanes are near-miss ones (--near-miss-arm without
+    --arm or --night-model) has no other picks."""
+    near = near_miss_picks(options, worlds) if near_miss_on(options) else []
+    if options.near_miss_arms and not (options.arms or options.night_model is not None):
+        return [], near
+    lister = pilot_picks if options.dry_run else night_top_picks
+    return lister(options, worlds, today=today, skip=frozenset(i.key for i in near)), near
 
 
 # ---- the readability queue (07-38; D-17, D-20, DEC-04) ----
@@ -7865,6 +7963,17 @@ HOLD_RUN_LINE = ("hold run: nothing lands and each function is attempted once; m
 
 
 PREVIEW_ROW_CAPPED = "every arm capped"  # 261112-fdr (IN-05): a previewed attempt's whole row
+# todo near-miss-lane: the lane's line, before its dry-run picks and on the night's console
+NEAR_MISS_DRY_RUN = ("near-miss lane: {rows} rows at {minimum:.2f}% or more, by bytes left, the "
+                     "first {listed} listed (arms {arms}); the other lanes leave them out")
+NEAR_MISS_NIGHT = ("near-miss lane: {rows} rows at {minimum:.2f}% or more, by bytes left, each "
+                   "once in this drive on arms {arms}; the other lanes leave them out")
+
+
+def _near_miss_line(options: DriveOptions, template: str, rows: int) -> str:
+    arms = ", ".join(f"{name}={n}" for name, n in options.near_miss_arms) or "none yet"
+    return template.format(rows=rows, minimum=_near_miss_min(options), arms=arms,
+                           listed=min(rows, options.max_sessions))  # fmt: skip
 
 
 def _cascade_previews(routing: Sequence[backends.Route], picks: Sequence[Pick],
@@ -7912,7 +8021,7 @@ def _previewed_attempt(order: Sequence[str], caps: Mapping[str, int | None],
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
             picks: Sequence[DryPick], held: Sequence[Key] | None = None,
             caps: Mapping[str, int | None] | None = None,
-            budgets: Sequence[quota.Sizing] = ()) -> int:  # fmt: skip
+            budgets: Sequence[quota.Sizing] = (), near_rows: int | None = None) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
     gate (D-10). A tier pick's line and document add its tier, level and pass (07-26). `held`
     (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
@@ -7924,7 +8033,10 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     {bucket, pass, attempts}; quick 261112-fdr (IN-05): with each arm's cap of `caps` applied
     (`_cascade_previews`). Todo budget-runs-and-contributors: each --arm-budget's line comes
     first (`_budget_lines`: budget, quota per session with its source and date, sessions and
-    expected matches), and the document adds `budgets` (quota.Sizing.doc)."""
+    expected matches), and the document adds `budgets` (quota.Sizing.doc). Todo
+    near-miss-lane: with a near-miss lane (`near_rows`, its row count; None: no lane) a
+    NEAR_MISS_DRY_RUN line comes before its picks, each pick's line ends with its best_percent,
+    bytes left and pass, and the document adds `near_miss` {min_percent, rows, arms}."""
     docs, lines = [], _budget_lines(options, budgets)
     if options.fable_trial:
         lines.append(FABLE_TRIAL_DRY_RUN.format(count=len(picks), model=FABLE_MODEL,
@@ -7940,6 +8052,11 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         docs.append(doc)
         place = "" if "tier" not in doc else (
             f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
+        if isinstance(entry, NearMissItem):
+            if not any("near_miss" in other for other in docs[:-1]):
+                lines.append(_near_miss_line(options, NEAR_MISS_DRY_RUN, near_rows or 0))
+            place = (f" near-miss best {entry.best_percent:.2f}% bytes left "
+                     f"{entry.bytes_left:.2f} pass {entry.pass_n}")  # fmt: skip
         if options.routing:
             doc["cascade"] = next(previews)
             place += (f" bucket {doc['cascade']['bucket']} attempts "
@@ -7955,6 +8072,11 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         doc["fable_trial"] = {"model": FABLE_MODEL, "budget_usd": options.fable_budget_usd}
     if budgets:
         doc["budgets"] = [sizing.doc() for sizing in budgets]
+    if near_rows is not None and not any("near_miss" in each for each in docs):
+        lines.append(_near_miss_line(options, NEAR_MISS_DRY_RUN, near_rows))  # an empty lane
+    if near_rows is not None:
+        doc["near_miss"] = {"min_percent": _near_miss_min(options), "rows": near_rows,
+                            "arms": [list(arm) for arm in options.near_miss_arms]}  # fmt: skip
     _emit(options, doc, lines)
     return EXIT_OK
 
@@ -8189,12 +8311,14 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
 
 def night_arms(options: DriveOptions) -> tuple[tuple[str, int], ...]:
     """07.2-16 (D-22): the night's arms and their workers: `--arm`'s, else `--night-model`'s
-    with --workers (the one-arm shorthand); () on a night of each pass's Claude arm."""
+    with --workers (the one-arm shorthand); () on a night of each pass's Claude arm. Todo
+    near-miss-lane: then the --near-miss-arm arms, so every per-arm check (the table, workers,
+    egress, canary, budget) holds for them too."""
     if options.arms:
-        return options.arms
+        return options.arms + options.near_miss_arms
     if options.night_model is not None:
-        return ((options.night_model, options.workers),)
-    return ()
+        return ((options.night_model, options.workers), *options.near_miss_arms)
+    return options.near_miss_arms
 
 
 def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
@@ -8325,6 +8449,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                 return run_canary(options, seams, lock=lock, arms=arms)
         worlds = _load_worlds(seams)
         today = _today()
+        near: list[NearMissItem] = []  # todo near-miss-lane: the lane's rows (`_lane_picks`)
         if options.land_held:  # 07.2-06 (D-17): no picks and no Ghidra drafts
             with _phase("land held"):
                 refuse_land_held(options)
@@ -8340,16 +8465,16 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                     picks = stratified_picks(options, worlds)
                     write_picks(options.write_picks, [item.key for item in picks],
                                 _stratified_header(options))  # fmt: skip
-                else:
-                    picks = (pilot_picks if options.dry_run else night_top_picks)(
-                        options, worlds, today=today)  # fmt: skip
+                else:  # todo near-miss-lane: the near-miss lane's first max_sessions too
+                    picks, near = _lane_picks(options, worlds, today=today)
+                    picks = [*picks, *near[:options.max_sessions]]
                 held = tier_held(options, worlds) if options.dry_run else None
             with _phase("drafts"):
                 _drafts(log, [_pick_of(entry) for entry in picks])
             if options.dry_run:
                 with _phase("pack"):
                     return dry_run(options, worlds, picks, held, _arm_caps(options, arms),
-                                   sizings)  # fmt: skip
+                                   sizings, len(near) if near_miss_on(options) else None)
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
@@ -8370,7 +8495,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          night_model=options.night_model, hold=options.hold,
                          land_held=options.land_held, arm_table=arms,
                          arms=lanes, routing=options.routing,
-                         arm_caps=options.arm_caps, budgets=options.arm_budgets)  # fmt: skip
+                         arm_caps=options.arm_caps, budgets=options.arm_budgets,
+                         near_miss=tuple(name for name, _ in options.near_miss_arms))  # fmt: skip
     for line in _budget_lines(options, sizings):  # todo budget-runs-and-contributors
         console(options, seams)(line)
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
@@ -8381,6 +8507,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
     if len(lanes) > 1:  # 07.2-16 (D-22)
         console(options, seams)(ARMS_LINE.format(arms=", ".join(
             f"{name}={n} (run {options.run_id}-{name})" for name, n in lanes)))
+    if options.near_miss_arms:  # todo near-miss-lane
+        console(options, seams)(_near_miss_line(options, NEAR_MISS_NIGHT, len(near)))
     if options.routing:  # quick 261112-fds (backlog 999.12a)
         console(options, seams)(_cascade_line(options, arms))
     if options.hold:

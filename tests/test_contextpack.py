@@ -584,6 +584,20 @@ def test_best_c_section():
     assert body == f"```c\n{BEST_C}\n```"
 
 
+def test_best_c_section_says_when_the_best_c_is_gone():
+    """Todo near-miss-lane: the best earlier attempt's own C is not readable here (`best_gone`):
+    with no earlier C the section says plainly that it is not available and why, instead of
+    `none`; with a weaker attempt's C it says so before that C."""
+    gone = "run2 attempt 2, 98.33%"
+    pack = build_pack(**_inputs(notes=contextpack.Notes(best_gone=gone)))
+    body = {s.title: s.body for s in pack.sections}["Earlier best C"]
+    assert body.startswith("not available: ") and gone in body and "build/driver/" in body
+    pack = build_pack(**_inputs(notes=contextpack.Notes(best_c=BEST_C, best_gone=gone)))
+    body = {s.title: s.body for s in pack.sections}["Earlier best C"]
+    assert body.startswith("not the best: ") and gone in body
+    assert body.endswith(f"\n\n```c\n{BEST_C}\n```")
+
+
 def test_cut_order_with_giveups_and_best_c():
     """Over the cap: look-alikes from the last, the earlier best C, callers from the last, the
     draft, attempt records oldest first, give-ups oldest first, then notes texts oldest first;

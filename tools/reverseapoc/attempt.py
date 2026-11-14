@@ -1632,16 +1632,24 @@ def _best_definition(driver: Path, stem: str, record: Mapping) -> str | None:
     return found.source if found is not None else None
 
 
-def _earlier_best_c(driver: Path, stem: str, records: Sequence[Mapping]) -> str | None:
+def _earlier_best_c(driver: Path, stem: str,
+                    records: Sequence[Mapping]) -> tuple[str | None, str]:  # fmt: skip
     """07.2-02: the definition from the record with the highest check.best_percent (ties: the
-    latest) whose best/<unit>.c gives one; a record without a readable one is skipped."""
-    ranked = [(percent, index) for index, record in enumerate(records)
-              if (percent := _percent(record)) is not None]  # fmt: skip
-    for _percent_value, index in sorted(ranked, reverse=True):
+    latest) whose best/<unit>.c gives one; a record without a readable one is skipped. Todo
+    near-miss-lane: and, when the best record's own definition is not readable here (its
+    build/ directory is on another machine, or gone), that record as `<run> attempt <n>,
+    <p>%` (`best_gone`); "" when it is readable or no record holds a percent."""
+    ranked = sorted(((percent, index) for index, record in enumerate(records)
+                     if (percent := _percent(record)) is not None), reverse=True)  # fmt: skip
+    gone = ""
+    for percent, index in ranked:
         source = _best_definition(driver, stem, records[index])
         if source is not None:
-            return source
-    return None
+            return source, gone
+        if not gone:
+            record = records[index]
+            gone = f"{record.get('run')} attempt {record.get('attempt')}, {percent:.2f}%"
+    return None, gone
 
 
 def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
@@ -1652,7 +1660,9 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     best C. Nothing is cut here: build_pack cuts notes only when the pack is over the cap (M11,
     records first, then the give-ups, then the oldest texts). 07.2-06 (D-17): a hold run's
     notes (its run directory holds HOLD_RUN_MARKER) and its records (`hold_run` true), with
-    their give-ups and best C, are left out, so one arm's work never reaches another arm."""
+    their give-ups and best C, are left out, so one arm's work never reaches another arm. Todo
+    near-miss-lane: `best_gone` names the best record when its C is not readable here
+    (`_earlier_best_c`)."""
     driver = Path(repo).joinpath(*DRIVER_PARTS)
     found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
              *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
@@ -1667,11 +1677,11 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
             if record.get("hold_run") is not True]  # fmt: skip
     records = [json.dumps(record, sort_keys=True) for record in docs]
     giveups = tuple(line for record in docs if (line := _giveup_line(record)) is not None)
-    best_c = _earlier_best_c(driver, stem, docs)
+    best_c, best_gone = _earlier_best_c(driver, stem, docs)
     if not texts and not records and not giveups and best_c is None:
         return None
     return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}",
-                             giveups, best_c)  # fmt: skip
+                             giveups, best_c, best_gone)  # fmt: skip
 
 
 def _unit_paths(src: Path, data: check.ExeInputs) -> dict[str, Path]:
