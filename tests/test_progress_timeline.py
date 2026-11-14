@@ -146,6 +146,7 @@ def test_the_signed_assembler_rows_leave_every_day(tmp_path):
                                                      TACP: (tf, tu, None)})]  # fmt: skip
     found = progress.build_timeline(snaps, [], (), (), ((UFO, U_UNMATCHED.start),))
     config = synthetic_config(tmp_path / "asm")
+    (config / UFO / "status.csv").write_text(snaps[0].texts[UFO][2], encoding="utf-8")
     shown = progress.exclude_assembler(progress.derive(config), ((UFO, U_UNMATCHED.start),))
     totals = shown.exe(UFO).totals
     assert found.days[0].percents[0] == totals.percent != 6.5574
