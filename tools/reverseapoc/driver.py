@@ -8047,7 +8047,16 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     for entry in picks:
         pick = _pick_of(entry)
         directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
-        info = worlds[pick.exe].pack(pick, directory)
+        try:
+            info = worlds[pick.exe].pack(pick, directory)
+        except contextpack.PackOverCap as over:  # the night leaves it too (quick 261113)
+            docs.append({"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
+                         "unit": pick.unit, "size": pick.size,
+                         "over_cap": {"size": over.size, "cap": over.cap}})  # fmt: skip
+            lines.append(OVER_CAP_LINE.format(label=f"{pick.exe} func_{pick.start:08X} "
+                                                    f"({pick.name})", size=over.size,
+                                              cap=over.cap))  # fmt: skip
+            continue
         doc = _pick_doc(options, entry, directory / PACK_FILE, info)
         docs.append(doc)
         place = "" if "tier" not in doc else (
