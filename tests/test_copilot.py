@@ -359,6 +359,35 @@ def test_copilotjson_a_view_with_a_line_range_is_known():
         assert copilotjson.unknown_steps(events), bad
 
 
+SPILL = str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
+                                     "1ab393a8-15b8-44fc-a7e1-ddd8ce48b339.txt"))
+
+
+def _spilled(path: str = SPILL) -> list[dict]:
+    """A shell call whose result Copilot spilled to `path` (night 20261114-nearmiss2)."""
+    content = f"Output too large to read at once (22.9 KB). Saved to: {path}\n\n```asm\n# f"
+    return _call("t1", "powershell", {"command": "reverseapoc-attempt asm"}, content=content)
+
+
+def test_copilotjson_a_view_of_the_sessions_own_spill_is_no_read():
+    """Night 20261114-nearmiss2: a result too large to show was saved by Copilot to
+    `<temp>/<n>-copilot-tool-output-<pid>-<uuid>.txt` and the model viewed it, a read outside
+    the checkout that stopped the night. A view of exactly a path an earlier result of this
+    session announced, in that form, directly in the temp dir, is the session's own output;
+    any other path, an unannounced spill, one announced only later, or one outside the temp
+    dir is still a read (fail closed)."""
+    view = _call("t2", "view", {"path": SPILL})
+    assert copilotjson.read_targets([_start(), *_spilled(), *view]) == []
+    assert copilotjson.read_targets([_start(), *view]) == [SPILL]  # never announced
+    assert copilotjson.read_targets([_start(), *view, *_spilled()]) == [SPILL]  # announced later
+    other = SPILL.replace("63812", "99999")
+    assert copilotjson.read_targets([_start(), *_spilled(), *_call("t2", "view", {"path": other})]
+                                    ) == [other]  # fmt: skip
+    elsewhere = "C:\\made-up\\" + SPILL.rsplit("\\", 1)[-1]
+    assert copilotjson.read_targets([_start(), *_spilled(elsewhere),
+                                     *_call("t2", "view", {"path": elsewhere})]) == [elsewhere]
+
+
 def _enoent(path: str) -> str:
     return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
 
