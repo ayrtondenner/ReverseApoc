@@ -214,4 +214,30 @@ LA6A0E:;
 
 INCLUDE_ASM(func_000A6A30);
 INCLUDE_ASM(func_000A6B60);
-INCLUDE_ASM(func_000A6C90);
+
+extern char D_0010A188[];
+extern char D_00109F02[];
+
+/* void: EAX is the callee's result on the fallback path only, and no caller reads it here. */
+void func_000A6C90(void)
+{
+    int ok;
+    int off;
+    struct unk_0010 *p;
+
+    ok = 0;
+    if (*(short *)D_000E6D42 != 0) {
+        off = ((short *)D_001B24AC)[*(short *)D_000E6D44] * 0x49c;
+        if (D_0010A188[off] != 0 && *(short *)(D_00109F02 + off) != -1) {
+            p = func_00021180();
+            if (p != 0) {
+                p->kind = 0x20;
+                p->unit = *(u8 *)((char *)D_001B24AC + *(short *)D_000E6D44 * 2);
+            }
+            ok = 1;
+        }
+    }
+    if (ok == 0) {
+        func_000AF990(185, -11, -1, -1, 0);
+    }
+}
