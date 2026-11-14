@@ -31,6 +31,7 @@ the requested model and a null `model`, and runs no init check.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from collections.abc import Mapping, Sequence
@@ -56,8 +57,13 @@ _SHELL = re.compile(r"""\s*(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>[^\s"']+)
 _PATH_SEPARATORS = re.compile(r"[\\/]+")  # a run of either slash, POSIX-escaped `\\` too
 # Only the real shells by absolute path: a bare name, a relative path or another directory could
 # be a binary the session planted, run while the audit judged only its harmless argument
+# Night 20261114-cascade: PowerShell 7 from the Store (2026-11-13) runs as this user's app alias,
+# which Codex then reports; only this user's exact alias path is added.
+_STORE_PWSH = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WindowsApps",
+                           "pwsh.exe").casefold() if os.environ.get("LOCALAPPDATA") else None
 _WINDOWS_SHELLS = frozenset({r"c:\windows\system32\windowspowershell\v1.0\powershell.exe",
-                             r"c:\program files\powershell\7\pwsh.exe"})  # fmt: skip
+                             r"c:\program files\powershell\7\pwsh.exe",
+                             *([_STORE_PWSH] if _STORE_PWSH else [])})  # fmt: skip
 _SHELL_FLAGS = (["-command"], ["-noprofile", "-command"])  # casefolded, before the one <cmd>
 
 
