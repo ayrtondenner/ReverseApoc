@@ -378,10 +378,16 @@ _SPILL_NAME = re.compile(r"\d+-copilot-tool-output-\d+-[0-9a-f]{8}(?:-[0-9a-f]{4
 _SPILLED = re.compile(r"Output too large to read at once \([\d.]+ KB\)\. Saved to: (\S+)")
 
 
+def _forward(path: str) -> str:
+    """A path with forward slashes and case folded the platform's way, for comparing paths the
+    CLI reports (backslashes on Windows) with SPILL_DIR on any platform (CI runs on Linux)."""
+    return os.path.normcase(path).replace("\\", "/")
+
+
 def _own_spill(path: str) -> bool:
-    folder, _, name = path.replace("/", "\\").rpartition("\\")
+    folder, _, name = path.replace("\\", "/").rpartition("/")
     return (_SPILL_NAME.fullmatch(name) is not None
-            and os.path.normcase(folder) == os.path.normcase(str(SPILL_DIR)))  # fmt: skip
+            and _forward(folder) == _forward(str(SPILL_DIR)))  # fmt: skip
 
 
 def read_targets(events: Sequence[dict]) -> list[str]:
