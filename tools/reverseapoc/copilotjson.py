@@ -271,14 +271,25 @@ def calls(events: Sequence[dict]) -> list[Call]:
     return list(found.values())
 
 
+# Every key some file-tool schema of the CLI defines (1.0.111 cli-main.js: view, create,
+# str_replace, insert, apply_patch). A view/create/edit key outside this set is one no schema
+# has, so the CLI drops it (nights 20261114-nearmiss7 and -lanesC3: `file_path`, `description`);
+# what such a call writes is still judged from its path and fileEdits.
+_CLI_FILE_KEYS = frozenset({"command", "path", "view_range", "view_range[0]",
+                            "view_range[1]", "file_text", "old_str", "new_str", "insert_line",
+                            "actions"})  # fmt: skip
+
+
 def _shaped(tool: object, arguments: object) -> bool:
     if tool not in _SHAPES or not isinstance(arguments, Mapping):
         return False
     need, may = _SHAPES[tool]
-    if not set(need) <= set(arguments) or not set(arguments) <= set(need) | set(may):
+    extra = set(arguments) - set(need) - set(may)
+    if not set(need) <= set(arguments) or (extra and (tool not in _PATH_TOOLS
+                                                       or extra & _CLI_FILE_KEYS)):
         return False
     checks = {**need, **may}
-    return all(checks[key](value) for key, value in arguments.items())
+    return all(checks[key](value) for key, value in arguments.items() if key in checks)
 
 
 def known(call: Call) -> bool:

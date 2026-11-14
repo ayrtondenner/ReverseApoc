@@ -15,3 +15,10 @@ powershell, read_powershell) and accept an extra key only if it is absent from t
 schema (the CLI drops it), so a real key such as `requestSandboxBypass` stays unknown. Re-verify
 against the shipped CLI version each update (the canary). Alternative or addition: a line in
 `copilot_prompt` naming each tool's exact arguments.
+
+## Result (2026-11-14)
+
+Built test first after night 20261114-lanesC3 stopped on `create {description, ...}`: an extra key on
+view, create or edit is known only if no CLI file-tool schema defines it (`_CLI_FILE_KEYS`, from
+1.0.111 cli-main.js); keys a schema gives meaning (command, insert_line, actions, view_range[0/1])
+and any extra powershell key stay unknown. All 95 Copilot transcripts of 2026-11-14 pass.
