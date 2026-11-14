@@ -307,6 +307,107 @@ def test_main_creates_every_output_parent(tmp_path):
     assert (out / "progress.json").is_file() and (out / "progress-shield.json").is_file()
 
 
+# ---- three figures: strict bytes, functions and fuzzy (todo progress-three-figures) ----
+
+# The synthetic tables by hand: UFO2P has 1 of 4 functions matched and a 32-byte partial row at
+# 50%, over 244 bytes (228 code + 16 uncovered); TACP 0 of 1 over 32 bytes.
+UFO_FUZZY = round((16 * 100 + 32 * 50) / 244, 4)  # 13.1148, report.json's figure
+BOTH_FUZZY = round((16 * 100 + 32 * 50) / 276, 4)  # 11.5942
+FIGURE_SHIELDS = ("progress-shield-functions.json", "progress-shield-fuzzy.json",
+                  *(f"progress-shield-{figure}-{stem}.json"
+                    for figure in ("functions", "fuzzy") for stem in EXES))  # fmt: skip
+OUT_FILES = ("index.html", "progress-shield-tacp.json", "progress-shield-ufo2p.json",
+             "progress-shield.json", "progress.json", "progress.svg", *FIGURE_SHIELDS)
+
+
+def test_three_figures_on_synthetic_csvs(tmp_path):
+    """progress.json carries functions_percent (matched over game + thunk functions, by count)
+    and fuzzy_percent (best_percent weighted by bytes over the strict percent's denominator)
+    next to the strict percent, per EXE and combined."""
+    doc = progress_doc(load_progress(), synthetic_config(tmp_path), tmp_path)
+    ufo, tacp, both = doc["exes"]["ufo2p"], doc["exes"]["tacp"], doc["combined"]
+    assert (ufo["percent"], ufo["functions_percent"], ufo["fuzzy_percent"]) == (
+        6.5574, 25.0, UFO_FUZZY) and UFO_FUZZY == 13.1148
+    assert (tacp["percent"], tacp["functions_percent"], tacp["fuzzy_percent"]) == (0.0, 0.0, 0.0)
+    assert (both["percent"], both["functions_percent"], both["fuzzy_percent"]) == (
+        5.7971, 20.0, BOTH_FUZZY) and BOTH_FUZZY == 11.5942
+    keys = list(ufo)
+    assert keys[keys.index("percent") + 1:keys.index("percent") + 3] == [
+        "functions_percent", "fuzzy_percent"]
+
+
+def test_fuzzy_counts_a_small_partial_row(tmp_path):
+    """A partial row's two-decimal best_percent counts at its own value, per EXE and in the
+    combined figure (summed weights over summed bytes, not an average of the EXEs)."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    write_status(status_path(config, "tacp"), [
+        StatusRow(T_GAME.start, T_GAME.name, T_GAME.unit, PARTIAL, 0.1, 1, SHA, DAY)])
+    doc = progress_doc(progress, config, tmp_path)
+    assert doc["exes"]["tacp"]["fuzzy_percent"] == round(32 * 10 / 100 / 32, 4) == 0.1
+    assert doc["combined"]["fuzzy_percent"] == round((1600 + 1600 + 320 / 100) / 276, 4)
+
+
+@pytest.mark.parametrize("which", ["synthetic", "committed"])
+def test_report_reuses_the_figures(tmp_path, which):
+    """report.json's fuzzy_match_percent and matched_functions_percent are progress.json's
+    fuzzy_percent and functions_percent, per EXE category and combined: derived once."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path) if which == "synthetic" else CONFIG
+    derived = progress.derive(config)
+    report = progress.build_report(derived)
+    doc = progress.build_progress(derived)
+    pairs = [(report["measures"], doc["combined"])]
+    pairs += [(c["measures"], doc["exes"][c["id"]]) for c in report["categories"]]
+    for measures, figures in pairs:
+        assert measures["fuzzy_match_percent"] == figures["fuzzy_percent"]
+        assert measures["matched_functions_percent"] == figures["functions_percent"]
+        assert measures["matched_code_percent"] == figures["percent"]
+
+
+def test_figure_shields(tmp_path):
+    """Owner-delegated ruling (2026-11-13): separate badges for the function ratio and the fuzzy
+    figure, combined and per EXE, in the strict shield's shape and colour scale."""
+    progress = load_progress()
+    derived = progress.derive(synthetic_config(tmp_path))
+    shield = progress.build_figure_shield
+    exe_shield = progress.build_exe_figure_shield
+    assert shield(derived, "functions") == {"schemaVersion": 1, "label": "functions matched",
+                                            "message": "20%", "color": "yellow"}  # fmt: skip
+    assert shield(derived, "fuzzy") == {"schemaVersion": 1, "label": "fuzzy match",
+                                        "message": "11.5942%", "color": "yellow"}  # fmt: skip
+    ufo, tacp = derived.exe("ufo2p"), derived.exe("tacp")
+    assert exe_shield(ufo, "functions") == {"schemaVersion": 1, "label": "UFO2P.EXE functions",
+                                            "message": "25%", "color": "yellowgreen"}
+    assert exe_shield(ufo, "fuzzy") == {"schemaVersion": 1, "label": "UFO2P.EXE fuzzy",
+                                        "message": "13.1148%", "color": "yellow"}  # fmt: skip
+    assert exe_shield(tacp, "fuzzy") == {"schemaVersion": 1, "label": "TACP.EXE fuzzy",
+                                         "message": "0%", "color": "red"}  # fmt: skip
+
+
+def test_main_writes_every_output_byte_stable(tmp_path):
+    """--out writes the existing endpoints unchanged and one functions and one fuzzy endpoint
+    combined and per EXE; two runs over the same CSVs give the same bytes in every file."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    first, second = tmp_path / "one", tmp_path / "two"
+    for out in (first, second):
+        assert progress.main(["--config", str(config), "--out", str(out), "--commit", "ab12cd3"]
+                             ) == 0  # fmt: skip
+    assert sorted(p.name for p in first.iterdir()) == sorted(OUT_FILES)
+    for name in OUT_FILES:
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+    derived = progress.derive(config)
+    assert (first / "progress-shield.json").read_bytes() == progress.render(
+        progress.build_shield(derived))
+    for figure in ("functions", "fuzzy"):
+        assert (first / f"progress-shield-{figure}.json").read_bytes() == progress.render(
+            progress.build_figure_shield(derived, figure))
+        for stem in EXES:
+            assert (first / f"progress-shield-{figure}-{stem}.json").read_bytes() == (
+                progress.render(progress.build_exe_figure_shield(derived.exe(stem), figure)))
+
+
 # ---- Task 2: the DecompHub progress-v1 feed (D-29) ----
 
 # from decomphub.com/schemas/progress-v1.json, 2026-10-24
