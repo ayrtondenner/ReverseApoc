@@ -35,7 +35,6 @@ L6F822:;
 
 INCLUDE_ASM(func_0006F830);
 INCLUDE_ASM(func_0006F9B0);
-INCLUDE_ASM(func_0006FD20);
 
 extern int D_000F3D78[];
 extern int D_000E0D48[];
@@ -76,6 +75,38 @@ int func_0006FC80(int arg)
  * the copy only with two externs. */
 extern int daily_history[DAILY_HISTORY_ROWS][DAILY_HISTORY_SLOTS];
 extern int daily_history_from_slot1[DAILY_HISTORY_ROWS][DAILY_HISTORY_SLOTS];
+
+extern unsigned char *D_0017FB4C;
+extern short D_000E0C9C;
+extern short D_000D4D68;
+
+/* EAX is unused by the callers. */
+void func_0006FD20(void)
+{
+    int i;
+    int offset;
+    int history_offset;
+
+    i = 0;
+    offset = 0;
+    history_offset = 0;
+    do {
+        if (D_0017FB4C[offset + 0x11] == 1) {
+            *(int *)((char *)daily_history + history_offset) = 200;
+        } else {
+            *(int *)((char *)daily_history + history_offset) += func_0006FC80(i) / (42 - D_000E0C9C);
+            if (D_000D4D68 % 2 != 0)
+                --*(int *)((char *)daily_history + history_offset);
+            if (*(int *)((char *)daily_history + history_offset) > 200)
+                *(int *)((char *)daily_history + history_offset) = 200;
+            if (*(int *)((char *)daily_history + history_offset) < 0)
+                *(int *)((char *)daily_history + history_offset) = 0;
+        }
+        offset += 0x1b6;
+        i++;
+        history_offset += 0xe0;
+    } while (i < 27);
+}
 
 /* daily_history_age: age the daily history table by one day
  * Moves every slot of each of the 27 rows of 56 ints one slot on (slot k to k + 1), dropping
