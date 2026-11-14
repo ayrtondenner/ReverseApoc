@@ -1523,6 +1523,14 @@ def test_near_miss_minimum_and_excluded_rows():
     assert [i.pick.start for i in q.preview(10)] == [NA]
 
 
+def test_near_miss_leaves_out_rows_already_at_100():
+    """A partial row whose best is already 100.00 reached objdiff's 100% and still failed the
+    gate: on the committed records each one waits on a flags ruling (`needs flags ...`), which
+    another attempt cannot give, so the lane never queues it (coordinator, 2026-11-14)."""
+    q = _nmq({NA: 100.0, NB: 99.99, NC: 90.0}, {NA: 20, NB: 20, NC: 20})
+    assert [i.pick.start for i in q.preview(10)] == [NB, NC]
+
+
 def test_near_miss_keeps_the_tier_queue_guards():
     """A claimed unit is skipped (not dropped), an in-flight row is not offered twice, a matched
     one leaves; no row waits on another (callee-first does not apply to this lane)."""
