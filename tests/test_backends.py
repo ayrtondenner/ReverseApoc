@@ -683,16 +683,17 @@ DEEPSEEK = "deepseek-flash"
 def test_committed_routing_table():
     """The owner's default rows, in bucket order, keyed by stats' own labels; every arm is an
     [arms."..."] entry, and load_arms still loads the file that now holds [routing]. Owner,
-    2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash join the rows to spend the OpenRouter credit."""
+    2026-11-12: GLM-5.3 and DeepSeek V4.1-Flash join the rows to spend the OpenRouter credit;
+    owner, 2026-11-13 (evening): OpenRouter spent, so DeepSeek leaves them (2026-11-14)."""
     rows = backends.load_routing()
     assert [(row.label, row.buckets, row.arms) for row in rows] == [
-        ("[0, 64)", (0,), (TERRA, HAIKU, DEEPSEEK)),
-        ("[64, 256)", (1,), (TERRA, HAIKU, DEEPSEEK)),
-        ("[256, inf)", (2, 3), (TERRA, DEEPSEEK)),
+        ("[0, 64)", (0,), (TERRA, HAIKU)),
+        ("[64, 256)", (1,), (TERRA, HAIKU)),
+        ("[256, inf)", (2, 3), (TERRA,)),
     ]
     arms = _arms()
     assert {arm for row in rows for arm in row.arms} <= set(arms)
-    assert backends.routing_arms(rows) == (TERRA, HAIKU, DEEPSEEK)
+    assert backends.routing_arms(rows) == (TERRA, HAIKU)
     assert arms[DEEPSEEK].max_workers == 12  # owner, 2026-11-13: spend the OpenRouter credit fast
 
 

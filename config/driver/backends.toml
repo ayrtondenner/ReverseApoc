@@ -497,7 +497,9 @@ cache_creation = 0.0
 # about 123 on the cascade nights), DeepSeek last as the other model family. Earlier the same day:
 # Terra first (spend each Codex 5-hour window), DeepSeek second (2 of its
 # first 5 sessions held, the best rate of the cascade nights), then Haiku and GLM-5.3.
+# Owner, 2026-11-13 (evening): OpenRouter budget spent ($99 of $100), Terra only from there;
+# so DeepSeek leaves the rows (2026-11-14), and [256, inf) keeps Terra alone until it returns.
 [routing]
-"[0, 64)" = ["gpt-6.1-terra", "claude-haiku-5-5", "deepseek-flash"]
-"[64, 256)" = ["gpt-6.1-terra", "claude-haiku-5-5", "deepseek-flash"]
-"[256, inf)" = ["gpt-6.1-terra", "deepseek-flash"]
+"[0, 64)" = ["gpt-6.1-terra", "claude-haiku-5-5"]
+"[64, 256)" = ["gpt-6.1-terra", "claude-haiku-5-5"]
+"[256, inf)" = ["gpt-6.1-terra"]
