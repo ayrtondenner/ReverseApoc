@@ -388,6 +388,27 @@ def test_copilotjson_a_view_of_the_sessions_own_spill_is_no_read():
                                      *_call("t2", "view", {"path": elsewhere})]) == [elsewhere]
 
 
+def test_copilotjson_a_file_tool_ignores_keys_no_cli_schema_has():
+    """Nights 20261114-nearmiss7 and -lanesC3: create carried `file_path: "x"` and
+    `description: "Create check-note.json"`; the CLI's schemas have neither, drop them, and
+    wrote through `path` (the write is still judged from path and fileEdits). An extra key is
+    known on view, create and edit only if no CLI file-tool schema defines it; a key some
+    schema gives a meaning (command, insert_line, actions, view_range[0]) stays unknown, and so
+    does any extra key on powershell (todo copilot-extra-argument-keys)."""
+    note = f"{WS}\\check-note.json"
+    for extra in ({"description": "Create check-note.json"}, {"file_path": "x"}):
+        call = _call("t1", "create", {"path": note, "file_text": "{}", **extra},
+                     edits=((note, "create"),))
+        assert copilotjson.unknown_steps([_start(), *call]) == [], extra
+        assert copilotjson.write_targets([_start(), *call]) == [note]
+    for extra in ({"command": "str_replace"}, {"insert_line": 3}, {"actions": []},
+                  {"view_range[0]": 1}):
+        call = _call("t1", "create", {"path": note, "file_text": "{}", **extra})
+        assert copilotjson.unknown_steps([_start(), *call]), extra
+    shell = _call("t1", "powershell", {"command": "reverseapoc-attempt check", "label": "x"})
+    assert copilotjson.unknown_steps([_start(), *shell])
+
+
 def test_copilotjson_edit_follows_the_clis_own_schema():
     """Copilot 1.0.111's bundled schema for edit is {path, old_str, new_str?} (cli-main.js,
     read 2026-11-14): an edit without new_str is known and its path is a write."""
@@ -439,7 +460,7 @@ def test_copilotjson_only_an_edit_missing_a_required_field_is_excused():
     seen = [_start(), *_call("t1", "edit", no_path, ok=False, error='"path": Required',
                              code="failure")]  # fmt: skip
     assert copilotjson.unknown_steps(seen) == [] and copilotjson.write_targets(seen) == []
-    has_old = {"path": f"{WS}\\x.txt", "old_str": "a", "made_up": 1}
+    has_old = {"path": f"{WS}\\x.txt", "old_str": "a", "insert_line": 1}
     assert copilotjson.unknown_steps([_start(), *_call(
         "t1", "edit", has_old, ok=False, error="Invalid inputs: old_str is required",
         code="failure")])  # fmt: skip
@@ -658,7 +679,7 @@ def test_copilotjson_unknown_steps_fail_closed():
     (hooks, skills and subagents among them)."""
     cases = {
         "unknown tool": _call("u1", "web_fetch", {"url": "https://example.com/"}),
-        "extra argument": _call("u2", "view", {"path": "x", "made_up_key": [1, 2]}),
+        "extra argument": _call("u2", "view", {"path": "x", "command": "view"}),
         "missing argument": _call("u3", "create", {"path": "x"}),
         "not a string": _call("u4", "powershell", {"command": ["uv", "run"]}),
         "subagent": _call("u5", "view", {"path": "x"}, event={"agentId": "a1"}),
