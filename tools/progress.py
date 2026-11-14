@@ -2507,8 +2507,8 @@ def _axes_svg(timeline: Timeline, plot: _Plot) -> list[str]:
 
 
 def _day_text(day: Day, i: int) -> tuple[str, str, str]:
-    """EXE i's figures on `day` as the table and the tooltips word them: strict with its
-    change, then functions and fuzzy (None until its tables exist: strict says not started)."""
+    """EXE i's figures on `day` as the table words them: strict with its change, then functions
+    and fuzzy; before its tables exist, "not started" and two empty strings."""
     if day.percents[i] is None:
         return _change(None, None), "", ""
     return (_change(day.percents[i], day.deltas[i]),
@@ -2518,7 +2518,8 @@ def _day_text(day: Day, i: int) -> tuple[str, str, str]:
 
 def _line_svg(timeline: Timeline, i: int, plot: _Plot, values: _Values) -> list[str]:
     """EXE i's line, unbroken over the days it has a figure, and a marker per active day with
-    the day's three figures and driver as its tooltip."""
+    the day's three figures (strict labelled, since every chart shows all three) and driver as
+    its tooltip."""
     x, y = plot.x, plot.y
     points, dots = [], []
     for day in timeline.days:
@@ -2528,7 +2529,7 @@ def _line_svg(timeline: Timeline, i: int, plot: _Plot, values: _Values) -> list[
         points.append(f"{'L' if points else 'M'}{_num(x(day.index))},{_num(y(value))}")
         if not day.active:
             continue
-        title = (f"Day {day.index}, {day.date}: {_short(timeline.labels[i])} "
+        title = (f"Day {day.index}, {day.date}: {_short(timeline.labels[i])} strict "
                  f"{', '.join(_day_text(day, i))}. {day.driver}")
         dots.append(f'<circle class="tl-dot s{i}" cx="{_num(x(day.index))}" '
                     f'cy="{_num(y(value))}" r="{CHART_DOT}"><title>{_xml(title)}</title></circle>')

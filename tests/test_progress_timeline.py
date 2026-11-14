@@ -478,7 +478,9 @@ def test_main_charts_the_history_of_a_checkout(tmp_path):
         assert ">UFO2P<" in svg and ">TACP<" in svg  # direct labels
         titles = re.findall(r"<title>(.*?)</title>", svg)
         assert any("Claude Haiku 5.5: 1 match" in t for t in titles)
-        assert any("UFO2P 6.5574% (+6.5574), functions 25%, fuzzy 13.1148%" in t for t in titles)
+        # Every chart's tooltip names all three figures, strict labelled too.
+        assert any("UFO2P strict 6.5574% (+6.5574), functions 25%, fuzzy 13.1148%" in t
+                   for t in titles)  # fmt: skip
     # Each chart has its own y-axis: functions tops out near 25%, strict near 6.6%.
     tops = [max(float(v) for v in re.findall(r'text-anchor="end">([0-9.]+)%</text>', svg))
             for _title, svg in charts]  # fmt: skip
