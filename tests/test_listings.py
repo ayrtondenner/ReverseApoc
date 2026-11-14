@@ -58,6 +58,11 @@ PAGES_FILES = ("progress-shield-ufo2p.json", "progress-shield-tacp.json", "progr
 SHIELDS = (("ufo2p", "UFO2P.EXE"), ("tacp", "TACP.EXE"))
 # The combined shield: still published for existing consumers, no longer shown in the README.
 COMBINED_SHIELD = "progress-shield.json"
+# Todo progress-three-figures: next to each EXE's strict badge, its function-ratio and fuzzy
+# badges (owner-delegated ruling of 2026-11-13: separate badges); the combined endpoints of
+# both are published and named, not shown.
+FIGURES = ("functions", "fuzzy")
+COMBINED_FIGURE_SHIELDS = tuple(f"progress-shield-{figure}.json" for figure in FIGURES)
 SHIELDS_ENDPOINT = "https://img.shields.io/endpoint?url="
 # The mosaic's categories (D-26, D-50), each defined as a bold `**name**:` list item.
 CATEGORIES = ("matched", "partial", "unmatched", "library", "uncovered")
@@ -65,9 +70,9 @@ CATEGORIES = ("matched", "partial", "unmatched", "library", "uncovered")
 # combined figure comes from summed bytes, not an average of the two EXEs.
 DENOMINATOR = "over all game and thunk bytes plus the uncovered bytes"
 COMBINED = "from summed bytes"
-# tools/progress.py: a partial row earns nothing in the percentage or the function ratio;
-# only report.json's fuzzy percent credits it.
-PARTIAL_RULE = "counts for nothing in the percentage or the function ratio"
+# tools/progress.py: a partial row earns nothing in the strict percentage or the function
+# ratio; only the fuzzy figure credits it.
+PARTIAL_RULE = "counts for nothing in the strict percentage or the function ratio"
 RATIO = "matched game and thunk functions over all game and thunk functions"
 # What the figures are computed from (tools/progress.py inputs) and what they leave out.
 PROGRESS_NEEDLES = ("status.csv", "functions.csv", "units.csv", "data-in-code", "3-byte")
@@ -200,6 +205,28 @@ def test_readme_shows_one_shield_per_exe():
     assert f"`{COMBINED_SHIELD}`" in section
 
 
+def test_readme_shows_three_badges_per_exe():
+    # Each EXE's strict badge comes first, then its functions and fuzzy badges, on one line.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    for stem, label in SHIELDS:
+        names = [f"progress-shield-{stem}.json",
+                 *(f"progress-shield-{figure}-{stem}.json" for figure in FIGURES)]
+        line = next(line for line in section.splitlines() if names[0] in line)
+        at = [line.find(f"{SHIELDS_ENDPOINT}{PAGES}{name})") for name in names]
+        assert -1 not in at and at == sorted(at), label
+    for name in COMBINED_FIGURE_SHIELDS:
+        assert f"{SHIELDS_ENDPOINT}{PAGES}{name}" not in section
+        assert f"`{name}`" in section
+
+
+def test_readme_defines_three_figures():
+    # The strict percent stays the headline: the only figure proven by byte comparison.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    for needle in ("**strict**", "**functions**", "**fuzzy**",
+                   "the only one proven by byte comparison", "fuzzy_match_percent"):
+        assert needle in section, needle
+
+
 def test_readme_describes_the_mosaic_labels():
     # Owner ruling 2 (2026-10-26): a game unit is labelled with its unit name, a library unit
     # with its largest runtime function; small units carry none. A name too long for its unit is
@@ -229,8 +256,8 @@ def test_readme_percentage_counts_uncovered_bytes():
 
 
 def test_readme_partial_gets_no_credit():
-    # A partial row counts for nothing in the percentage or the function ratio (progress.py);
-    # only report.json's fuzzy percent gives it credit.
+    # A partial row counts for nothing in the strict percentage or the function ratio
+    # (progress.py); only the fuzzy figure gives it credit.
     section = _section(README.read_text(encoding="utf-8"), "Progress")
     partial = _category_line(section, "partial")
     assert PARTIAL_RULE in partial

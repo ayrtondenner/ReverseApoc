@@ -11,7 +11,11 @@ Every number comes from config/<exe>/functions.csv, units.csv and the gate-writt
   matched, a `partial` row partial, no row unmatched (status.csv is sparse);
 - the uncovered bytes lie inside a units.csv span but in no functions.csv row (D-50). Most are
   alignment filler; they count as unmatched code, so they are in the denominator (D-40);
-- the percent is matched bytes over code plus uncovered bytes, per EXE and combined;
+- the percent (the strict figure, the headline) is matched bytes over code plus uncovered
+  bytes, per EXE and combined; next to it, functions_percent is matched over game and thunk
+  functions (a count, not a size) and fuzzy_percent each function's best_percent weighted by its
+  bytes over the same denominator (objdiff's closeness, partial credit), the figures report.json
+  carries as matched_functions_percent and fuzzy_match_percent;
 - the runtime library ("library, not decompiled") is its own group outside the percentage, and
   data-in-code is excluded (D-26);
 - bytes outside every unit span (the 3-byte UFO2P tail past 0x000CFADA) are not in any CSV row
@@ -37,10 +41,13 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
 
 --out DIR writes DIR/progress.json, DIR/progress-shield.json (the combined shields.io endpoint),
 DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.json and
-progress-shield-tacp.json), DIR/progress.svg (the mosaic: a squarified treemap,
-EXE > unit > function), and DIR/index.html (the progress page, served at the Pages root:
-per-EXE bars and function strips, the mosaic inline and, when --config sits in a git checkout,
-the progress-over-days chart re-derived from its history; a shallow clone gets a note instead);
+progress-shield-tacp.json), DIR/progress-shield-functions.json and
+DIR/progress-shield-fuzzy.json (the function ratio and the fuzzy percent, combined) with
+DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the mosaic: a
+squarified treemap, EXE > unit > function), and DIR/index.html (the progress page, served at
+the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
+when --config sits in a git checkout, the progress-over-days chart re-derived from its history;
+a shallow clone gets a note instead);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -56,6 +63,7 @@ import dataclasses
 import datetime
 import functools
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -95,6 +103,15 @@ PROGRESS_JSON, SHIELD_JSON = "progress.json", "progress-shield.json"
 EXE_SHIELD_JSON = "progress-shield-{stem}.json"  # one endpoint per EXE (owner ruling 1)
 SHIELD_SCHEMA_VERSION = 1
 SHIELD_LABEL = "decompiled"
+# The function ratio and the fuzzy percent get endpoints of their own next to the strict ones
+# (owner-delegated ruling 2026-11-13): figure -> (combined label, per-EXE label after the EXE,
+# the Totals figure it shows).
+FIGURE_SHIELDS = {
+    "functions": ("functions matched", "functions", lambda totals: totals.functions_percent),
+    "fuzzy": ("fuzzy match", "fuzzy", lambda totals: totals.fuzzy_percent),
+}
+FIGURE_SHIELD_JSON = "progress-shield-{figure}.json"
+EXE_FIGURE_SHIELD_JSON = "progress-shield-{figure}-{stem}.json"
 # (lowest percent, shields.io named colour), checked from the top.
 SHIELD_COLORS = ((100.0, "brightgreen"), (50.0, "green"), (25.0, "yellowgreen"),
                  (10.0, "yellow"), (1.0, "orange"), (0.0, "red"))  # fmt: skip
@@ -226,14 +243,15 @@ def read_status(path: Path, text: str | None = None) -> list[Status]:
         if rec["status"] not in (MATCHED, PARTIAL):
             raise ProgressError(f"{path}: data row {number}: status {rec['status']!r} is not "
                                 f"{MATCHED} or {PARTIAL}")  # fmt: skip
-        if not _PERCENT_CELL.fullmatch(rec["best_percent"]):
-            raise ProgressError(f"{path}: data row {number}: best_percent "
-                                f"{rec['best_percent']!r} is not a percent with 2 decimals")
+        cell = rec["best_percent"]
+        if not _PERCENT_CELL.fullmatch(cell) or float(cell) > PERCENT_MAX:  # status.check_row
+            raise ProgressError(f"{path}: data row {number}: best_percent {cell!r} is not a "
+                                "percent from 0 to 100 with 2 decimals")  # fmt: skip
         start = _address(path, number, "start", rec["start"])
         if rows and start <= rows[-1].start:
             raise ProgressError(f"{path}: data row {number}: starts are not sorted and unique")
         rows.append(Status(start, rec["name"], rec["unit"], rec["status"],
-                           float(rec["best_percent"])))  # fmt: skip
+                           float(cell)))  # fmt: skip
     return rows
 
 
@@ -245,6 +263,24 @@ def percent(part: int, total: int) -> float:
     if total == 0:
         return PERCENT_MAX
     return round(100.0 * part / total, PERCENT_DECIMALS)
+
+
+# best_percent has two decimals (status.py's rule), so a function's fuzzy weight, its bytes times
+# its best_percent, is a whole number of hundredths: integer sums are exact in any order, so the
+# per-EXE, combined and report.json figures cannot round apart.
+FUZZY_SCALE = 100
+
+
+def _fuzzy_weight(functions: Iterable[Function]) -> int:
+    return sum(f.size * round(f.best_percent * FUZZY_SCALE) for f in functions)
+
+
+def _fuzzy(weight: int, total: int) -> float:
+    """The fuzzy percent of `weight` (from _fuzzy_weight) over `total` bytes, 4 decimals; a zero
+    total gives 100.0, objdiff's rule like `percent`."""
+    if total == 0:
+        return PERCENT_MAX
+    return round(weight / (FUZZY_SCALE * total), PERCENT_DECIMALS)
 
 
 @dataclass(frozen=True)
@@ -280,6 +316,7 @@ class Totals:
     total_functions: int = 0
     matched_functions: int = 0
     partial_functions: int = 0
+    fuzzy_weight: int = 0  # _fuzzy_weight of the game + thunk functions
 
     def __add__(self, other: Totals) -> Totals:
         return Totals(*(getattr(self, f.name) + getattr(other, f.name)
@@ -295,7 +332,19 @@ class Totals:
 
     @property
     def percent(self) -> float:
+        """The strict figure, the headline: matched bytes over the denominator."""
         return percent(self.matched_bytes, self.denominator_bytes)
+
+    @property
+    def functions_percent(self) -> float:
+        """Matched functions over game + thunk functions: a count, not a size."""
+        return percent(self.matched_functions, self.total_functions)
+
+    @property
+    def fuzzy_percent(self) -> float:
+        """objdiff's closeness, partial credit: best_percent weighted by bytes over the strict
+        figure's denominator, report.json's fuzzy_match_percent."""
+        return _fuzzy(self.fuzzy_weight, self.denominator_bytes)
 
 
 @dataclass(frozen=True)
@@ -333,6 +382,7 @@ class ExeProgress:
             total_functions=len(self.functions),
             matched_functions=sum(1 for f in self.functions if f.status == MATCHED),
             partial_functions=sum(1 for f in self.functions if f.status == PARTIAL),
+            fuzzy_weight=_fuzzy_weight(self.functions),
         )
 
 
@@ -1388,6 +1438,8 @@ def _totals_doc(totals: Totals) -> dict[str, object]:
         "uncovered_bytes": totals.uncovered_bytes,
         "denominator_bytes": totals.denominator_bytes,
         "percent": totals.percent,
+        "functions_percent": totals.functions_percent,
+        "fuzzy_percent": totals.fuzzy_percent,
         "library_bytes": totals.library_bytes,
         "library_functions": totals.library_functions,
         "assembler_bytes": totals.assembler_bytes,
@@ -1473,6 +1525,20 @@ def build_exe_shield(exe: ExeProgress) -> dict[str, object]:
     return _shield_doc(exe.label, exe.totals.percent)
 
 
+def build_figure_shield(progress: Progress, figure: str) -> dict[str, object]:
+    """The combined endpoint of a FIGURE_SHIELDS figure: the function ratio or the fuzzy
+    percent, in the strict shield's shape and colour scale (owner-delegated ruling 2026-11-13:
+    separate badges, the strict endpoints unchanged)."""
+    label, _exe_label, value = FIGURE_SHIELDS[figure]
+    return _shield_doc(label, value(progress.combined))
+
+
+def build_exe_figure_shield(exe: ExeProgress, figure: str) -> dict[str, object]:
+    """One EXE's endpoint of a FIGURE_SHIELDS figure, labelled with the EXE and the figure."""
+    _label, exe_label, value = FIGURE_SHIELDS[figure]
+    return _shield_doc(f"{exe.label} {exe_label}", value(exe.totals))
+
+
 def write_progress_json(progress: Progress, path: Path, commit: str | None = None,
                         mechanics: Mechanics | None = None) -> None:  # fmt: skip
     _write_atomic(path, render(build_progress(progress, commit, mechanics)))
@@ -1486,16 +1552,25 @@ def write_exe_shield(progress: Progress, path: Path, stem: str) -> None:
     _write_atomic(path, render(build_exe_shield(progress.exe(stem))))
 
 
+def write_figure_shield(progress: Progress, path: Path, figure: str) -> None:
+    _write_atomic(path, render(build_figure_shield(progress, figure)))
+
+
+def write_exe_figure_shield(progress: Progress, path: Path, stem: str, figure: str) -> None:
+    _write_atomic(path, render(build_exe_figure_shield(progress.exe(stem), figure)))
+
+
 # ---- report.json in objdiff's report shape (D-28, D-49) ----
 
 
 @dataclass(frozen=True)
 class _Tally:
-    """What objdiff's Measures sum over units. `fuzzy` is the size-weighted percent sum."""
+    """What objdiff's Measures sum over units. `fuzzy` is _fuzzy_weight, the integer weight
+    Totals.fuzzy_weight holds, so a category's fuzzy_match_percent is its EXE's fuzzy_percent."""
 
     code: int = 0
     matched: int = 0
-    fuzzy: float = 0.0
+    fuzzy: int = 0
     functions: int = 0
     matched_functions: int = 0
     units: int = 0
@@ -1510,9 +1585,8 @@ class _Tally:
         """Every report.proto Measures field: u64 as decimal strings (pbjson's proto3 JSON
         mapping), u32 and floats as numbers. No data is measured, so data totals are 0 and
         their percents 100.0, objdiff's figure for a zero total."""
-        fuzzy = PERCENT_MAX if self.code == 0 else round(self.fuzzy / self.code, PERCENT_DECIMALS)
         return {
-            "fuzzy_match_percent": fuzzy,
+            "fuzzy_match_percent": _fuzzy(self.fuzzy, self.code),
             "total_code": str(self.code),
             "matched_code": str(self.matched),
             "matched_code_percent": percent(self.matched, self.code),
@@ -1540,7 +1614,7 @@ def _unit_tally(functions: Sequence[Function]) -> _Tally:
     code = sum(f.size for f in functions)
     complete = all(f.status == MATCHED for f in functions)
     return _Tally(code=code, matched=sum(f.size for f in functions if f.status == MATCHED),
-                  fuzzy=sum(f.size * f.best_percent for f in functions),
+                  fuzzy=_fuzzy_weight(functions),
                   functions=len(functions),
                   matched_functions=sum(1 for f in functions if f.status == MATCHED),
                   units=1, complete_units=int(complete),
@@ -1579,7 +1653,9 @@ def _report_units(exe: ExeProgress) -> list[tuple[dict[str, object], _Tally]]:
 def build_report(progress: Progress) -> dict[str, object]:
     """report.json: objdiff's Report with `measures`, `units`, `version` and one category per
     EXE (D-28, D-49). Its combined matched_code_percent is progress.json's combined percent:
-    both are matched bytes over game + thunk + uncovered bytes."""
+    both are matched bytes over game + thunk + uncovered bytes. Likewise, per category and
+    combined, fuzzy_match_percent is progress.json's fuzzy_percent and
+    matched_functions_percent its functions_percent (the same integer sums, the same helpers)."""
     units: list[dict[str, object]] = []
     categories: list[dict[str, object]] = []
     total = _Tally()
@@ -2026,20 +2102,31 @@ MOSAIC_REGION = ('<div class="mosaic" tabindex="0" role="region" '
 SWATCH_SIZE = ".75rem"  # the HTML legend's colour square
 # Backlog 999.4 fix #1: the strip's tooltips need a mouse, so each EXE also lists them as text.
 TOOLTIP_LIST_SUMMARY = "Matched and partial functions"
+# Each EXE's headline (todo progress-three-figures): the strict percent first and larger, then
+# the function ratio and the fuzzy percent, each with its one-line definition.
+STRICT_LINE = "strict: byte-identical functions only, by bytes"
+FUNCTIONS_LINE = "functions: matched functions by count, not size"
+FUZZY_LINE = "fuzzy: objdiff's closeness by bytes, partial credit"
 MEASURED = (
     "A function is matched when its C, built with the original Watcom compiler, is "
     "byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE "
     "SHA-1. A partial function scored above 0% in objdiff but is not byte-identical yet; it "
-    "counts for nothing in the percentage or the function ratio. Every other game or thunk "
-    "function is unmatched: the rebuilt EXE still carries its original bytes.",
-    "The percentage is matched bytes of game and thunk functions over all game and thunk bytes "
+    "counts for nothing in the strict percentage or the function ratio, and only the fuzzy "
+    "figure gives it credit. Every other game or thunk function is unmatched: the rebuilt EXE "
+    "still carries its original bytes.",
+    "Each EXE shows three figures. Strict, the headline and the only one proven by byte "
+    "comparison, is matched bytes of game and thunk functions over all game and thunk bytes "
     "plus the uncovered bytes, the bytes inside a unit that no function row covers (mostly "
-    "alignment filler). The function ratio is matched game and thunk functions over all game "
-    "and thunk functions. The Watcom runtime library (blue in the mosaic) is not decompiled and "
-    "stays outside both; data-in-code is excluded. Game functions on the owner-signed assembler "
-    "list (config/asm-functions.csv: hand-written assembly, which cannot match from C) are drawn "
-    "and counted with the library, outside both, on this page, in progress.json, the badges and "
-    "report.json; the DecompHub feed decomphub.progress.json still counts them as game code.",
+    "alignment filler). Functions, the function ratio, is matched game and thunk functions over "
+    "all game and thunk functions: a count, not a size. Fuzzy is objdiff's closeness with "
+    "partial credit: each game and thunk function's best objdiff score (100% when matched, its "
+    "best when partial, 0 otherwise) weighted by its bytes, over the same bytes as strict; "
+    "report.json carries it as fuzzy_match_percent. The Watcom runtime library (blue in the "
+    "mosaic) is not decompiled and stays outside all three; data-in-code is excluded. Game "
+    "functions on the owner-signed assembler list (config/asm-functions.csv: hand-written "
+    "assembly, which cannot match from C) are drawn and counted with the library, outside all "
+    "three, on this page, in progress.json, the badges and report.json; the DecompHub feed "
+    "decomphub.progress.json still counts them as game code.",
     "Every figure comes from committed tables: the status.csv files that reverseapoc gate "
     "writes, plus each EXE's functions.csv and units.csv. This page is regenerated from them on "
     "every push to main. The raw numbers are in <a href=\"progress.json\">progress.json</a>, the "
@@ -2091,6 +2178,11 @@ def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = 
         "a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}",
         ".exe{display:grid;grid-template-columns:8rem minmax(0,1fr);column-gap:1.5rem;"
         "align-items:start;margin:2rem 0}",
+        ".three{margin:0 0 .5rem;padding:0;list-style:none;color:var(--secondary);"
+        "font-size:.875rem;font-variant-numeric:tabular-nums}",
+        ".three b{color:var(--ink);font-weight:600}",
+        ".three .strict{color:var(--ink);font-size:1rem}",
+        ".three .strict b{font-size:1.5rem;font-weight:700;line-height:1.2}",
         ".line{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1rem}",
         f".bar{{flex:1 1 12rem;height:{BAR_HEIGHT}px;background:{TREEMAP_COLORS[UNMATCHED]}}}",
         f".bar span{{display:block;height:100%;background:{TREEMAP_COLORS[MATCHED]}}}",
@@ -2184,13 +2276,24 @@ def _tooltip_list_html(exe: ExeProgress) -> list[str]:
             "</ul></details>"]  # fmt: skip
 
 
+def _three_html(totals: Totals) -> list[str]:
+    """The headline: the strict percent, the function ratio and the fuzzy percent, each with
+    its one-line definition."""
+    return ['<ul class="three">',
+            f'<li class="strict"><b>{shield_message(totals.percent)}</b> {_xml(STRICT_LINE)}</li>',
+            f"<li><b>{shield_message(totals.functions_percent)}</b> {_xml(FUNCTIONS_LINE)}</li>",
+            f"<li><b>{shield_message(totals.fuzzy_percent)}</b> {_xml(FUZZY_LINE)}</li>",
+            "</ul>"]  # fmt: skip
+
+
 def _exe_html(exe: ExeProgress) -> list[str]:
-    """One EXE's section: its heading, then the percent bar, the figures in text, the function
-    strip and the list of its matched and partial functions."""
+    """One EXE's section: its heading, then the three figures, the percent bar, the figures in
+    text, the function strip and the list of its matched and partial functions."""
     stem = _xml(exe.stem)
     return [f'<section class="exe" aria-labelledby="exe-{stem}">',
             f'<h2 id="exe-{stem}">{_xml(exe.label)}</h2>',
             "<div>",
+            *_three_html(exe.totals),
             '<div class="line">',
             _bar_html(exe.totals.percent),
             f'<p class="figures">{_xml(_figures(exe))}</p>',
@@ -2491,11 +2594,12 @@ def _days_table_html(timeline: Timeline) -> list[str]:
 
 
 TIMELINE_CAPTION = (
-    "Matched code per EXE at the end of each day since the first commit, re-derived from the "
-    "history of each EXE's status, functions and units tables the way the figures above are "
-    "(a change counts on the day it reached main). Each marker's tooltip and the table name the "
-    "day's biggest driver; the table also sums what the day did: match commits by co-author, "
-    "flags approvals, drive runs, tooling and plan commits, and learnings.")
+    "The strict figure (matched code bytes) per EXE at the end of each day since the first "
+    "commit, re-derived from the history of each EXE's status, functions and units tables the "
+    "way the figures above are (a change counts on the day it reached main). Each marker's "
+    "tooltip and the table name the day's biggest driver; the table also sums what the day did: "
+    "match commits by co-author, flags approvals, drive runs, tooling and plan commits, and "
+    "learnings.")
 
 
 def _timeline_html(timeline: Timeline | None) -> list[str]:
@@ -2519,7 +2623,8 @@ def render_html(progress: Progress, commit: str | None = None,
                 mechanics: Mechanics | None = None,
                 timeline: Timeline | None = None) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
-    heading, a percent bar, the figures in text and the function strip (one tick per game and
+    heading, the three figures (strict, functions, fuzzy: todo progress-three-figures), a
+    percent bar, the figures in text and the function strip (one tick per game and
     thunk function in address order; matched and partial ticks stand taller and carry the mosaic
     cell's tooltip, a partial one with its best score;
     the strip wraps with the width) and those tooltips again as a text list in a <details>, then
@@ -2575,8 +2680,8 @@ def _parser() -> argparse.ArgumentParser:
                    help="the config tree (default: %(default)s)")  # fmt: skip
     p.add_argument("--out", type=Path,
                    help="write progress.json, progress-shield.json, one "
-                        "progress-shield-<stem>.json per EXE, progress.svg and the progress "
-                        "page as index.html here")
+                        "progress-shield-<stem>.json per EXE, the functions and fuzzy "
+                        "endpoints, progress.svg and the progress page as index.html here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -2603,6 +2708,16 @@ def _on_shown(write: Callable[[Progress, Path], None]) -> Writer:
     return lambda derived, path: write(derived.shown, path)
 
 
+def _figure_shield_writes(out: Path) -> Iterable[tuple[Path, Writer]]:
+    """(path, writer) of each FIGURE_SHIELDS endpoint: combined, then one per EXE."""
+    for figure in FIGURE_SHIELDS:
+        yield (out / FIGURE_SHIELD_JSON.format(figure=figure),
+               _on_shown(functools.partial(write_figure_shield, figure=figure)))
+    for figure, (stem, _label) in itertools.product(FIGURE_SHIELDS, EXES):
+        yield (out / EXE_FIGURE_SHIELD_JSON.format(figure=figure, stem=stem),
+               _on_shown(functools.partial(write_exe_figure_shield, stem=stem, figure=figure)))
+
+
 def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
@@ -2612,6 +2727,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
                    _on_shown(functools.partial(write_exe_shield, stem=stem)))
+        yield from _figure_shield_writes(args.out)
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
             d.shown, path, args.commit, d.mechanics, d.timeline)

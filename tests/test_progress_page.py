@@ -32,6 +32,7 @@ from test_progress import (
     item_toml,
     load_progress,
     member,
+    shown,
     synthetic_config,
     tick_config,
     tick_members,
@@ -159,6 +160,55 @@ def test_page_how_it_is_measured(tmp_path):
     for needle in (DENOMINATOR, RATIO, PARTIAL_RULE, '<a href="progress.json">progress.json</a>',
                    f'<a href="{WORKFLOW_URL}">report.json</a>',
                    f'<a href="{README_URL}">README</a>'):  # fmt: skip
+        assert needle in section, needle
+
+
+def three_figures(strict: str, functions: str, fuzzy: str) -> str:
+    """One EXE's headline: the strict percent first and larger, then the function ratio and the
+    fuzzy figure, each with its one-line definition."""
+    return ('<ul class="three">\n'
+            f'<li class="strict"><b>{strict}</b> strict: byte-identical functions only, by '
+            "bytes</li>\n"
+            f"<li><b>{functions}</b> functions: matched functions by count, not size</li>\n"
+            f"<li><b>{fuzzy}</b> fuzzy: objdiff's closeness by bytes, partial credit</li>\n"
+            "</ul>")  # fmt: skip
+
+
+def test_page_headline_shows_three_figures(tmp_path):
+    """Todo progress-three-figures: each EXE's section opens with the strict percent, the
+    function ratio and the fuzzy figure, before its bar."""
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    expected = {"ufo2p": three_figures("6.5574%", "25%", "13.1148%"),
+                "tacp": three_figures("0%", "0%", "0%")}  # fmt: skip
+    for stem, headline in expected.items():
+        section = page.split(f'aria-labelledby="exe-{stem}">', 1)[1].split("</section>", 1)[0]
+        assert headline in section, stem
+        assert section.index(headline) < section.index('<div class="bar"'), stem
+    style = style_of(page)
+    assert ".three{" in style and ".three .strict b{" in style
+
+
+def test_page_headline_on_committed_csvs():
+    """On the progress main publishes (signed asm rows moved out), the headline is
+    progress.json's three figures."""
+    progress = page_module()
+    derived = shown(progress, CONFIG)
+    page = progress.render_html(derived, SHA)
+    for exe in derived.exes:
+        t = progress.build_progress(derived)["exes"][exe.stem]
+        headline = three_figures(*(progress.shield_message(t[key]) for key in
+                                   ("percent", "functions_percent", "fuzzy_percent")))
+        assert headline in page, exe.label
+
+
+def test_page_defines_the_three_figures(tmp_path):
+    """How it is measured names the three figures and says which one byte comparison proves."""
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    section = page.split("<h2>How it is measured</h2>", 1)[1].split("</main>", 1)[0]
+    for needle in ("Strict", "the only one proven by byte comparison", "Functions", "Fuzzy",
+                   "fuzzy_match_percent"):  # fmt: skip
         assert needle in section, needle
 
 
