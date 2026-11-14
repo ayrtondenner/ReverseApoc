@@ -419,19 +419,26 @@ def _why(call: Call) -> str:
     return f"with arguments {keys!r}, not its known shape"
 
 
-# night 20261114-nearmiss3: a call whose arguments fail the CLI's own schema is answered
-# `Invalid inputs: ...`, code `failure`, and never runs
-_INVALID = "Invalid inputs: "
+# Nights 20261114-nearmiss3 and -nearmiss4: an edit missing a required field is answered in one
+# of two exact forms, code `failure`, and never runs. Only those forms, only for edit, only
+# naming a required field the call really lacks, with no edits on its completion, are excused
+# (the security review of the first, broader rule).
+_REJECTED_EDIT = (re.compile(r"Invalid inputs: (\w+) is required"),
+                  re.compile(r'"(\w+)": Required'))
 
 
 def _rejected(call: Call) -> bool:
-    """A main-agent call of a known tool that the CLI refused as invalid input: it never ran."""
+    """A main-agent edit the CLI refused for a missing required field: it never ran."""
     done = _mapping(call.complete)
     error = _mapping(done.get("error"))
     message = error.get("message")
-    return (call.own and call.tool in _SHAPES and done.get("success") is False
-            and error.get("code") == _FAILURE_CODE and isinstance(message, str)
-            and message.startswith(_INVALID))  # fmt: skip
+    if not (call.own and call.tool == EDIT and isinstance(call.arguments, Mapping)
+            and done.get("success") is False and error.get("code") == _FAILURE_CODE
+            and isinstance(message, str) and not done.get("fileEdits")):  # fmt: skip
+        return False
+    found = next((m for form in _REJECTED_EDIT if (m := form.fullmatch(message))), None)
+    need = _SHAPES[EDIT][0]
+    return found is not None and found.group(1) in need and found.group(1) not in call.arguments
 
 
 def unknown_steps(events: Sequence[dict]) -> list[str]:
