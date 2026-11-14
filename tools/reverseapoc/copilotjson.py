@@ -271,30 +271,38 @@ def calls(events: Sequence[dict]) -> list[Call]:
     return list(found.values())
 
 
-# Every key some file-tool schema of the CLI defines (1.0.111 cli-main.js: view, create,
-# str_replace, insert, apply_patch). A view/create/edit key outside this set is one no schema
-# has, so the CLI drops it (nights 20261114-nearmiss7 and -lanesC3: `file_path`, `description`);
-# what such a call writes is still judged from its path and fileEdits.
-_CLI_FILE_KEYS = frozenset({"command", "path", "view_range", "view_range[0]",
-                            "view_range[1]", "file_text", "old_str", "new_str", "insert_line",
-                            "actions"})  # fmt: skip
-
-
 def _shaped(tool: object, arguments: object) -> bool:
     if tool not in _SHAPES or not isinstance(arguments, Mapping):
         return False
     need, may = _SHAPES[tool]
-    extra = set(arguments) - set(need) - set(may)
-    if not set(need) <= set(arguments) or (extra and (tool not in _PATH_TOOLS
-                                                       or extra & _CLI_FILE_KEYS)):
+    if not set(need) <= set(arguments) or not set(arguments) <= set(need) | set(may):
         return False
     checks = {**need, **may}
-    return all(checks[key](value) for key, value in arguments.items() if key in checks)
+    return all(checks[key](value) for key, value in arguments.items())
+
+
+# Nights 20261114-nearmiss7 and -lanesC3: the two keys seen on create calls that the CLI drops
+# (no schema of its own has them). Security review of 469cab57: an allowlist of exactly these,
+# on create and edit only, and only when the completion's fileEdits name the call's own path.
+_DROPPED_KEYS = frozenset({"description", "file_path"})
+
+
+def _dropped_keys_only(call: Call) -> bool:
+    """A create or edit whose only extra keys are _DROPPED_KEYS and whose completion edited
+    exactly its own path (the write the audit then judges)."""
+    if call.tool not in _WRITE_TOOLS or not isinstance(call.arguments, Mapping):
+        return False
+    extra = set(call.arguments) & _DROPPED_KEYS
+    rest = {k: v for k, v in call.arguments.items() if k not in _DROPPED_KEYS}
+    edits = _list(_mapping(call.complete).get("fileEdits"))
+    path = rest.get("path")
+    return (bool(extra) and _shaped(call.tool, rest) and len(edits) == 1
+            and _mapping(edits[0]).get("path") == path)  # fmt: skip
 
 
 def known(call: Call) -> bool:
     """A call the audit can judge: a known tool in its known shape, by the main agent."""
-    return call.own and _shaped(call.tool, call.arguments)
+    return call.own and (_shaped(call.tool, call.arguments) or _dropped_keys_only(call))
 
 
 def request(call: Call) -> str:

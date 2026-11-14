@@ -1702,14 +1702,20 @@ def copilot_command_strays(commands: Sequence[str]) -> list[str]:
     command, the uv spelling of the wrapper included, ran past Copilot's one shell rule."""
     out = []
     for command in commands:
-        head, _, rest = command.partition(" ")
-        if head != COPILOT_WRAPPER:
-            out.append(f"command `{command}` is not the session's wrapper `{COPILOT_WRAPPER}`")
-            continue
-        why = _command_stray(" ".join((*hooks.ATTEMPT_PREFIX, rest)))
+        why = next((w for part in command.split(";") if (w := _copilot_part_stray(part.strip()))),
+                   None)  # fmt: skip
         if why is not None:
             out.append(f"command `{command}` {why}")
     return out
+
+
+def _copilot_part_stray(part: str) -> str | None:
+    """Night 20261114-lanesC4: Copilot may chain wrapper calls with `;`; each part must itself
+    be `reverseapoc-attempt <exact form>` (an empty part, or any other text, is a stray)."""
+    head, _, rest = part.partition(" ")
+    if head != COPILOT_WRAPPER:
+        return f"has a part that is not the session's wrapper `{COPILOT_WRAPPER}`"
+    return _command_stray(" ".join((*hooks.ATTEMPT_PREFIX, rest)))
 
 
 def copilot_values(claim: _Claim) -> dict:
