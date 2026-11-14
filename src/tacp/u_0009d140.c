@@ -10,10 +10,29 @@
 INCLUDE_ASM(func_0009D1D0);
 INCLUDE_ASM(func_0009D250);
 INCLUDE_ASM(func_0009D760);
-INCLUDE_ASM(func_0009E930);
 INCLUDE_ASM(func_0009E960);
 INCLUDE_ASM(func_0009EC00);
 INCLUDE_ASM(func_0009EE90);
+
+extern int D_000EA0BC[];
+
+int func_0009E930(int *a, int *b)
+{
+    int x;
+    int y;
+
+    x = *a;
+    y = *b;
+    x = D_000EA0BC[x];
+    y = D_000EA0BC[y];
+    if (x < y) {
+        return -1;
+    }
+    if (x == y) {
+        return x ^ y;
+    }
+    return 1;
+}
 
 /* Runtime calls: open_ is varargs (stack arguments), write_ and close_ take registers. */
 extern int open(char *name, int flags, ...);
