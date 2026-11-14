@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -344,9 +345,35 @@ def commands(events: Sequence[dict]) -> list[str]:
     return [call.arguments["command"] for call in _ran(events, frozenset({SHELL}))]
 
 
+# night 20261114-nearmiss2: a tool result too large to show is saved by Copilot itself to
+# SPILL_DIR/<n>-copilot-tool-output-<pid>-<uuid>.txt and announced in that result; the model
+# may then view it. Only that exact announced path, in that form, counts as the session's own.
+SPILL_DIR = Path(tempfile.gettempdir())
+_SPILL_NAME = re.compile(r"\d+-copilot-tool-output-\d+-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+                         r"\.txt")  # fmt: skip
+_SPILLED = re.compile(r"Output too large to read at once \([\d.]+ KB\)\. Saved to: (\S+)")
+
+
+def _own_spill(path: str) -> bool:
+    folder, _, name = path.replace("/", "\\").rpartition("\\")
+    return (_SPILL_NAME.fullmatch(name) is not None
+            and os.path.normcase(folder) == os.path.normcase(str(SPILL_DIR)))  # fmt: skip
+
+
 def read_targets(events: Sequence[dict]) -> list[str]:
-    """The path of every known view call that was not denied, in order."""
-    return [call.arguments["path"] for call in _ran(events, frozenset({VIEW}))]
+    """The path of every known view call that was not denied, in order, except a view of a
+    spill an earlier result of this session announced (`_SPILLED`, `_own_spill`)."""
+    out, announced = [], set()
+    ran = {call.ident for call in _ran(events, frozenset({VIEW}))}
+    for call in calls(events):
+        if call.ident in ran:
+            path = call.arguments["path"]
+            if path not in announced:
+                out.append(path)
+        texts = _texts(_mapping(call.complete).get("result"))
+        announced |= {m.group(1) for text in texts for m in _SPILLED.finditer(text)
+                      if _own_spill(m.group(1))}  # fmt: skip
+    return out
 
 
 def _edits(events: Sequence[dict]) -> list[str]:
