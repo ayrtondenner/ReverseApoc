@@ -453,6 +453,23 @@ def _enoent(path: str) -> str:
     return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
 
 
+def test_copilotjson_an_edit_without_old_str_of_a_missing_file_never_ran():
+    """Night 20261114-nearmiss5: an edit {path, new_str} of check-note.json, not yet written,
+    failed with ENOENT on its own path before the CLI checked old_str: nothing was written, so
+    it is no unknown step and no write. With another key, another path in the message, or
+    fileEdits on the completion it stays unknown (fail closed)."""
+    note = f"{WS}\\check-note.json"
+    args = {"path": note, "new_str": "{}"}
+    done = [_start(), *_call("t1", "edit", args, ok=False, error=_enoent(note), code="failure")]
+    assert copilotjson.unknown_steps(done) == [] and copilotjson.write_targets(done) == []
+    for call in (_call("t1", "edit", {**args, "made_up": 1}, ok=False, error=_enoent(note),
+                       code="failure"),
+                 _call("t1", "edit", args, ok=False, error=_enoent(note + "x"), code="failure"),
+                 _call("t1", "edit", args, ok=False, error=_enoent(note), code="failure",
+                       edits=((note, "edit"),))):  # fmt: skip
+        assert copilotjson.unknown_steps([_start(), *call])
+
+
 def test_copilotjson_an_edit_of_a_missing_file_wrote_nothing():
     """Night 20261114-nearmiss: Haiku tried an edit of `<run>/ufo2p/src/ufo2p/<unit>.c`, a path
     that does not exist; Copilot failed it with code `failure` and ENOENT before its permission
