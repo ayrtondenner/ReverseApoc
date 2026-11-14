@@ -399,12 +399,27 @@ def _texts(value: object):
             yield from _texts(item)
 
 
+# Copilot's own --max-ai-credits reporting, which it hands back as postToolUse guidance: the
+# whole rest of a result after the guidance header, and nothing else (the coordinator's check of
+# 2026-11-13: present with the cap, absent without it, under a fresh COPILOT_HOME)
+_CREDIT_CAP_LINE = re.compile(r":\n\[cost: \d{1,3}% used · \$\d+\.\d{2} left\]")
+
+
+def _hook_text(text: str) -> re.Match | None:
+    """The hook guidance in one result text, unless it is only the credit cap's own line."""
+    found = _HOOK_TEXT.search(text)
+    if found is None or _CREDIT_CAP_LINE.fullmatch(text, found.end()):
+        return None
+    return found
+
+
 def hook_traces(events: Sequence[dict]) -> list[str]:
-    """Each tool result that carries a hook's guidance text, named by its call and the text."""
+    """Each tool result that carries a hook's guidance text, named by its call and the text
+    (the credit cap's own line alone is none)."""
     out = []
     for call in calls(events):
         result = _mapping(call.complete).get("result")
-        found = next((m for text in _texts(result) if (m := _HOOK_TEXT.search(text))), None)
+        found = next((m for text in _texts(result) if (m := _hook_text(text))), None)
         if found is not None:
             out.append(f"tool call {call.ident!r}: its result carries hook text "
                        f"{found.string[found.start():found.start() + _EXCERPT]!r}")

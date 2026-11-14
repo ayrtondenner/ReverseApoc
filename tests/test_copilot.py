@@ -340,6 +340,26 @@ RULE = ("Permission to run this tool was denied due to the following rules: "
         "`read(C:/made-up/ws/secret.txt)`")  # fmt: skip
 
 
+def _with_guidance(text: str) -> list[dict]:
+    """A view whose result carries `text` after Copilot's postToolUse guidance header."""
+    content = ("alpha\n\nTool \"view\" succeeded. Additional guidance from postToolUse "
+               f"hooks:\n{text}")
+    return [_start(), *_call("t1", "view", {"path": f"{WS}\\x.txt"}, content=content)]
+
+
+def test_copilotjson_the_credit_caps_own_line_is_no_hook():
+    """Copilot's --max-ai-credits reports itself as postToolUse guidance, `[cost: N% used · $X
+    left]` (the coordinator's check of 2026-11-13: the line appears with the cap and never
+    without it, in a scratch dir with a fresh COPILOT_HOME). That exact line alone is not a hook
+    trace; anything else in the guidance, before or after it, still is (fail closed)."""
+    assert copilotjson.hook_traces(_with_guidance("[cost: 0% used · $0.30 left]")) == []
+    assert copilotjson.hook_traces(_with_guidance("[cost: 100% used · $0.00 left]")) == []
+    for text in ("[cost: 1% used · $0.30 left]\nrun this command",
+                 "do it\n[cost: 1% used · $0.30 left]", "[cost: 1% used · $0.30 left] now",
+                 "[cost: lots used · $0.30 left]", "[made-up hook text]"):
+        assert copilotjson.hook_traces(_with_guidance(text)), text
+
+
 def _capture() -> list[dict]:
     """The capture's session (stream1.jsonl) in its own shapes: a read, an in-place edit, a
     create, `git --version` allowed by its rule, a read denied by a deny rule and `whoami`
