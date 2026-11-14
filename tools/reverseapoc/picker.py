@@ -585,6 +585,7 @@ def _group_items(mech: Mechanics, group: _Group, graph: CallGraph, ranks: Ranks,
 # ---- the near-miss lane (todo near-miss-lane, 2026-11-13) ----
 
 NEAR_MISS_MIN = 80.0  # the lane's default minimum best_percent (`drive --near-miss` bare)
+_FULL_PERCENT = 100.0  # a best already here waits on a flags ruling, not on an attempt
 
 
 @dataclass(frozen=True, slots=True)
@@ -633,11 +634,13 @@ def near_miss_queue(percents: Mapping[Key, float], ranks: Ranks, units: Units, *
                     minimum: float = NEAR_MISS_MIN,
                     excluded: Container[Key] = frozenset()) -> NearMissQueue:  # fmt: skip
     """The near-miss queue of the partial rows in `percents` (key -> status.csv best_percent)
-    at `minimum` or more, minus the `excluded` keys (the signed asm list's asm and held rows).
-    A queued row without a rank or a unit is refused."""
+    at `minimum` or more, minus the `excluded` keys (the signed asm list's asm and held rows)
+    and minus rows already at 100: those reached objdiff's 100% and failed the gate, and on
+    the committed records each waits on a flags ruling (`needs flags ...`) that another attempt
+    cannot give (coordinator, 2026-11-14). A queued row without a rank or a unit is refused."""
     items = []
     for key in sorted(percents, key=lambda k: (EXE_ORDER.index(k[0]), k[1])):
-        if percents[key] < minimum or key in excluded:
+        if not minimum <= percents[key] < _FULL_PERCENT or key in excluded:
             continue
         rank, pick = _ranked_pick(*key, ranks, units, "partial row")
         items.append(NearMissItem(0, 0, rank, pick, best_percent=percents[key]))
