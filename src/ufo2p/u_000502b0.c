@@ -14,7 +14,6 @@ INCLUDE_ASM(func_00050920);
 INCLUDE_ASM(func_000509C0);
 INCLUDE_ASM(func_00050A20);
 INCLUDE_ASM(func_00050A80);
-INCLUDE_ASM(func_00050AE0);
 
 extern short D_000D504C;
 extern short hover_info_changed;
@@ -30,6 +29,42 @@ extern short D_00183B04;
 extern short D_00183B06;
 
 void func_0005EDF0(void);
+
+extern short D_000D4E28;
+extern unsigned char D_000D5060;
+extern short D_000D505E;
+extern short D_000D505C;
+extern int D_000E72D0;
+
+short func_0005E550(short arg0);
+short func_0005E500(short arg0);
+short func_000602E0(void);
+void func_0004E0C0(void);
+void func_00012310(void);
+
+void func_00050AE0(void)
+{
+    short one;
+
+    if (D_000D4E28 != 9) {
+        if (D_000D5060 == 0) {
+            if (D_000D505E == 0 && D_000D505C == 0 && !func_0005E550(D_000D5060) && !func_000602E0()) {
+                D_000D4D58 = 600;
+                D_000D4D5C = 600;
+                hover_info_changed = 1;
+                D_00183A80 = 1;
+                D_000D5064 = 1;
+                func_0004E0C0();
+                func_00012310();
+            }
+        } else if (D_000D505E == 0 && !func_0005E500(D_000D5060)) {
+            D_000E72D0 = 1;
+        }
+    }
+    one = 1;
+    hover_info_changed = one;
+    D_00183A80 = one;
+}
 
 void func_00050BB0(void)
 {
