@@ -7,23 +7,31 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ## Progress
 
-![UFO2P.EXE progress](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-ufo2p.json) ![TACP.EXE progress](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-tacp.json)
+![UFO2P.EXE progress](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-ufo2p.json) ![UFO2P.EXE functions matched](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-functions-ufo2p.json) ![UFO2P.EXE fuzzy match](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-fuzzy-ufo2p.json)
+
+![TACP.EXE progress](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-tacp.json) ![TACP.EXE functions matched](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-functions-tacp.json) ![TACP.EXE fuzzy match](https://img.shields.io/endpoint?url=https://ayrtondenner.github.io/ReverseApoc/progress-shield-fuzzy-tacp.json)
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-The [progress page](https://ayrtondenner.github.io/ReverseApoc/) shows, for each EXE, its percent bar and a strip of one tick per game and thunk function in address order, then this mosaic. Once `config/mechanics.toml` maps the OpenApoc checklist items to the original code, a Mechanics coverage section lists each item and tier with two figures: must match (the functions the item needs, stopping at hub functions many items share) and full closure (every game or thunk function its call tree reaches). A tier reads matched only when status.csv says every must-match function is.
+The [progress page](https://ayrtondenner.github.io/ReverseApoc/) shows, for each EXE, its three figures (each with a one-line definition), its percent bar and a strip of one tick per game and thunk function in address order, then this mosaic. Once `config/mechanics.toml` maps the OpenApoc checklist items to the original code, a Mechanics coverage section lists each item and tier with two figures: must match (the functions the item needs, stopping at hub functions many items share) and full closure (every game or thunk function its call tree reaches). A tier reads matched only when status.csv says every must-match function is.
 
-The two badges (one per EXE, each coloured by its own percent), the mosaic, the progress page and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are regenerated on every push to `main`, together with the combined `progress-shield.json` endpoint (kept for existing consumers, not shown here) and the objdiff-shaped report.json, and published to GitHub Pages. They come from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`. The percentage is matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes, per EXE and combined (thunks count as code); the combined figure comes from summed bytes, not an average. The function ratio is matched game and thunk functions over all game and thunk functions. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
+The six badges (per EXE its strict, functions and fuzzy figures, each coloured by its own value), the mosaic, the progress page and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json), as `percent`, `functions_percent` and `fuzzy_percent`) are regenerated on every push to `main`, together with the combined `progress-shield.json`, `progress-shield-functions.json` and `progress-shield-fuzzy.json` endpoints (kept for consumers, not shown here) and the objdiff-shaped report.json, and published to GitHub Pages. They come from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`. Each EXE, and both combined, has three figures:
+
+- **strict**, the headline and the only one proven by byte comparison: matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes (thunks count as code); the combined figure comes from summed bytes, not an average;
+- **functions**, the function ratio: matched game and thunk functions over all game and thunk functions, a count, not a size;
+- **fuzzy**, objdiff's closeness with partial credit: each game and thunk function's best objdiff score (100% when matched, its best when partial, 0 otherwise) weighted by its bytes, over the same bytes as strict; report.json carries the same number as `fuzzy_match_percent`.
+
+The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
 
 - **matched**: byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE SHA-1;
-- **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts for nothing in the percentage or the function ratio (only report.json's fuzzy percent gives it credit);
+- **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts for nothing in the strict percentage or the function ratio (only the fuzzy figure gives it credit);
 - **unmatched**: no gate-written matched or partial row; the rebuilt EXE still carries the original bytes of the function, kept by the in-place splice;
-- **library**: the Watcom runtime library, not decompiled and outside both sides of the percentage; data-in-code is excluded too. Game functions on the owner-signed assembler list (`config/asm-functions.csv`: hand-written assembly, which cannot match from C) are drawn and counted with the library, outside the percentage and the function ratio, in the badges, the progress page, progress.json and report.json; decomphub.progress.json still counts them as game code;
+- **library**: the Watcom runtime library, not decompiled and outside all three figures; data-in-code is excluded too. Game functions on the owner-signed assembler list (`config/asm-functions.csv`: hand-written assembly, which cannot match from C) are drawn and counted with the library, outside all three figures, in the badges, the progress page, progress.json and report.json; decomphub.progress.json still counts them as game code;
 - **uncovered**: bytes inside a unit span that no functions.csv row of any kind covers (runtime and data-in-code rows count as covering), mostly alignment filler between functions. They are in the denominator. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
 
 Each unit with room for a label carries one: a game unit its unit name (the name its C file takes under `src/ufo2p/` or `src/tacp/`, such as `u_00089980`), a library unit the name of its largest runtime function (such as `__int7`, the FPU emulator). A name too long for its unit is cut short and ends with an ellipsis, as long as at least six of its characters still fit. Small units have none.
 
-The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json). That file changes only when a `gate EXE/UNIT` run passes.
+The strict and functions figures, per EXE, are committed for DecompHub (a percent and a ratio; it has no fuzzy track): [Progress data](decomphub.progress.json). That file changes only when a `gate EXE/UNIT` run passes.
 
 ## How an agent session matches a function
 
@@ -85,7 +93,7 @@ flowchart TD
 | Result | What it means | What the driver does |
 |---|---|---|
 | **MATCHED** | The C compiles to the original bytes: objdiff 100%, the relocations agree, and the spliced EXE keeps the retail SHA-1. | One commit with explicit paths (the unit, `status.csv`, `decomphub.progress.json`, `progress/attempts.jsonl`), marked `Matched-By: reverseapoc drive`. It counts in the progress figures. |
-| **PARTIAL** | The C scores above 0% in objdiff but is not byte-identical yet. | The best C is kept under `build/` with its score, the unit is reset, and the function goes back in the queue. After 3 attempts it moves to the difficult list for a later pass. It counts for nothing in the percentage. |
+| **PARTIAL** | The C scores above 0% in objdiff but is not byte-identical yet. | The best C is kept under `build/` with its score, the unit is reset, and the function goes back in the queue. After 3 attempts it moves to the difficult list for a later pass. It counts for nothing in the strict percentage or the function ratio; the fuzzy figure gives it partial credit. |
 
 On the first pilot night (run `20261026-005209`), 40 sessions gave 3 MATCHED and 37 PARTIAL; the closest partials
 reached 87.5% and 87.2%. At the end of every night the driver rebuilds both EXEs, checks their SHA-1s and re-runs the
@@ -230,7 +238,7 @@ Verdicts in short; the full table with reasons, install method and status is in 
 
 ## Directories and tracking
 
-- [recomp.fyi](https://recomp.fyi/): listed through a `.recomp.json` at the repo root; it reads an objdiff `report.json` artifact daily for the percentage.
+- [recomp.fyi](https://recomp.fyi/): listed through a `.recomp.json` at the repo root; it reads an objdiff `report.json` artifact daily for the strict percentage (`matched_code_percent`).
 - [decomphub.com](https://decomphub.com/): submitted through its reviewed form at <https://app.decomphub.com/submit> once the repo is public (no file format, no badge).
 - [decomp.dev](https://decomp.dev/): closed to new projects in October 2026, so progress is self-hosted on GitHub Pages.
 - [Decompedia](https://decomp.wiki/): community wiki on decompilation, a place to be listed later.

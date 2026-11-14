@@ -17,7 +17,8 @@ Facts the drafts rely on:
   <https://ayrtondenner.github.io/ReverseApoc/>.
 - Status: the goal is readable C89 that rebuilds both executables byte for byte; it is not reached. Matches so far are
   proven function by function: each matched function is spliced into a copy of the user's own executable and the whole
-  file is SHA-1 checked. No draft gives a count; the progress page carries the numbers (functions matched).
+  file is SHA-1 checked. No draft gives a count; the progress page carries the numbers (per EXE the strict byte
+  percent, the functions matched and the fuzzy figure; only the strict one is proven by byte comparison).
 - Acceptance test: a function counts as matched only when objdiff reports 100% for it, an independent relocation check
   passes, and copies of UFO2P.EXE and TACP.EXE with the matched function spliced in stay SHA-1 identical to the retail
   files.
