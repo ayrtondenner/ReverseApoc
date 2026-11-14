@@ -1413,6 +1413,22 @@ def test_declaration_axis_falls_back_for_three_arrays_of_one_size():
     assert moves == _plan_1_moves(text)
 
 
+def test_declaration_axis_computes_on_line_d():
+    """pr_line_d_c4_h_i to pr_line_d_i_h_c4: the int and the char[4] swap around the short."""
+    lines = ("char v[4];", "short s;", "int b;", "", "take(v, &s, &b);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0), (8, 8)))
+    assert move.text == _body("int b;", "short s;", "char v[4];", *lines[3:])
+
+
+def test_declaration_axis_falls_back_when_the_order_it_needs_is_refused():
+    """pr_line_d_c4_i_h is on line D, and the order its map asks for, pr_line_d_i_c4_h, leaves
+    it: the model cannot say where that one sits, so plan 1's moves stand."""
+    text = _body("char v[4];", "int b;", "short s;", "", "take(v, &b, &s);", "return a;")
+    moves = _axis(text, _pairs((0, 4), (4, 0), (8, 8)))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
 def test_declaration_axis_keeps_computing_for_arrays_of_distinct_sizes():
     """pr_slot_array: no tie, so the slots agree and there is nothing to move."""
     lines = ("int v[3];", "int w[2];", "char x[6];", "", "take(v, w, x);", "return a;")

@@ -161,6 +161,42 @@ SHAPES = {
     "pr_line_c_c4x3_i2": (*_arrays(4, 0x92, 0x93, 0x94), *_ints("de", 0x1BF)),
     "pr_line_c_c4x4_i": (*_arrays(4, 0x95, 0x96, 0x97, 0x98), Marked("e", 4, 0x1C1)),
     "pr_line_c_c4x3_i_late": (*_arrays(4, 0x99, 0x9A, 0x9B), Marked("d", 4, 0x1C2)),
+    # Line D (refit 2026-11-13, after quick 261112-fdx broke it): 4-byte locals beside one
+    # small local in one block, at most two arrays, the small one not declared last, or last
+    # with no array after the first local.
+    "pr_arr_c4_c2_int": C4_C2_INT,
+    "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
+    "pr_line_d_i2_h": (*_ints("ab", 0x1C3), Marked("c", 2, 0x1C5)),  # the control: no array
+    "pr_line_d_c4_i_h": (*_arrays(4, 0x9C), Marked("b", 4, 0x1C6), Marked("c", 2, 0x1C7)),
+    "pr_line_d_h_i_c4": (Marked("a", 2, 0x1C9), Marked("b", 4, 0x1CA),
+                         Marked("c", 4, 0x9F, array=True)),  # fmt: skip
+    "pr_line_d_c4_c2_i_late": (*_arrays(4, 0xA1), Marked("b", 2, 0xA2, array=True),
+                               Marked("c", 4, 0x1CD)),  # fmt: skip
+    "pr_line_d_c4_h_i": (*_arrays(4, 0xA3), Marked("b", 2, 0x1CE), Marked("c", 4, 0x1CF)),
+    "pr_line_d_i_h_c4": (Marked("a", 4, 0x1D0), Marked("b", 2, 0x1D1),
+                         Marked("c", 4, 0xA4, array=True)),  # fmt: skip
+    "pr_line_d_h_c4_i": (Marked("a", 2, 0x1D2), Marked("b", 4, 0xA5, array=True),
+                         Marked("c", 4, 0x1D3)),  # fmt: skip
+    "pr_line_d_c2_c4_i": (*_arrays(2, 0xA6), Marked("b", 4, 0xA7, array=True),
+                          Marked("c", 4, 0x1D4)),  # fmt: skip
+    "pr_line_d_c4_h_c4": (*_arrays(4, 0xA8), Marked("b", 2, 0x1D5),
+                          Marked("c", 4, 0xA9, array=True)),  # fmt: skip
+    "pr_line_d_i_c4_h_i": (Marked("a", 4, 0x1D6), Marked("b", 4, 0xAA, array=True),
+                           Marked("c", 2, 0x1D7), Marked("d", 4, 0x1D8)),  # fmt: skip
+    "pr_line_d_c4x2_h_i2": (*_arrays(4, 0xAB, 0xAC), Marked("c", 2, 0x1D9),
+                            *_ints("de", 0x1DA)),  # fmt: skip
+    "pr_line_d_i_c_c4_i": (Marked("a", 4, 0x1DC), Marked("b", 1, 0xAD),
+                           Marked("c", 4, 0xAE, array=True), Marked("d", 4, 0x1DD)),  # fmt: skip
+    "pr_line_d_h_c4_i5_c4": (Marked("a", 2, 0x1DE), Marked("b", 4, 0xAF, array=True),
+                             *_ints("cdefg", 0x1DF), Marked("h", 4, 0xB0, array=True)),  # fmt: skip
+    "pr_line_d_i_c4_c2_i": (Marked("a", 4, 0x1E4), Marked("b", 4, 0xB1, array=True),
+                            Marked("c", 2, 0xB2, array=True), Marked("d", 4, 0x1E5)),  # fmt: skip
+    "pr_line_d_c4_h_i_late": (*_arrays(4, 0xB3), Marked("b", 2, 0x1E6), Marked("c", 4, 0x1E7)),
+    "pr_line_d_c4_i2_h": (*_arrays(4, 0xB4), *_ints("bc", 0x1E8), Marked("d", 2, 0x1EA)),
+    "pr_line_d_c4_i8_h": (*_arrays(4, 0xB5), *_ints("bcdefghi", 0x1EB), Marked("j", 2, 0x1F3)),
+    "pr_line_d_s2_i_c": (*_arrays(4, 0x1F4), Marked("b", 4, 0x1F5), Marked("c", 1, 0xB6)),
+    "pr_line_d_i6_h": (*_ints("abcdef", 0x1F6), Marked("g", 2, 0x1FC)),
+    "pr_line_d_c4_i_h_late": (*_arrays(4, 0xB7), Marked("b", 4, 0x1FD), Marked("c", 2, 0x1FE)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
@@ -207,6 +243,19 @@ TIES = {
                           Marked("c", 2, 0x9E, array=True)),  # fmt: skip
     "pr_line_d_i_c4_h": (Marked("a", 4, 0x1CB), Marked("b", 4, 0xA0, array=True),
                          Marked("c", 2, 0x1CC)),  # fmt: skip
+    # Beside the line D refit (2026-11-13): one thing changed against a frame on the line.
+    "pr_line_d_c4x2_h": (*_arrays(4, 0xB8, 0xB9), Marked("c", 2, 0x1FF)),
+    "pr_line_d_c4x2_i2_h": (*_arrays(4, 0xBA, 0xBB), *_ints("cd", 0x200), Marked("e", 2, 0x202)),
+    "pr_line_d_i2_c2": (*_ints("ab", 0x203), Marked("c", 2, 0xBC, array=True)),
+    "pr_line_d_i_c4_c": (Marked("a", 4, 0x205), Marked("b", 4, 0xBD, array=True),
+                         Marked("c", 1, 0xBE)),  # fmt: skip
+    "pr_line_d_c4x2_c2_i": (*_arrays(4, 0xBF, 0xC0), Marked("c", 2, 0xC1, array=True),
+                            Marked("d", 4, 0x206)),  # fmt: skip
+    "pr_line_d_c4_h_c4x2": (*_arrays(4, 0xC2), Marked("b", 2, 0x207),
+                            Marked("c", 4, 0xC3, array=True),
+                            Marked("d", 4, 0xC4, array=True)),  # fmt: skip
+    "pr_line_d_c4_h_i_h": (*_arrays(4, 0xC5), Marked("b", 2, 0x208), Marked("c", 4, 0x209),
+                           Marked("d", 2, 0x20A)),  # fmt: skip
 }
 # Frames the model refuses though they keep declaration order: the compiler's line runs through
 # no count, so the refusal is wider than it, on the safe side.
@@ -214,15 +263,13 @@ REFUSED_HOLDING = {
     "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
     "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
                              Marked("d", 4, 0x69, 1)),  # fmt: skip
-    "pr_arr_c4_c2_int": C4_C2_INT,  # two sizes: a char[4] and an int tie beside a char[2]
-    "pr_arr_c4_c2_int_rev": C4_C2_INT[::-1],
-    # Line D (quick 261112-fdx): a 4-byte array and an int beside one 2-byte local, one block.
-    "pr_line_d_i2_h": (*_ints("ab", 0x1C3), Marked("c", 2, 0x1C5)),  # the control, off line D
-    "pr_line_d_c4_i_h": (*_arrays(4, 0x9C), Marked("b", 4, 0x1C6), Marked("c", 2, 0x1C7)),
-    "pr_line_d_h_i_c4": (Marked("a", 2, 0x1C9), Marked("b", 4, 0x1CA),
-                         Marked("c", 4, 0x9F, array=True)),  # fmt: skip
-    "pr_line_d_c4_c2_i_late": (*_arrays(4, 0xA1), Marked("b", 2, 0xA2, array=True),
-                               Marked("c", 4, 0x1CD)),  # fmt: skip
+    # Off line D though they hold: two arrays then an int before the small local declared last,
+    # and three arrays beside it.
+    "pr_line_d_c4x2_i_h": (*_arrays(4, 0xC6, 0xC7), Marked("c", 4, 0x20B), Marked("d", 2, 0x20C)),
+    "pr_line_d_h_c4x3": (Marked("a", 2, 0x20D), Marked("b", 4, 0xC8, array=True),
+                         Marked("c", 4, 0xC9, array=True),
+                         Marked("d", 4, 0xCA, array=True)),  # fmt: skip
+    "pr_line_d_c4x3_h": (*_arrays(4, 0xCB, 0xCC, 0xCD), Marked("d", 2, 0x20E)),
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -241,6 +288,13 @@ ARRAY_TIES = {
     "pr_arr_c4x2_s2_rev": {"c": 4, "b": 8, "a": 0},
     "pr_line_d_c4_i_c2": {"a": 0, "b": 4, "c": 8},
     "pr_line_d_i_c4_h": {"a": 0, "b": 4, "c": 8},
+    "pr_line_d_c4x2_h": {"a": 0, "b": 4, "c": 8},
+    "pr_line_d_c4x2_i2_h": {"a": 0, "b": 0xC, "c": 8, "d": 4, "e": 0x10},
+    "pr_line_d_i2_c2": {"a": 0, "b": 4, "c": 8},
+    "pr_line_d_i_c4_c": {"a": 0, "b": 4, "c": 8},
+    "pr_line_d_c4x2_c2_i": {"a": 4, "b": 8, "c": 0xC, "d": 0},
+    "pr_line_d_c4_h_c4x2": {"a": 4, "b": 0xC, "c": 8, "d": 0},
+    "pr_line_d_c4_h_i_h": {"a": 4, "b": 8, "c": 0, "d": 0xC},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {

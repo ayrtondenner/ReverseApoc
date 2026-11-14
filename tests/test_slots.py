@@ -235,14 +235,13 @@ def test_two_char4_beside_a_short2_have_no_known_order():
         slots.frame_layout(declared)
 
 
-def test_a_char4_and_an_int_beside_a_char2_stay_refused():
-    """pr_arr_c4_c2_int holds in both cells, and the model still refuses a tie beside another
-    size: admitting it would be a table of one frame, not a measured line."""
+def test_a_char4_and_an_int_beside_a_char2_keep_the_rule():
+    """pr_arr_c4_c2_int and its twin hold in both cells, on line D: the char[2] is not last."""
     declared = (slots.Local("a", 4, array=True), slots.Local("b", 2, array=True),
                 slots.Local("c", 4))  # fmt: skip
-    assert slots.order_is_known(declared) is False
-    with pytest.raises(ValueError, match="no known order"):
-        slots.frame_layout(declared)
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == {"a": 4, "c": 0, "b": 8}
+    assert slots.frame_layout(declared[::-1]) == {"c": 4, "a": 0, "b": 8}
 
 
 # The lines quick 261112-fdx drew past the 07.1 sweep, each fixed before its frames were measured
@@ -341,3 +340,78 @@ def test_three_or_more_arrays_then_ints_keep_the_rule(shape, layout):
 )
 def test_arrays_off_line_c_stay_refused(shape):
     assert slots.order_is_known(_shape(*shape)) is False
+
+
+# Line D, refit on 2026-11-13 from the pr_line_d_ frames, each one change from a neighbour
+# (probe/cg_slots.c, both cells): 4-byte locals beside one local of 1 or 2 bytes, in one block.
+CHAR = (1, 0, False)
+
+
+@pytest.mark.parametrize(
+    ("shape", "layout"),
+    [
+        ((C4, H, INT), {"a": 4, "b": 8, "c": 0}),  # pr_line_d_c4_h_i
+        ((H, C4, INT), {"a": 8, "b": 4, "c": 0}),  # pr_line_d_h_c4_i
+        ((C2, C4, INT), {"a": 8, "b": 4, "c": 0}),  # pr_line_d_c2_c4_i
+        ((C4, H, C4), {"a": 4, "b": 8, "c": 0}),  # pr_line_d_c4_h_c4
+        ((C4, C4, H, INT, INT), {"a": 0xC, "b": 8, "c": 0x10, "d": 4, "e": 0}),  # _c4x2_h_i2
+        ((INT, CHAR, C4, INT), {"a": 8, "b": 0xC, "c": 4, "d": 0}),  # pr_line_d_i_c_c4_i
+        ((H, C4, INT, INT, INT, INT, INT, C4),
+         {"a": 0x1C, "b": 0x18, "c": 0x14, "d": 0x10, "e": 0xC, "f": 8, "g": 4,
+          "h": 0}),  # pr_line_d_h_c4_i5_c4
+    ],
+)  # fmt: skip
+def test_one_small_local_not_declared_last_keeps_the_rule(shape, layout):
+    """Line D: up to two arrays, the small local among them or not, anywhere but last."""
+    declared = _shape(*shape)
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == layout
+
+
+@pytest.mark.parametrize(
+    ("shape", "layout"),
+    [
+        ((INT, INT, H), {"a": 4, "b": 0, "c": 8}),  # pr_line_d_i2_h
+        ((C4, INT, H), {"a": 4, "b": 0, "c": 8}),  # pr_line_d_c4_i_h
+        ((C4, INT, CHAR), {"a": 4, "b": 0, "c": 8}),  # pr_line_d_s2_i_c, as a char[4]
+        ((C4, INT, INT, INT, INT, INT, INT, INT, INT, H),
+         {"a": 0x20, "b": 0x1C, "c": 0x18, "d": 0x14, "e": 0x10, "f": 0xC, "g": 8, "h": 4,
+          "i": 0, "j": 0x24}),  # pr_line_d_c4_i8_h
+        ((INT, INT, INT, INT, INT, INT, H),
+         {"a": 0x14, "b": 0x10, "c": 0xC, "d": 8, "e": 4, "f": 0, "g": 0x18}),  # _i6_h
+    ],
+)  # fmt: skip
+def test_one_plain_small_local_declared_last_keeps_the_rule_after_plain_locals(shape, layout):
+    """Line D: declared last, the small local holds when no local after the first is an array."""
+    declared = _shape(*shape)
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == layout
+
+
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (C4, INT, C2),  # pr_line_d_c4_i_c2: it leaves
+        (INT, C4, H),  # pr_line_d_i_c4_h: it leaves
+        (C4, C4, H),  # pr_line_d_c4x2_h: it leaves
+        (C4, C4, INT, H),  # pr_line_d_c4x2_i_h: it holds, off the line
+        (C4, C4, INT, INT, H),  # pr_line_d_c4x2_i2_h: it leaves
+        (INT, INT, C2),  # pr_line_d_i2_c2: it leaves
+        (C4, C4, C2, INT),  # pr_line_d_c4x2_c2_i: three arrays, it leaves
+        (H, C4, C4, C4),  # pr_line_d_h_c4x3: it holds, off the line
+        (C4, H, INT, H),  # pr_line_d_c4_h_i_h: two small locals, it leaves
+        (C4, H, INT1),  # a later block: it held in the refit's sweep, off the line
+        ((4, 1, True), (2, 1, False), (4, 1, False)),  # a nested block alone: not measured
+        ((8, 0, True), (8, 0, True), H),  # a tie of 8 bytes: not line D
+    ],
+)
+def test_frames_off_line_d_stay_refused(shape):
+    assert slots.order_is_known(_shape(*shape)) is False
+
+
+def test_declaration_order_refuses_an_order_past_the_lines():
+    """pr_line_d_c4_i_h is known, and the int-first order this target needs is pr_line_d_i_c4_h,
+    which leaves: the model cannot say whether it reaches the target."""
+    declared = _shape(C4, INT, H)
+    with pytest.raises(ValueError, match="no known layout"):
+        slots.declaration_order(declared, {"a": 0, "b": 4, "c": 8})
