@@ -6646,7 +6646,9 @@ class _Night:
                              "cache_read": use.cache_read_tokens,
                              "cache_creation": use.cache_creation_tokens},
                   "cost_usd": cost, "seconds": round(session.seconds, 1),
-                  "model": session.text("model"),
+                  # todo codex-record-model: Codex streams no init event naming its model, and
+                  # `codex exec` runs exactly the --model it was given (an unknown one exits)
+                  "model": session.claim.model if session.claim.codex else session.text("model"),
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
                   "truncated": list(session.pack.truncated), "date": self.deps.today(),
