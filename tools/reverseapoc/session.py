@@ -221,9 +221,15 @@ def build_agy_argv(prompt: str, *, agy: str, model: str, attempt_dir: Path, sett
 
 # Spike 013: Copilot CLI 1.0.111's shell rules name a command plus at most its first subcommand
 # (`copilot help permissions`: "shell(gh pr create)" does not cover "gh pr create --fill"), so no
-# rule can name the wrapper's exact forms; the `uv` command with anything after it is the rule
-# that surely matches them, and the post-session command audit is the guard (fail closed).
-COPILOT_SHELL_RULE = "shell(uv:*)"
+# rule can name `uv run --frozen reverseapoc attempt <form>`, and `shell(uv:*)` would pre-approve
+# every uv command, `uv run python -c ...` among them, before the audit could stop it (security
+# review, coordinator 2026-11-13). A Copilot session's wrapper is therefore its own executable,
+# the package's `reverseapoc-attempt` console script (`reverseapoc attempt <form>`, whose first
+# step refuses anything but an exact form; an .exe on Windows, so no cmd.exe parses its
+# arguments), and the one shell rule names that command alone; every other command, uv's
+# included, has no allow rule and Copilot refuses it in a -p run.
+COPILOT_WRAPPER = "reverseapoc-attempt"
+COPILOT_SHELL_RULE = f"shell({COPILOT_WRAPPER})"
 
 
 def build_copilot_argv(prompt: str, *, copilot: str, model: str, writes: Sequence[Path],
@@ -327,8 +333,11 @@ def agy_prompt(goal: str, skill_text: str) -> str:
 def copilot_prompt(goal: str, skill_text: str) -> str:
     """Spike 013: the prompt of a Copilot session, which loads no skill of ours (custom
     instructions are off) and runs no hook: codex_prompt's text, its harness note extended by
-    the one read the session's file access allows (its view tool inside the attempt dir)."""
-    return _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS)
+    the one read the session's file access allows (its view tool inside the attempt dir), with
+    every `uv run --frozen reverseapoc attempt` in it (goal, skill, rules) spelled as the
+    session's wrapper, COPILOT_WRAPPER."""
+    text = _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS)
+    return text.replace(_WRAPPER, COPILOT_WRAPPER)
 
 
 def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:

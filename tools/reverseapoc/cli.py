@@ -2833,6 +2833,13 @@ _ERRORS = (
 )
 
 
+def attempt_main(argv: list[str] | None = None) -> int:
+    """Spike 013: the `reverseapoc-attempt` console script, `reverseapoc attempt <argv>`: a
+    Copilot session's wrapper, the one command its shell rule allows (an .exe on Windows, so
+    its arguments reach Python with no cmd.exe parsing); the attempt command checks its form."""
+    return main(["attempt", *(sys.argv[1:] if argv is None else argv)])
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     args = build_parser().parse_args(argv)

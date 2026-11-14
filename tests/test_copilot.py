@@ -773,9 +773,10 @@ def _pass_file(rig: Rig, arm: str = HAIKU) -> dict:
 def test_copilot_canary_prompt(tmp_path):
     """One session (Copilot goes on after a refused call, unlike agy): the wrapper's context,
     a create and an in-place edit of plan.json, `attempt plan`, the note, the check with the
-    wait instruction, then the five probes: a read under orig/, a `..` read, a write outside
-    the workspace, a non-wrapper shell read of orig/ and a URL fetch, every path with forward
-    slashes."""
+    wait instruction, all through reverseapoc-attempt, then the eleven probes: a read under
+    orig/, a `..` read, a write outside the workspace, a non-wrapper shell read of orig/, a URL
+    fetch, and the uv, powershell and cmd commands the one shell rule must not reach, every
+    path with forward slashes."""
     attempt_dir = tmp_path / "build" / "driver" / "canary" / "r" / "ufo2p" / "f" / "attempt-1"
     text = driver.copilot_canary_prompt(attempt_dir, 13, repo=tmp_path)
     probe = f"{tmp_path.as_posix()}/orig/{driver.COPILOT_CANARY_PROBE}"
