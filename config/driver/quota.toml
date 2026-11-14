@@ -54,6 +54,16 @@ week_percent = 0.1
 source = "owner's meter (S): 100 sessions moved the weekly bar 17% to 27%"
 read = 2026-11-07
 
+[arms."claude-sonnet-5-5"]
+plan = "claude-ultra"
+week_percent = 0.05
+source = "estimate, re-measure: half of Opus 5.5's 0.1, as Sonnet 5.5's per-token prices are half of Opus 5.5's (GitHub's table, read 2026-11-13)"
+read = 2026-11-14
+estimate = true
+matched = 5
+sessions = 20
+rate_source = "spike 012 and earlier recorded sessions"
+
 [arms."gpt-6.1-terra"]
 plan = "chatgpt-plus"
 five_hour_percent = 1.35
