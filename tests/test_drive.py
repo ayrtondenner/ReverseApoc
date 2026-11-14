@@ -2635,10 +2635,10 @@ def test_a_budget_dry_run_prints_each_arms_budget_before_any_spend(tmp_path, cap
     lines = out.splitlines()
     haiku = next(line for line in lines if line.startswith(f"budget {HAIKU}:"))
     deepseek = next(line for line in lines if line.startswith(f"budget {DEEPSEEK}:"))
-    assert "5%week" in haiku and "166 sessions" in haiku and "read 2026-11-13" in haiku
-    assert "8.5" in haiku
+    assert "5%week" in haiku and "500 sessions" in haiku and "read 2026-11-14" in haiku
+    assert "35.3" in haiku
     assert "$10" in deepseek and "33 sessions" in deepseek and "13.2" in deepseek
-    assert any("199 sessions" in line and "--max-sessions 60" in line for line in lines), out
+    assert any("533 sessions" in line and "--max-sessions 60" in line for line in lines), out
     assert not rig.commands("gate")
     assert not [c for c in rig.runner.calls if c[:1] == ["claude"]]
     rig = Rig(tmp_path / "json")
@@ -2648,7 +2648,7 @@ def test_a_budget_dry_run_prints_each_arms_budget_before_any_spend(tmp_path, cap
     assert code == 0
     budgets = json.loads(out)["budgets"]
     assert [(b["arm"], b["budget"], b["sessions"], b["bound"]) for b in budgets] == [
-        (HAIKU, "5%week", 166, "budget"), (DEEPSEEK, "$10", 33, "budget")]  # fmt: skip
+        (HAIKU, "5%week", 500, "budget"), (DEEPSEEK, "$10", 33, "budget")]  # fmt: skip
 
 
 def test_a_dry_run_without_budgets_has_no_budget_lines(tmp_path, capsys):
@@ -2660,7 +2660,7 @@ def test_a_dry_run_without_budgets_has_no_budget_lines(tmp_path, capsys):
 @pytest.mark.parametrize(("arms", "budgets", "words"), [
     (((SONNET, 1),), _budgets((SONNET, "$5")), (SONNET, "quota.toml", HAIKU)),
     (((HAIKU, 1),), _budgets((HAIKU, "100%5h")), (HAIKU, "%5h", "%week")),
-    (((HAIKU, 1),), _budgets((HAIKU, "0.01%week")), (HAIKU, "0 sessions")),
+    (((HAIKU, 1),), _budgets((HAIKU, "0.005%week")), (HAIKU, "0 sessions")),
     (((HAIKU, 1),), _budgets((SONNET, "$5")), (SONNET, "no arm of this run")),
 ], ids=["no-quota-entry", "no-such-unit", "below-one-session",
         "not-an-arm-of-the-run"])  # fmt: skip
@@ -2707,12 +2707,12 @@ def test_budget_caps_and_budgets_reach_the_night(tmp_path, capsys, monkeypatch):
     rig = Rig(tmp_path)
     code, _, err = rig.drive(capsys, seams=_openrouter_keyed(rig), arms=_OWNER_ARMS,
                              arm_budgets=_OWNER_BUDGETS, allow_egress=(DEEPSEEK,),
-                             max_sessions=200)  # fmt: skip
+                             max_sessions=533)  # fmt: skip
     assert code == 0, err
-    assert seen[0].arm_caps == ((HAIKU, 166), (DEEPSEEK, 33))
+    assert seen[0].arm_caps == ((HAIKU, 500), (DEEPSEEK, 33))
     assert seen[0].budgets == _OWNER_BUDGETS
     assert f"budget {HAIKU}:" in err and f"budget {DEEPSEEK}:" in err
-    assert "--max-sessions" not in err  # 199 budgeted sessions fit under 200
+    assert "--max-sessions" not in err  # 533 budgeted sessions fit under 533
 
 
 def test_a_cascade_budget_joins_the_arm_caps(tmp_path, capsys, monkeypatch):

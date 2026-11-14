@@ -43,4 +43,4 @@ def test_the_example_command_parses():
     table = quota.load_quota()
     total = sum(quota.size(name, budget, table, max_sessions=None).sessions
                 for name, budget in args.arm_budget)  # fmt: skip
-    assert args.max_sessions == total == 340
+    assert args.max_sessions == total == 674

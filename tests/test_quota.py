@@ -56,12 +56,12 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     nights"."""
     table = load_quota()
     assert table[HAIKU].plan.name == "Claude Code Ultra"
-    assert table[HAIKU].per_session == {quota.WEEK: Decimal("0.03")}
-    assert (table[HAIKU].matched, table[HAIKU].sessions) == (4, 78)
+    assert table[HAIKU].per_session == {quota.WEEK: Decimal("0.01")}
+    assert (table[HAIKU].matched, table[HAIKU].sessions) == (22, 312)
     assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.1")}
     assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("1.35"),
                                         quota.WEEK: Decimal("0.22")}  # fmt: skip
-    assert (table[TERRA].matched, table[TERRA].sessions) == (1, 91)
+    assert (table[TERRA].matched, table[TERRA].sessions) == (11, 335)
     assert table[GEMINI].per_session == {quota.WEEK: Decimal("15.0")}
     assert (table[GEMINI].matched, table[GEMINI].sessions) == (0, 1)
     assert table[DEEPSEEK].per_session == {quota.USD: Decimal("0.30")}
@@ -128,15 +128,15 @@ def test_a_missing_table_is_a_quota_error(tmp_path):
 
 
 def test_haiku_five_percent_of_the_week():
-    """5%week at 0.03% per session: floor(166.67) = 166, bounded by the budget (Haiku has no
-    max_sessions), and 166 x 4/78 = about 8.5 expected matches."""
+    """5%week at 0.01% per session (recalibrated 2026-11-14): 500, bounded by the budget (Haiku
+    has no max_sessions), and 500 x 22/312 = about 35.3 expected matches."""
     sizing = size(HAIKU, parse_budget("5%week"), load_quota(), max_sessions=None)
-    assert (sizing.sessions, sizing.by_budget, sizing.bound) == (166, 166, quota.BY_BUDGET)
-    assert sizing.per_session == Decimal("0.03")
-    assert sizing.expected == Decimal("8.5")
+    assert (sizing.sessions, sizing.by_budget, sizing.bound) == (500, 500, quota.BY_BUDGET)
+    assert sizing.per_session == Decimal("0.01")
+    assert sizing.expected == Decimal("35.3")
     line = sizing.line()
-    for words in ("claude-haiku-5-5", "5%week", "Claude Code Ultra", "0.03%week per session",
-                  "read 2026-11-13", "166 sessions", "budget", "8.5", "4 of 78"):
+    for words in ("claude-haiku-5-5", "5%week", "Claude Code Ultra", "0.01%week per session",
+                  "read 2026-11-14", "500 sessions", "budget", "35.3", "22 of 312"):
         assert words in line, (words, line)
 
 
@@ -170,12 +170,12 @@ def test_terra_takes_either_window():
 
 def test_a_plan_credit_converts_dollars_and_credits():
     """Copilot Pro: 2.6 credits a session at $0.01 a credit, so $1 buys 38 sessions and 100
-    credits buy 38; the line names no rate yet (unmeasured)."""
+    credits buy 38; the line carries its measured rate (3 of 82, 2026-11-14)."""
     table = load_quota()
     dollars = size(COPILOT, parse_budget("$1"), table, max_sessions=None)
     assert (dollars.sessions, dollars.per_session) == (38, Decimal("0.026"))
     assert size(COPILOT, parse_budget("100credits"), table, max_sessions=None).sessions == 38
-    assert "unmeasured" in dollars.line()
+    assert "3 of 82" in dollars.line()
 
 
 def test_an_arm_with_no_quota_entry_is_refused():
@@ -199,11 +199,11 @@ def test_a_budget_below_one_session_is_refused():
 def test_the_doc_carries_every_figure():
     doc = size(HAIKU, parse_budget("5%week"), load_quota(), max_sessions=None).doc()
     assert doc == {"arm": HAIKU, "budget": "5%week", "plan": "Claude Code Ultra",
-                   "per_session": "0.03", "unit": quota.WEEK,
-                   "source": load_quota()[HAIKU].source, "read": "2026-11-13",
-                   "estimate": False, "sessions": 166, "by_budget": 166,
+                   "per_session": "0.01", "unit": quota.WEEK,
+                   "source": load_quota()[HAIKU].source, "read": "2026-11-14",
+                   "estimate": False, "sessions": 500, "by_budget": 500,
                    "bound": quota.BY_BUDGET, "max_sessions": None,
-                   "expected_matches": "8.5", "rate": [4, 78],
+                   "expected_matches": "35.3", "rate": [22, 312],
                    "rate_source": load_quota()[HAIKU].rate_source}  # fmt: skip
 
 

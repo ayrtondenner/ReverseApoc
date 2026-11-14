@@ -41,12 +41,12 @@ credit_usd = 0.01
 
 [arms."claude-haiku-5-5"]
 plan = "claude-ultra"
-week_percent = 0.03
-source = "owner's meter (S): 30 sessions moved the weekly bar 93% to 94%"
-read = 2026-11-13
-matched = 4
-sessions = 78
-rate_source = "cascade nights 2026-11-12 to 2026-11-13"
+week_percent = 0.01
+source = "owner's meter (S): about 160 sessions moved the weekly bar 6% to 7% (with the orchestrator's own use), so at most 0.006; rounded up"
+read = 2026-11-14
+matched = 22
+sessions = 312
+rate_source = "all recorded sessions to 2026-11-14 (near-miss lane 4 of 71 on 2026-11-14)"
 
 [arms."claude-opus-5-5"]
 plan = "claude-ultra"
@@ -60,9 +60,9 @@ five_hour_percent = 1.35
 week_percent = 0.22
 source = "owner's meter (S): 74 sessions filled one 5-hour window, the week 50% to 66%"
 read = 2026-11-13
-matched = 1
-sessions = 91
-rate_source = "cascade nights 2026-11-12 to 2026-11-13 (recorded sessions undercount)"
+matched = 11
+sessions = 335
+rate_source = "all recorded sessions to 2026-11-14 (recorded sessions undercount)"
 
 [arms."gemini-flash"]
 plan = "google-ai-plus"
@@ -87,3 +87,6 @@ plan = "copilot-pro"
 credits = 2.6
 source = "usage files (totalNanoAiu): 8 sessions of runs 20261114-nearmiss and -nearmiss2, 1.55 to 3.49 credits, mean 2.58"
 read = 2026-11-14
+matched = 3
+sessions = 82
+rate_source = "near-miss lane, runs 20261114-nearmiss to -nearmiss7"
