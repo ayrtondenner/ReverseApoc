@@ -437,8 +437,14 @@ def _rejected(call: Call) -> bool:
             and isinstance(message, str) and not done.get("fileEdits")):  # fmt: skip
         return False
     found = next((m for form in _REJECTED_EDIT if (m := form.fullmatch(message))), None)
-    need = _SHAPES[EDIT][0]
-    return found is not None and found.group(1) in need and found.group(1) not in call.arguments
+    need, may = _SHAPES[EDIT]
+    if found is not None:
+        return found.group(1) in need and found.group(1) not in call.arguments
+    # night 20261114-nearmiss5: an edit lacking old_str of a file not yet written failed with
+    # ENOENT on its own path before the CLI checked old_str: it wrote nothing
+    path = call.arguments.get("path")
+    return (isinstance(path, str) and set(call.arguments) <= set(need) | set(may)
+            and message == _ENOENT.format(path=path))  # fmt: skip
 
 
 def unknown_steps(events: Sequence[dict]) -> list[str]:
