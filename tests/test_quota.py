@@ -69,14 +69,15 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     assert all(isinstance(entry.read, date) and entry.source for entry in table.values())
 
 
-def test_the_copilot_placeholder_is_an_estimate_and_needs_no_backends_arm():
-    """The Copilot Pro plan (1 credit = $0.01) and its arm's placeholder load although
-    backends.toml may not have that arm yet; an arm of backends.toml with no entry is fine."""
+def test_the_copilot_entry_is_measured_and_needs_no_backends_arm():
+    """The Copilot Pro plan (1 credit = $0.01) and its arm's figure, measured from the usage
+    files of 8 sessions on 2026-11-14 (it replaced the placeholder of 4), load although
+    backends.toml may not have that arm; an arm of backends.toml with no entry is fine."""
     table = load_quota()
     entry = table[COPILOT]
-    assert entry.estimate and "estimate, re-measure" in entry.source
+    assert not entry.estimate and "usage files" in entry.source
     assert entry.plan.credit_usd == Decimal("0.01")
-    assert entry.per_session == {quota.CREDITS: Decimal("4")}
+    assert entry.per_session == {quota.CREDITS: Decimal("2.6")}
     assert "glm-5.3" in backends.load_arms() and "glm-5.3" not in table
 
 
@@ -168,13 +169,13 @@ def test_terra_takes_either_window():
 
 
 def test_a_plan_credit_converts_dollars_and_credits():
-    """Copilot Pro: 4 credits a session at $0.01 a credit, so $1 buys 25 sessions and 100
-    credits buy 25; the line marks the figure as an estimate."""
+    """Copilot Pro: 2.6 credits a session at $0.01 a credit, so $1 buys 38 sessions and 100
+    credits buy 38; the line names no rate yet (unmeasured)."""
     table = load_quota()
     dollars = size(COPILOT, parse_budget("$1"), table, max_sessions=None)
-    assert (dollars.sessions, dollars.per_session) == (25, Decimal("0.04"))
-    assert size(COPILOT, parse_budget("100credits"), table, max_sessions=None).sessions == 25
-    assert "estimate" in dollars.line() and "unmeasured" in dollars.line()
+    assert (dollars.sessions, dollars.per_session) == (38, Decimal("0.026"))
+    assert size(COPILOT, parse_budget("100credits"), table, max_sessions=None).sessions == 38
+    assert "unmeasured" in dollars.line()
 
 
 def test_an_arm_with_no_quota_entry_is_refused():

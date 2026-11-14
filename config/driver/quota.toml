@@ -84,7 +84,6 @@ rate_source = "cascade nights 2026-11-12 to 2026-11-13 (small sample)"
 
 [arms."copilot-haiku-5-5"]
 plan = "copilot-pro"
-credits = 4
-source = "estimate, re-measure: no session measured on Copilot yet"
-read = 2026-11-13
-estimate = true
+credits = 2.6
+source = "usage files (totalNanoAiu): 8 sessions of runs 20261114-nearmiss and -nearmiss2, 1.55 to 3.49 credits, mean 2.58"
+read = 2026-11-14
