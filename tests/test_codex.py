@@ -228,7 +228,8 @@ def test_codex_prompt_harness_note():
 
 def test_drive_codex_arm_records(tmp_path, capsys, monkeypatch):
     """A Luna night launches tests/fakecodex.py through codex exec --json and records the
-    attempt with harness codex, backend openai, the requested model, no init model, the
+    attempt with harness codex, backend openai, the requested model as its model (Codex streams
+    no init model; todo codex-record-model), the
     fixture's tokens and an estimated cost."""
     rig, night, env = codex_night(tmp_path, monkeypatch)
     write_pass(rig.repo)
@@ -243,7 +244,7 @@ def test_drive_codex_arm_records(tmp_path, capsys, monkeypatch):
     driver.validate_record(record)
     assert (record["harness"], record["backend"], record["model_requested"]) == (
         "codex", "openai", LUNA)  # fmt: skip
-    assert record["model"] is None and record["cli_version"] is None
+    assert record["model"] == LUNA and record["cli_version"] is None
     assert record["tokens"] == {"input": 3000, "output": 650, "cache_read": 2100,
                                 "cache_creation": 0}  # fmt: skip
     assert record["turns"] == 2
