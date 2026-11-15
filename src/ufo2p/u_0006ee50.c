@@ -10,12 +10,42 @@
 INCLUDE_ASM(func_0006EE50);
 INCLUDE_ASM(func_0006EEF0);
 INCLUDE_ASM(func_0006F3C0);
-INCLUDE_ASM(func_0006F600);
 INCLUDE_ASM(func_0006F750);
 
 extern char D_000D5060[];
 void func_0006F830(int);
 extern char D_00183A68[];
+extern u8 *D_0018276C;
+
+int func_00070B70(int);
+unsigned short func_0005CD00(int);
+
+u8 *func_0006F600(u8 *arg)
+{
+    u8 *items[15];
+    u8 *result;
+    int x, y, xx, yy, count, i;
+    u8 *p;
+
+    count = 0;
+    result = 0;
+    for (i = 0; i < 10; i++) items[i] = 0;
+    x = *(s16 *)(arg + 2) + (*(s16 *)(arg + 4) - *(s16 *)(arg + 2)) / 2;
+    y = *(s16 *)(arg + 6) + (*(s16 *)(arg + 8) - *(s16 *)(arg + 6)) / 2;
+    for (p = D_0018276C; p < D_0018276C + *(u16 *)D_00183A68 * 0xe2; p += 0xe2) {
+        if (p != arg) {
+            xx = *(s16 *)(p + 2) + (*(s16 *)(p + 4) - *(s16 *)(p + 2)) / 2;
+            yy = *(s16 *)(p + 6) + (*(s16 *)(p + 8) - *(s16 *)(p + 6)) / 2;
+            if (xx - 15 < x && xx + 15 > x && yy - 15 < y && yy + 15 > y &&
+                func_00070B70((p - D_0018276C) / 0xe2) == 0 && count < 15) {
+                items[count] = p;
+                count++;
+            }
+        }
+    }
+    if (count != 0) result = items[func_0005CD00((short)(count - 1))];
+    return result;
+}
 
 void func_0006F800(void)
 {
