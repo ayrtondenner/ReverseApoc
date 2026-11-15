@@ -1665,7 +1665,7 @@ def test_near_miss_lane_reaches_the_night(tmp_path, capsys, monkeypatch):
     ((config, deps),) = seen
     assert (config.arms, config.near_miss, config.workers) == (((sonnet, 2), (haiku, 1)),
                                                               (haiku,), 3)  # fmt: skip
-    assert config.arm_caps == ((haiku, 166),)
+    assert config.arm_caps == ((haiku, 500),)  # 5%week at 0.01% (2026-11-14)
     assert [i.pick.start for i in deps.near_miss().preview(10)] == [TB, TS]
     drafts = [c for c in rig.runner.calls if "ghidra-export" in c]
     assert f"0x{TB:08X}" in drafts[0] and f"0x{TS:08X}" in drafts[0]

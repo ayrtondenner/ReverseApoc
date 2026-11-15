@@ -1,6 +1,7 @@
-"""tools/progress.py's progress-over-days chart (todo progress-timeline-chart): the matched
-percent of each EXE at the end of each day since the first commit, back-filled from the git
-history of config/<exe>/{functions,units,status}.csv with derive's own figures, plus what each
+"""tools/progress.py's progress-over-days charts (todo progress-timeline-chart): the three
+figures (strict, functions, fuzzy) of each EXE at the end of each day since the first commit,
+back-filled from the git history of config/<exe>/{functions,units,status}.csv with derive's own
+figures, one small chart per figure, plus what each
 day did (match commits and their trailers, flags approvals, tooling and plan commits, drive runs
 from progress/attempts.jsonl, dated docs/learnings.md entries) and its biggest driver. The walk
 and the per-day aggregation are one pure function over log records and CSV texts; the git layer
@@ -59,8 +60,8 @@ def tables(tmp_path: Path) -> dict[str, tuple[str, str]]:
                         for name in FILES[:2]) for stem in (UFO, TACP)}  # fmt: skip
 
 
-def expected_percent(tmp_path: Path, stem: str, status: str | None) -> float:
-    """derive's own figure for the synthetic tables with `status` as the EXE's status.csv."""
+def expected_totals(tmp_path: Path, stem: str, status: str | None):
+    """derive's own totals for the synthetic tables with `status` as the EXE's status.csv."""
     progress = load_progress()
     config = synthetic_config(tmp_path / f"expected-{stem}-{len(status or '')}")
     path = config / stem / "status.csv"
@@ -68,7 +69,12 @@ def expected_percent(tmp_path: Path, stem: str, status: str | None) -> float:
         path.unlink(missing_ok=True)
     else:
         path.write_text(status, encoding="utf-8")
-    return progress.derive(config).exe(stem).totals.percent
+    return progress.derive(config).exe(stem).totals
+
+
+def expected_percent(tmp_path: Path, stem: str, status: str | None) -> float:
+    """derive's own strict figure for the synthetic tables with `status` as the status.csv."""
+    return expected_totals(tmp_path, stem, status).percent
 
 
 def snapshot(progress, sha: str, day: str, texts: dict[str, tuple]):
@@ -103,6 +109,13 @@ def test_percent_at_the_end_of_each_day(tmp_path):
     matched = expected_percent(tmp_path, UFO, one)
     assert matched == 6.5574
     assert [d.percents for d in found.days] == [(matched, 0.0), (matched, 0.0), (matched, 0.0)]
+    # The functions and fuzzy figures are derive's too, day by day: the partial row moves the
+    # fuzzy figure on day 2 while strict and functions stay.
+    one_totals, partial_totals = (expected_totals(tmp_path, UFO, s) for s in (one, partial))
+    assert (one_totals.functions_percent, one_totals.fuzzy_percent) == (25.0, 6.5574)
+    assert partial_totals.fuzzy_percent == 13.1148
+    assert [d.functions for d in found.days] == [(25.0, 0.0)] * 3
+    assert [d.fuzzy for d in found.days] == [(6.5574, 0.0), (6.5574, 0.0), (13.1148, 0.0)]
     assert found.days[0].deltas == (None, None)  # each EXE's first day
     assert found.days[1].deltas == (0.0, 0.0)
     assert found.labels == (EXE_NAMES[UFO], EXE_NAMES[TACP])
@@ -119,6 +132,7 @@ def test_a_later_exe_starts_its_line_on_its_first_day(tmp_path):
     found = progress.build_timeline(snaps, [], (), (), ())
     first, second = found.days
     assert first.percents == (0.0, None) and first.deltas == (None, None)
+    assert first.functions == (0.0, None) and first.fuzzy == (0.0, None)
     assert second.percents == (6.5574, 0.0)
     assert second.deltas == (6.5574, None)
 
@@ -132,8 +146,12 @@ def test_the_signed_assembler_rows_leave_every_day(tmp_path):
                                                      TACP: (tf, tu, None)})]  # fmt: skip
     found = progress.build_timeline(snaps, [], (), (), ((UFO, U_UNMATCHED.start),))
     config = synthetic_config(tmp_path / "asm")
+    (config / UFO / "status.csv").write_text(snaps[0].texts[UFO][2], encoding="utf-8")
     shown = progress.exclude_assembler(progress.derive(config), ((UFO, U_UNMATCHED.start),))
-    assert found.days[0].percents[0] == shown.exe(UFO).totals.percent != 6.5574
+    totals = shown.exe(UFO).totals
+    assert found.days[0].percents[0] == totals.percent != 6.5574
+    assert found.days[0].functions[0] == totals.functions_percent != 25.0
+    assert found.days[0].fuzzy[0] == totals.fuzzy_percent != 6.5574
 
 
 def test_a_mainline_date_going_back_never_moves_a_figure_into_the_past(tmp_path):
@@ -197,9 +215,11 @@ def test_end_labels_stay_inside_the_plot(tmp_path):
     """Code review: lines ending together at 0% push their labels apart upwards from the
     plot's bottom, never below it onto the day axis."""
     progress = timeline_module()
-    days = tuple(progress.Day(f"2026-10-0{i + 1}", i, (0.0, 0.0), (None, None), "x", "x.")
+    days = tuple(progress.Day(f"2026-10-0{i + 1}", i, percents=(0.0, 0.0), functions=(0.0, 0.0),
+                              fuzzy=(0.0, 0.0), deltas=(None, None), driver="x", summary="x.")
                  for i in range(3))  # fmt: skip
-    svg = progress.render_timeline_svg(progress.Timeline(("UFO2P.EXE", "TACP.EXE"), days))
+    timeline = progress.Timeline(("UFO2P.EXE", "TACP.EXE"), days)
+    svg = progress.render_timeline_svg(timeline, progress.TIMELINE_CHARTS[0])
     bottom = progress.CHART_HEIGHT - progress.CHART_BOTTOM
     ys = [float(y) for y in re.findall(r'<text class="tl-name" x="[0-9.]+" y="([0-9.]+)"', svg)]
     assert len(ys) == 2 and max(ys) <= bottom + progress.CHART_FONT / 3
@@ -340,8 +360,9 @@ def _commit(repo: Path, env: dict, when: str, message: str, *paths: str) -> None
 
 
 def history_repo(tmp_path: Path) -> tuple[Path, dict]:
-    """Day 0: the tables, then a learnings entry; day 1: a side branch matches U_MATCHED with a
-    Haiku trailer, merged with --no-ff on day 2 next to a drive run's record."""
+    """Day 0: the tables, then a learnings entry; day 1: a side branch matches U_MATCHED (and
+    records U_PARTIAL as partial) with a Haiku trailer, merged with --no-ff on day 2 next to a
+    drive run's record."""
     env = _git_env(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -354,7 +375,8 @@ def history_repo(tmp_path: Path) -> tuple[Path, dict]:
         "# Learnings journal\n\n## 2026-10-01: the tables are in\n", encoding="utf-8")
     _commit(repo, env, _when("2026-10-01", 11), "docs: the first learning", "docs")
     _git(repo, env, "checkout", "-q", "-b", "side")
-    (config / UFO / "status.csv").write_text(status_text(row(U_MATCHED)), encoding="utf-8")
+    (config / UFO / "status.csv").write_text(status_text(row(U_MATCHED), row(U_PARTIAL, PARTIAL)),
+                                             encoding="utf-8")  # fmt: skip
     _commit(repo, env, _when("2026-10-02", 9), "feat(ufo2p): match func_00010000 in "
             f"u_00010000 (C89)\n\nattempt 1/3\n\n{DRIVE}\n{HAIKU}", "config")  # fmt: skip
     _git(repo, env, "checkout", "-q", "main")
@@ -378,6 +400,8 @@ def test_load_timeline_walks_the_first_parent_history(tmp_path):
     assert found.note == ""
     assert [d.date for d in found.days] == ["2026-10-01", "2026-10-02", "2026-10-03"]
     assert [d.percents for d in found.days] == [(0.0, 0.0), (0.0, 0.0), (6.5574, 0.0)]
+    assert [d.functions for d in found.days] == [(0.0, 0.0), (0.0, 0.0), (25.0, 0.0)]
+    assert [d.fuzzy for d in found.days] == [(0.0, 0.0), (0.0, 0.0), (13.1148, 0.0)]
     first, second, third = found.days
     assert "learning: the tables are in" in first.summary
     assert second.driver == "Claude Haiku 5.5: 1 match"
@@ -411,6 +435,11 @@ _SECTION = re.compile(r'<section class="timeline" aria-labelledby="timeline">(.*
 # summaries squeezed the figures to a character wide at 390 px).
 _ROW = re.compile(r'<tr class="fig"><th scope="row" rowspan="2">(.*?)</th>(.*?)</tr>\n'
                   r'<tr><td class="what" colspan="2">(.*?)</td></tr>')  # fmt: skip
+# One small chart per figure, strict first, each titled above its own SVG.
+_CHART = re.compile(r'<div class="tl">\n<h3>(.*?)</h3>\n(<svg .*?</svg>)\n</div>', re.S)
+CHART_TITLES = ["strict (matched code bytes)",
+                "functions (matched / all game and thunk functions)",
+                "fuzzy (objdiff closeness, partial credit)"]  # fmt: skip
 
 
 def timeline_section(page: str) -> str:
@@ -420,9 +449,10 @@ def timeline_section(page: str) -> str:
 
 
 def test_main_charts_the_history_of_a_checkout(tmp_path):
-    """main charts the history of the repository its config tree sits in: one line per EXE, a
-    percent y-axis, a marker per active day with its driver, and the same data as a table,
-    newest day first. Two runs give the same bytes."""
+    """main charts the history of the repository its config tree sits in: three small charts
+    (strict, functions, fuzzy), each with one line per EXE, a percent y-axis of its own, a
+    marker per active day with its driver, and the same data as a table, newest day first. Two
+    runs give the same bytes."""
     progress = timeline_module()
     repo, _env = history_repo(tmp_path)
     pages = []
@@ -436,26 +466,60 @@ def test_main_charts_the_history_of_a_checkout(tmp_path):
     section = timeline_section(page)
     assert '<h2 id="timeline">Progress over days</h2>' in section
     assert page.index("Progress over days") < page.index("<h2>The mosaic</h2>")
-    svg = section[section.index("<svg"):section.index("</svg>")]
-    assert 'role="img"' in svg and "aria-label=" in svg
-    lines = re.findall(r'<path class="tl-line s(\d)" d="([^"]+)"', svg)
-    assert [n for n, _d in lines] == ["0", "1"]
-    assert all(d.startswith("M") and d.count("L") == 2 for _n, d in lines)  # three days each
-    assert ">matched code, %</text>" in svg
-    assert re.search(r">[0-9.]+%</text>", svg), "the y ticks are percents"
-    assert ">UFO2P<" in svg and ">TACP<" in svg  # direct labels
-    titles = re.findall(r"<title>(.*?)</title>", svg)
-    assert any("Claude Haiku 5.5: 1 match" in t for t in titles)
+    charts = _CHART.findall(section)
+    assert [title for title, _svg in charts] == CHART_TITLES
+    assert section.count("<svg") == 3
+    for _title, svg in charts:
+        assert 'role="img"' in svg and "aria-label=" in svg
+        lines = re.findall(r'<path class="tl-line s(\d)" d="([^"]+)"', svg)
+        assert [n for n, _d in lines] == ["0", "1"]
+        assert all(d.startswith("M") and d.count("L") == 2 for _n, d in lines)  # three days
+        assert re.search(r">[0-9.]+%</text>", svg), "the y ticks are percents"
+        assert ">UFO2P<" in svg and ">TACP<" in svg  # direct labels
+        titles = re.findall(r"<title>(.*?)</title>", svg)
+        assert any("Claude Haiku 5.5: 1 match" in t for t in titles)
+        # Every chart's tooltip names all three figures, strict labelled too.
+        assert any("UFO2P strict 6.5574% (+6.5574), functions 25%, fuzzy 13.1148%" in t
+                   for t in titles)  # fmt: skip
+    # Each chart has its own y-axis: functions tops out near 25%, strict near 6.6%.
+    tops = [max(float(v) for v in re.findall(r'text-anchor="end">([0-9.]+)%</text>', svg))
+            for _title, svg in charts]  # fmt: skip
+    assert tops[0] < 10 < tops[1] and tops[1] != tops[2]
     rows = _ROW.findall(section)
     assert [r[0] for r in rows] == ["Day 2<br>2026-10-03", "Day 1<br>2026-10-02",
                                     "Day 0<br>2026-10-01"]  # fmt: skip
-    assert rows[0][1] == "<td>6.5574% (+6.5574)</td><td>0% (no change)</td>"
+    assert rows[0][1] == ('<td>6.5574% (+6.5574)<br><span class="sub">functions 25%<br>'
+                          'fuzzy 13.1148%</span></td><td>0% (no change)<br><span class="sub">'
+                          "functions 0%<br>fuzzy 0%</span></td>")  # fmt: skip
     assert rows[0][2].startswith("<strong>merge: chore: merge side</strong><br>1 drive run")
     assert "0% (first day)" in rows[2][1]
     head = section[section.index("<thead>"):section.index("</thead>")]
     assert [t for t, _a in tags_of(head) if t == "th"] == ["th"] * 3
     style = style_of(page)
     assert ".tl-line" in style and "@media (prefers-color-scheme: dark)" in style
+
+
+def test_each_chart_ends_on_the_headline(tmp_path):
+    """The last point of each chart is the figure the page and progress.json show for it: each
+    chart's aria-label states every EXE's last value, and it is progress.json's."""
+    progress = timeline_module()
+    repo, _env = history_repo(tmp_path)
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(repo / "config"), "--out", str(out)]) == 0
+    doc = json.loads((out / "progress.json").read_text(encoding="utf-8"))
+    charts = _CHART.findall(timeline_section((out / "index.html").read_text(encoding="utf-8")))
+    keys = ("percent", "functions_percent", "fuzzy_percent")
+    for (_title, svg), key in zip(charts, keys, strict=True):
+        aria = re.search(r'aria-label="([^"]*)"', svg)[1]
+        for stem, label in EXE_NAMES.items():
+            headline = progress.shield_message(doc["exes"][stem][key])
+            assert f"{label} {headline}" in aria, (key, aria)
+    last = progress.load_timeline(repo, ()).days[-1]
+    shown = progress.derive(repo / "config")
+    for i, (stem, _label) in enumerate(progress.EXES):
+        totals = shown.exe(stem).totals
+        assert (last.percents[i], last.functions[i], last.fuzzy[i]) == (
+            totals.percent, totals.functions_percent, totals.fuzzy_percent)
 
 
 def test_the_page_without_history_has_no_timeline_rule(tmp_path):

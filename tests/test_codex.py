@@ -385,6 +385,7 @@ def test_audit_passes_a_shell_wrapped_wrapper_call(command):
     assert driver.codex_command_strays(codexjson.commands(_ran(command))) == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="the Store pwsh alias is Windows only")
 def test_audit_passes_the_store_pwsh_alias_of_this_user():
     """Night 20261114-cascade: with PowerShell 7.7 from the Store (installed 2026-11-13), Codex
     runs its shell as the user's app alias LOCALAPPDATA/Microsoft/WindowsApps/pwsh.exe. That
@@ -400,6 +401,7 @@ def test_audit_passes_the_store_pwsh_alias_of_this_user():
         assert driver.codex_command_strays(codexjson.commands(_ran(bad))), other
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="app-execution links are Windows only")
 def test_the_store_pwsh_alias_counts_only_while_it_is_an_app_execution_link(monkeypatch):
     """Security review of c52f82c5: the alias folder is the user's to write, so the path alone
     is not trusted. At audit time the alias must still be an app-execution link (reparse tag

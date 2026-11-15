@@ -46,8 +46,8 @@ DIR/progress-shield-fuzzy.json (the function ratio and the fuzzy percent, combin
 DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the mosaic: a
 squarified treemap, EXE > unit > function), and DIR/index.html (the progress page, served at
 the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
-when --config sits in a git checkout, the progress-over-days chart re-derived from its history;
-a shallow clone gets a note instead);
+when --config sits in a git checkout, the progress-over-days charts of the three figures
+re-derived from its history; a shallow clone gets a note instead);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -886,12 +886,13 @@ def exclude_assembler(progress: Progress, asm_starts: Iterable[tuple[str, int]])
                           for exe in progress.exes))  # fmt: skip
 
 
-# ---- the timeline: matched percent over days (todo progress-timeline-chart) ----
+# ---- the timeline: the three figures over days (todo progress-timeline-chart) ----
 #
-# Per EXE, the percent at the end of each day since the first commit, re-derived (with
-# _exe_progress and the signed asm rows moved out, so with the tables committed the last day is
-# the page's figure) at each first-parent commit of HEAD that changed one of the EXE's three
-# tables: the day a change reached the mainline is the day the figure moves. What each day did
+# Per EXE, the strict, functions and fuzzy figures at the end of each day since the first
+# commit, re-derived (with _exe_progress and the signed asm rows moved out, then the same Totals
+# properties the headline reads, so with the tables committed the last day is the page's figure)
+# at each first-parent commit of HEAD that changed one of the EXE's three tables: the day a
+# change reached the mainline is the day the figures move. What each day did
 # comes from every commit by its own committer date (a merge only by count, unless it changed
 # the tables), the drive runs of progress/attempts.jsonl and the dated headings of
 # docs/learnings.md. build_timeline is pure; load_timeline is the thin git layer around it.
@@ -915,8 +916,8 @@ MATCHED_BY_TOOL = "reverseapoc "  # Matched-By: reverseapoc drive / lift name th
 RUN_KIND, RUN_FINAL = "run", ("ENDED", "STOPPED")  # STARTED alone is a run still going
 _GIT_SAFE = ("-c", "safe.directory=*")
 _RECORD, _UNIT_SEP, _TRAILER_SEP = "\x1e", "\x1f", "\x1d"
-SHALLOW_NOTE = ("This checkout is a shallow clone, so the history the chart is drawn from is "
-                "cut; the chart is left out.")  # fmt: skip
+SHALLOW_NOTE = ("This checkout is a shallow clone, so the history the charts are drawn from is "
+                "cut; the charts are left out.")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -953,13 +954,16 @@ class RunLog:
 
 @dataclass(frozen=True)
 class Day:
-    """One calendar day: each EXE's percent at its end (None before its tables exist) and the
-    change from the day before (None on the EXE's first day), its biggest driver and summary."""
+    """One calendar day: each EXE's three figures at its end (None before its tables exist),
+    the strict figure's change from the day before (None on the EXE's first day), its biggest
+    driver and summary."""
 
     date: str
     index: int  # days since the first commit's day
-    percents: tuple[float | None, ...]
-    deltas: tuple[float | None, ...]
+    percents: tuple[float | None, ...]  # strict, Totals.percent
+    functions: tuple[float | None, ...]  # Totals.functions_percent
+    fuzzy: tuple[float | None, ...]  # Totals.fuzzy_percent
+    deltas: tuple[float | None, ...]  # of `percents`
     driver: str  # "" on a day with nothing logged
     summary: str
 
@@ -1038,9 +1042,9 @@ def _timeline_dir(sha: str, stem: str) -> PurePosixPath:
     return PurePosixPath(f"{sha}:config/{stem}")
 
 
-def _snapshot_percent(snap: Snapshot, stem: str, label: str, asm: Container[int],
-                      parsed: dict[tuple[str, str], list]) -> float | None:  # fmt: skip
-    """The EXE's percent after `snap`, None while it has no functions.csv or units.csv. The
+def _snapshot_totals(snap: Snapshot, stem: str, label: str, asm: Container[int],
+                     parsed: dict[tuple[str, str], list]) -> Totals | None:  # fmt: skip
+    """The EXE's totals after `snap`, None while it has no functions.csv or units.csv. The
     big tables are parsed once per distinct text (`parsed`), status.csv at every snapshot."""
     functions, units, status = snap.texts[stem]
     if functions is None or units is None:
@@ -1053,20 +1057,20 @@ def _snapshot_percent(snap: Snapshot, stem: str, label: str, asm: Container[int]
     statuses = [] if status is None else read_status(where / STATUS_CSV, status)
     exe = _exe_progress(where, stem, label, parsed[(FUNCTIONS_CSV, functions)],
                         parsed[(UNITS_CSV, units)], statuses)  # fmt: skip
-    return _without(exe, asm).totals.percent
+    return _without(exe, asm).totals
 
 
 def _day_figures(snapshots: Sequence[Snapshot], asm: Iterable[tuple[str, int]]
-                 ) -> dict[str, tuple[float | None, ...]]:  # fmt: skip
-    """Per day with a snapshot, each EXE's percent after its last snapshot of that day. A
+                 ) -> dict[str, tuple[Totals | None, ...]]:  # fmt: skip
+    """Per day with a snapshot, each EXE's totals after its last snapshot of that day. A
     snapshot dated before the one it follows (committer dates can go back along the mainline:
     another zone, a rebase) counts on that one's day, so no figure moves into the past. An EXE
     is re-derived only when its texts changed."""
     wanted = set(asm)
     parsed: dict[tuple[str, str], list] = {}
-    current: list[float | None] = [None] * len(EXES)
+    current: list[Totals | None] = [None] * len(EXES)
     seen: dict[str, tuple[str | None, ...]] = {}
-    out: dict[str, tuple[float | None, ...]] = {}
+    out: dict[str, tuple[Totals | None, ...]] = {}
     day = ""
     for snap in snapshots:
         day = max(day, snap.day)
@@ -1075,7 +1079,7 @@ def _day_figures(snapshots: Sequence[Snapshot], asm: Iterable[tuple[str, int]]
                 continue
             seen[stem] = snap.texts[stem]
             starts = {start for s, start in wanted if s == stem}
-            current[i] = _snapshot_percent(snap, stem, label, starts, parsed)
+            current[i] = _snapshot_totals(snap, stem, label, starts, parsed)
         out[day] = tuple(current)
     return out
 
@@ -1254,15 +1258,21 @@ def _delta(now: float | None, before: float | None) -> float | None:
     return round(now - before, PERCENT_DECIMALS)
 
 
+def _figure(totals: Iterable[Totals | None], name: str) -> tuple[float | None, ...]:
+    """Each EXE's Totals property `name` (the headline's own figure), None where it has none."""
+    return tuple(None if t is None else getattr(t, name) for t in totals)
+
+
 def build_timeline(snapshots: Sequence[Snapshot], commits: Iterable[LoggedCommit],
                    runs: Iterable[RunLog], learnings: Iterable[tuple[str, str]],
                    asm: Iterable[tuple[str, int]]) -> Timeline:  # fmt: skip
     """Every calendar day from the first logged day to the last (snapshots, commits and runs;
-    learnings dated outside that span are left out): each EXE's percent at the day's end, carried
-    over days without a snapshot, the change from the day before, the biggest driver and a
-    summary. `snapshots` are first-parent order, oldest first; `asm` the (stem, start) of the
-    signed asm rows, moved out of every day as the page moves them out (D-23). A table the
-    reader refuses is a ProgressError naming `<sha>:config/<stem>/<file>`."""
+    learnings dated outside that span are left out): each EXE's strict, functions and fuzzy
+    figures at the day's end, carried over days without a snapshot, the strict figure's change
+    from the day before, the biggest driver and a summary. `snapshots` are first-parent order,
+    oldest first; `asm` the (stem, start) of the signed asm rows, moved out of every day as the
+    page moves them out (D-23). A table the reader refuses is a ProgressError naming
+    `<sha>:config/<stem>/<file>`."""
     labels = tuple(label for _stem, label in EXES)
     figures = _day_figures(snapshots, asm)
     movers = {snap.sha for snap in snapshots}
@@ -1279,14 +1289,16 @@ def build_timeline(snapshots: Sequence[Snapshot], commits: Iterable[LoggedCommit
         if dates[0] <= day <= dates[-1]:
             logs.setdefault(day, _DayLog()).learnings.append(title)
     days = []
-    current: tuple[float | None, ...] = (None,) * len(EXES)
+    current: tuple[Totals | None, ...] = (None,) * len(EXES)
     for index in range((last - first).days + 1):
         date = (first + datetime.timedelta(days=index)).isoformat()
         before, current = current, figures.get(date, current)
         log = logs.get(date, _DayLog())
-        days.append(Day(date, index, current,
-                        tuple(_delta(now, then) for now, then in zip(current, before, strict=True)),
-                        _driver(log), _summary(log)))  # fmt: skip
+        strict = _figure(current, "percent")
+        deltas = tuple(_delta(now, then) for now, then
+                       in zip(strict, _figure(before, "percent"), strict=True))  # fmt: skip
+        days.append(Day(date, index, strict, _figure(current, "functions_percent"),
+                        _figure(current, "fuzzy_percent"), deltas, _driver(log), _summary(log)))
     return Timeline(labels, tuple(days))
 
 
@@ -2159,7 +2171,7 @@ def _assembler_css() -> list[str]:
 
 def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False) -> str:
     """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
-    section's, the assembler tick's and the timeline chart's rules only when the page has
+    section's, the assembler tick's and the timeline charts' rules only when the page has
     them."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
@@ -2386,11 +2398,20 @@ TIMELINE_HEADING = "Progress over days"
 # labels and the table. A slot is the EXE's, never its rank.
 SERIES_COLORS = ("#2a78d6", "#eb6834", "#1baf7a")
 DARK_SERIES_COLORS = ("#3987e5", "#d95926", "#199e70")
-# The chart's own coordinates. At a 390 px phone the column is about 351 px, so the 400-unit
-# viewBox draws its 13-unit text near 11.4 px; on a desktop it stops at CHART_MAX_WIDTH.
-CHART_WIDTH, CHART_HEIGHT = 400, 240
+# Three small charts, one per figure (their scales differ tenfold), strict first, stacked: each
+# (its title above it, what it plots of a Day).
+_Values = Callable[[Day], tuple[float | None, ...]]
+TIMELINE_CHARTS: tuple[tuple[str, _Values], ...] = (
+    ("strict (matched code bytes)", lambda day: day.percents),
+    ("functions (matched / all game and thunk functions)", lambda day: day.functions),
+    ("fuzzy (objdiff closeness, partial credit)", lambda day: day.fuzzy),
+)
+# A chart's own coordinates. At a 390 px phone the column is about 351 px, so the 400-unit
+# viewBox draws its 13-unit text near 11.4 px; on a desktop it stops at CHART_MAX_WIDTH. The
+# title is the HTML heading above it, so the plot starts near the top.
+CHART_WIDTH, CHART_HEIGHT = 400, 200
 CHART_FONT = 13
-CHART_LEFT, CHART_RIGHT, CHART_TOP, CHART_BOTTOM = 44, 46, 26, 40  # margins around the plot
+CHART_LEFT, CHART_RIGHT, CHART_TOP, CHART_BOTTOM = 44, 46, 12, 40  # margins around the plot
 CHART_MAX_WIDTH = "32rem"
 CHART_TICK_GAP = 6  # tick label to axis
 CHART_LABEL_GAP = 14  # the least room between two direct labels at the right edge
@@ -2420,7 +2441,7 @@ def _x_step(last: int) -> int:
 
 
 def _change(percent_value: float | None, delta: float | None) -> str:
-    """A day's figure for the table and the tooltips: the percent and its change."""
+    """A day's strict figure for the table and the tooltips: the percent and its change."""
     if percent_value is None:
         return "not started"
     shown = shield_message(percent_value)
@@ -2439,7 +2460,7 @@ def _series(timeline: Timeline) -> list[int]:
 
 @dataclass(frozen=True)
 class _Plot:
-    """The chart's scales: x(day index) and y(percent) in viewBox units, and the percent axis
+    """A chart's scales: x(day index) and y(percent) in viewBox units, and the percent axis
     as `intervals` steps of `step` from 0, labelled with `decimals` decimals."""
 
     last: int  # the last day's index, at least 1
@@ -2455,17 +2476,17 @@ class _Plot:
         return CHART_TOP + height * (1 - value / (self.step * self.intervals))
 
 
-def _plot(timeline: Timeline) -> _Plot:
-    highest = max((p for d in timeline.days for p in d.percents if p is not None), default=0.0)
+def _plot(timeline: Timeline, values: _Values) -> _Plot:
+    highest = max((p for d in timeline.days for p in values(d) if p is not None), default=0.0)
     step, decimals = _y_scale(highest)
     intervals = max(math.ceil(highest / step - 1e-9), 1)
     return _Plot(max(timeline.days[-1].index, 1), step, intervals, decimals)
 
 
 def _axes_svg(timeline: Timeline, plot: _Plot) -> list[str]:
-    """The axis title, the percent grid with its labels, the day ticks and the day axis title."""
+    """The percent grid with its labels, the day ticks and the day axis title."""
     x, y, decimals = plot.x, plot.y, plot.decimals
-    lines = [f'<text class="tl-axis" x="0" y="{CHART_FONT}">matched code, %</text>']
+    lines = []
     for k in range(plot.intervals + 1):
         value = round(k * plot.step, 10)
         lines.append(f'<line class="tl-grid" x1="{CHART_LEFT}" x2="{CHART_WIDTH - CHART_RIGHT}" '
@@ -2485,31 +2506,47 @@ def _axes_svg(timeline: Timeline, plot: _Plot) -> list[str]:
     return lines
 
 
-def _line_svg(timeline: Timeline, i: int, plot: _Plot) -> list[str]:
+def _day_text(day: Day, i: int) -> tuple[str, str, str]:
+    """EXE i's figures on `day` as the table words them: strict with its change, then functions
+    and fuzzy; before its tables exist, "not started" and two empty strings."""
+    if day.percents[i] is None:
+        return _change(None, None), "", ""
+    return (_change(day.percents[i], day.deltas[i]),
+            f"functions {shield_message(day.functions[i])}",
+            f"fuzzy {shield_message(day.fuzzy[i])}")  # fmt: skip
+
+
+def _line_svg(timeline: Timeline, i: int, plot: _Plot, values: _Values) -> list[str]:
     """EXE i's line, unbroken over the days it has a figure, and a marker per active day with
-    the day's figure and driver as its tooltip."""
+    the day's three figures (strict labelled, since every chart shows all three) and driver as
+    its tooltip."""
     x, y = plot.x, plot.y
     points, dots = [], []
     for day in timeline.days:
-        value = day.percents[i]
+        value = values(day)[i]
         if value is None:
             continue
         points.append(f"{'L' if points else 'M'}{_num(x(day.index))},{_num(y(value))}")
         if not day.active:
             continue
-        title = (f"Day {day.index}, {day.date}: {_short(timeline.labels[i])} "
-                 f"{_change(value, day.deltas[i])}. {day.driver}")
+        title = (f"Day {day.index}, {day.date}: {_short(timeline.labels[i])} strict "
+                 f"{', '.join(_day_text(day, i))}. {day.driver}")
         dots.append(f'<circle class="tl-dot s{i}" cx="{_num(x(day.index))}" '
                     f'cy="{_num(y(value))}" r="{CHART_DOT}"><title>{_xml(title)}</title></circle>')
     return [f'<path class="tl-line s{i}" d="{" ".join(points)}"/>', *dots]
 
 
-def _end_labels_svg(timeline: Timeline, series: Sequence[int], plot: _Plot) -> list[str]:
+def _last(timeline: Timeline, i: int, values: _Values) -> float:
+    """EXE i's last figure (it has one: `_series`)."""
+    return next(values(d)[i] for d in reversed(timeline.days) if values(d)[i] is not None)
+
+
+def _end_labels_svg(timeline: Timeline, series: Sequence[int], plot: _Plot,
+                    values: _Values) -> list[str]:  # fmt: skip
     """Each line's short name at its last figure, right of the plot, pushed apart so two lines
     ending close together keep readable labels, and then back up from the plot's bottom so none
     lands on the day axis."""
-    ends = sorted((plot.y(next(d.percents[i] for d in reversed(timeline.days)
-                          if d.percents[i] is not None)), i) for i in series)  # fmt: skip
+    ends = sorted((plot.y(_last(timeline, i, values)), i) for i in series)
     placed: list[tuple[float, int]] = []
     for at, i in ends:
         if placed and at - placed[-1][0] < CHART_LABEL_GAP:
@@ -2525,36 +2562,39 @@ def _end_labels_svg(timeline: Timeline, series: Sequence[int], plot: _Plot) -> l
             f"{_xml(_short(timeline.labels[i]))}</text>" for at, i in placed]
 
 
-def render_timeline_svg(timeline: Timeline) -> str:
-    """The chart: matched percent (y, from 0) against days since the first commit (x), one line
-    per EXE with a figure, a marker with a tooltip per active day, direct labels at the right;
-    colours come from the page's rules (light and dark), so it is only drawn inline."""
+def render_timeline_svg(timeline: Timeline, chart: tuple[str, _Values]) -> str:
+    """One of TIMELINE_CHARTS: its figure in percent (y, from 0, its own scale) against days
+    since the first commit (x), one line per EXE with a figure, a marker with a tooltip per
+    active day, direct labels at the right; colours come from the page's rules (light and
+    dark), so it is only drawn inline."""
+    title, values = chart
     series = _series(timeline)
-    plot = _plot(timeline)
+    plot = _plot(timeline, values)
     last = timeline.days[-1]
-    figures = ", ".join(f"{timeline.labels[i]} {_change(last.percents[i], None).split(' (')[0]}"
+    figures = ", ".join(f"{timeline.labels[i]} {shield_message(_last(timeline, i, values))}"
                         for i in series)  # fmt: skip
-    aria = (f"Matched code percent per EXE over the {last.index + 1} days since the first commit "
+    aria = (f"The {title} figure per EXE over the {last.index + 1} days since the first commit "
             f"on {timeline.days[0].date}; on {last.date}: {figures}. The table below holds the "
             "same data.")
     lines = [f'<svg class="tl-chart" viewBox="0 0 {CHART_WIDTH} {CHART_HEIGHT}" role="img" '
              f'aria-label="{_xml(aria)}" font-size="{CHART_FONT}">',
              *_axes_svg(timeline, plot)]  # fmt: skip
     for i in series:
-        lines += _line_svg(timeline, i, plot)
-    lines += _end_labels_svg(timeline, series, plot)
+        lines += _line_svg(timeline, i, plot, values)
+    lines += _end_labels_svg(timeline, series, plot, values)
     lines.append("</svg>")
     return "\n".join(lines)
 
 
 def _timeline_css() -> list[str]:
-    """The chart's and the day table's rules: series colours per scheme, recessive axes."""
+    """The charts' and the day table's rules: series colours per scheme, recessive axes."""
     def colours(palette: Sequence[str]) -> str:
         return "".join(f".tl-line.s{i}{{stroke:{c}}}.tl-dot.s{i}{{fill:{c}}}"
                        f".tl-key.s{i}{{background:{c}}}" for i, c in enumerate(palette))
 
     return [
-        ".tl{margin-top:.75rem}",
+        ".tl{margin-top:1rem}",
+        ".tl h3{margin:0 0 .25rem;font-size:1rem;line-height:1.3;font-weight:600}",
         f".tl svg{{display:block;width:100%;height:auto;max-width:{CHART_MAX_WIDTH}}}",
         ".tl-axis,.tl-name{fill:var(--secondary)}",
         ".tl-grid{stroke:var(--secondary);stroke-opacity:.25;stroke-width:1}",
@@ -2568,20 +2608,29 @@ def _timeline_css() -> list[str]:
         ".days thead th{font-weight:600}",
         ".days tbody th{font-weight:400;white-space:nowrap}",
         ".days .fig>*{padding-top:.75rem}",
+        ".days .sub{color:var(--secondary)}",
         ".days .what{overflow-wrap:anywhere}",
     ]
 
 
+def _figures_cell(day: Day, i: int) -> str:
+    """EXE i's table cell: strict with its change, then functions and fuzzy on a second and
+    third line in the secondary ink, so the cell stays narrow at 390 px."""
+    strict, functions, fuzzy = (_xml(text) for text in _day_text(day, i))
+    if not functions:
+        return f"<td>{strict}</td>"
+    return f'<td>{strict}<br><span class="sub">{functions}<br>{fuzzy}</span></td>'
+
+
 def _days_table_html(timeline: Timeline) -> list[str]:
-    """The chart's data as a table, newest day first. A day is two rows under its Day header:
+    """The charts' data as a table, newest day first. A day is two rows under its Day header:
     the EXE figures, then the driver and summary across the EXE columns, so at 390 px the
     figures keep their width instead of yielding it to a long summary column."""
     active = [d for d in reversed(timeline.days) if d.active]
     head = "".join(f'<th scope="col">{_xml(label)}</th>' for label in timeline.labels)
     rows = []
     for d in active:
-        figures = "".join(f"<td>{_xml(_change(p, delta))}</td>"
-                          for p, delta in zip(d.percents, d.deltas, strict=True))  # fmt: skip
+        figures = "".join(_figures_cell(d, i) for i in range(len(timeline.labels)))
         rows += [f'<tr class="fig"><th scope="row" rowspan="2">Day {d.index}<br>{_xml(d.date)}'
                  f"</th>{figures}</tr>",
                  f'<tr><td class="what" colspan="{len(timeline.labels)}"><strong>'
@@ -2594,17 +2643,21 @@ def _days_table_html(timeline: Timeline) -> list[str]:
 
 
 TIMELINE_CAPTION = (
-    "The strict figure (matched code bytes) per EXE at the end of each day since the first "
-    "commit, re-derived from the history of each EXE's status, functions and units tables the "
-    "way the figures above are (a change counts on the day it reached main). Each marker's "
-    "tooltip and the table name the day's biggest driver; the table also sums what the day did: "
-    "match commits by co-author, flags approvals, drive runs, tooling and plan commits, and "
-    "learnings.")
+    "Three small charts, one per figure above: strict (matched code bytes), functions (matched "
+    "over all game and thunk functions) and fuzzy (objdiff's closeness, with partial credit), "
+    "each on its own percent scale over the same days. Each shows the figure per EXE at the end "
+    "of each day since the first commit, re-derived from the history of each EXE's status, "
+    "functions and units tables the way the figures above are (a change counts on the day it "
+    "reached main), so each line ends at today's figure. Each marker's tooltip and the table "
+    "name the day's biggest driver; each table cell gives strict with its change, then "
+    "functions and fuzzy, and the table also sums what the day did: match commits by "
+    "co-author, flags approvals, drive runs, tooling and plan commits, and learnings.")
 
 
 def _timeline_html(timeline: Timeline | None) -> list[str]:
-    """The `Progress over days` section: the chart, its legend and the day table, or the note
-    alone when the history cannot be read; nothing without a timeline."""
+    """The `Progress over days` section: the legend, the three charts (TIMELINE_CHARTS, each
+    under its title) and the day table, or the note alone when the history cannot be read;
+    nothing without a timeline."""
     if timeline is None:
         return []
     lines = ['<section class="timeline" aria-labelledby="timeline">',
@@ -2613,9 +2666,11 @@ def _timeline_html(timeline: Timeline | None) -> list[str]:
         return [*lines, f'<p class="caption">{_xml(timeline.note)}</p>', "</section>"]
     keys = [f'<li><span class="swatch tl-key s{i}" aria-hidden="true"></span>'
             f"{_xml(timeline.labels[i])}</li>" for i in _series(timeline)]  # fmt: skip
+    charts = [line for chart in TIMELINE_CHARTS
+              for line in ('<div class="tl">', f"<h3>{_xml(chart[0])}</h3>",
+                           render_timeline_svg(timeline, chart), "</div>")]  # fmt: skip
     return [*lines, f'<p class="caption">{_xml(TIMELINE_CAPTION)}</p>',
-            '<ul class="legend">', *keys, "</ul>",
-            '<div class="tl">', render_timeline_svg(timeline), "</div>",
+            '<ul class="legend">', *keys, "</ul>", *charts,
             *_days_table_html(timeline), "</section>"]  # fmt: skip
 
 
