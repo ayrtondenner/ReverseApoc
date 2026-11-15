@@ -15,7 +15,6 @@ INCLUDE_ASM(func_00061550);
 INCLUDE_ASM(func_00061F30);
 INCLUDE_ASM(func_00061F50);
 INCLUDE_ASM(func_00061FA0);
-INCLUDE_ASM(func_00061FC0);
 INCLUDE_ASM(func_00061FE0);
 INCLUDE_ASM(func_000620C0);
 INCLUDE_ASM(func_000621A0);
@@ -31,6 +30,20 @@ void func_00062200(int r_eax)
 INCLUDE_ASM(func_00062220);
 
 extern int D_000E7304;
+
+int func_000A31E0(int);
+void func_00061550(void);
+void func_00061F50(void);
+
+/* The tail calls leave no independently determined return value. */
+void func_00061FC0(void)
+{
+    D_000E7304 = func_000A31E0(2);
+    if (D_000E7304 != 0)
+        func_00061F50();
+    else
+        func_00061550();
+}
 
 /* flag_e7304_set: set the flag at 0x000E7304
  * Stores 1 to the 32-bit global and returns; EAX is not set, so it returns nothing.
