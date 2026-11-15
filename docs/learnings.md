@@ -11,6 +11,16 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-14: match rates fall with function size, not with the models
+
+- All arms together matched about 26-35% of functions under 64 B on the early nights, 5-13% at
+  64-255 B, under 1% at 256-1023 B and none at 1 KB or more. Opus 5.5 went from 27% (2026-10-31,
+  small leaves) to 2% (2026-11-14, tier-1 functions of 300 B to 1.5 KB). Its career 21% describes
+  the early queue. Detail and tables: [model-comparison.md](model-comparison.md#the-difficulty-curve-why-match-rates-fell-2026-11-14).
+- Compare models only on the same picks (`--hold`), and size budgets from recent rates on the
+  current queue. The near-miss lane (partial rows by bytes left) gave the day's best yield for the
+  cheap arms; the strongest model goes there next (owner, 2026-11-14).
+
 ## 2026-11-13: a canary must use every tool the night uses (agy edit_file)
 
 - agy auto-updated to 1.5.7, whose new `edit_file` step stopped the 20261113-cascade night as an unknown step although the Gemini canary had passed, since the canary never edited a file; 1.5.8 checks `edit_file` against the `write_file` rules, so the audit judges it as a write and the agy canary now makes one in-place edit (`.planning/todos/completed/agy-157-edit-file-audit.md`).

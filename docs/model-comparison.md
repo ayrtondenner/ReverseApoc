@@ -319,6 +319,50 @@ Read for the routing table: DeepSeek held 2 of its first 5 sessions, Haiku 4 of 
 91 and GLM-5.3 none of about 30. The next cascade moves DeepSeek to the second rung of the
 64-255 B row and keeps Terra first only where the owner wants a Codex window spent.
 
+## The difficulty curve: why match rates fell (2026-11-14)
+
+Read 2026-11-14 from `progress/attempts.jsonl` (all recorded attempts; a held exact or a landed
+attempt counts as matched; function size from `config/<exe>/functions.csv`). These are not
+held comparisons: each night served the queue's next rows, so a later night faced harder
+functions than an earlier one. That is the finding.
+
+**Match rate by function size, all arms, per night.** The rate falls by roughly a factor of
+three per size bucket, and nothing at 1 KB or more has matched:
+
+| Night | under 64 B | 64-255 B | 256-1023 B | 1 KB and up |
+|---|---|---|---|---|
+| 2026-10-26 | 3 of 40 | - | - | - |
+| 2026-10-31 | 17 of 62 | - | - | - |
+| 2026-11-01 | 50 of 189 (26%) | 3 of 59 | 0 of 1 | 0 of 3 |
+| 2026-11-07 | 6 of 23 | 17 of 134 (13%) | - | - |
+| spike 012 (11-10/11) | 29 of 83 (35%) | 9 of 77 (12%) | 0 of 44 | - |
+| 2026-11-13 | 12 of 52 (23%) | 12 of 255 (5%) | 2 of 191 (1%) | 0 of 21 |
+| 2026-11-14 | 5 of 102 (5%) | 8 of 261 (3%) | 1 of 258 (0.4%) | 0 of 7 |
+
+**The same model, later in the queue.** Opus 5.5 matched 17 of 62 (27%) on 2026-10-31 and 53 of
+228 (23%) on 2026-11-01, almost all under 64 B; 23 of 157 (15%) on 2026-11-07, mostly 64-255 B;
+and 1 of 41 (2%) on 2026-11-14, on tier-1 functions of 300 B to 1.5 KB. Its career rate, 97 of
+467 (21%), describes the early queue, not the current one. Terra fell the same way, 6 of 245 on
+2026-11-13 to 1 of 205 on 2026-11-14, and Haiku from 11 of 123 to 6 of 201.
+
+**What it means.** The easy rows (small leaf functions) are largely matched; what remains is
+larger, branchier code whose exact register allocation and block order Watcom's optimiser
+decides, which a model rarely reproduces in three attempts. A model's rate is meaningful only
+next to the size mix it faced: compare arms on the same picks (spike 012's `--hold` method),
+never by career rate. Sizing a budget from an old rate overstates the matches it buys.
+
+**The near-miss lane (2026-11-14).** Partial rows ranked by bytes left (`--near-miss`) were
+the day's best yield for the cheap arms: Haiku 5.5 matched 4 of 105 there through Claude Code
+and 6 of 123 through Copilot, against 3 of 261 at 64-255 B in the normal queue the same day.
+Sonnet 5.5 matched 0 of 55 on the same lane (estimated cost, small sample) and Gemini 3.8 Flash
+0 of 3. Seven partial rows at a best of 100.00% are not near misses at all: each reaches
+objdiff's 100% only under another compiler rule, and no proposal for them passes its re-gate
+(todo `flag-blocked-rows`); the lane leaves them out.
+
+**Next (owner, 2026-11-14).** Put the strongest model on the near-miss lane, not on the tier
+queue: Opus runs there from run `20261114-opus-near`. Its result is recorded here when the
+run ends.
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
