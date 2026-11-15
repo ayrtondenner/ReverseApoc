@@ -132,7 +132,37 @@ void func_000483A0(s16 rows)
     }
 }
 
-INCLUDE_ASM(func_000484F0);
+void func_00017CC3(void);
+
+void func_000484F0(s16 rows)
+{
+    s16 j;
+    s16 row;
+    u16 x;
+    u16 *p;
+    s16 s;
+
+    if (D_000D4D72 < 81) {
+        D_000D4D72++;
+        func_00017CC3();
+        p = *D_00182DFC + D_000D4D72 + 79 + D_000D4D74 * 100;
+        for (j = 0; j < rows; j++) {
+            for (row = D_000D4D74, x = 0; row < D_000D4D74 + 44; row++, p += 100, x += 8) {
+                if (row < 100 && D_000D4D72 + 79 < 100 && row >= 0 && D_000D4D72 + 79 >= 0) {
+                    if (*p != 0) {
+                        s = D_0015309A[*p].sprite;
+                        if (s != 0) {
+                            func_00016F2B(D_00182DB4 + D_00182D68[s], 632, x);
+                        }
+                    }
+                } else if (j == 0) {
+                    func_00016F2B(D_00182DB4 + D_00182D68[D_000E7188], 632, x);
+                }
+            }
+            p += 5600;
+        }
+    }
+}
 void func_00048640(int rows)
 {
     s16 j;
