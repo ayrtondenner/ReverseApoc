@@ -96,7 +96,31 @@ INCLUDE_ASM(func_00095CA0);
 INCLUDE_ASM(func_00096130);
 INCLUDE_ASM(func_00096940);
 INCLUDE_ASM(func_00096B40);
-INCLUDE_ASM(func_00096BB0);
 INCLUDE_ASM(func_00096C50);
 INCLUDE_ASM(func_00096F50);
 INCLUDE_ASM(func_00097370);
+
+extern float D_0030AB34[];
+extern char D_0030AB4C[];
+int func_00096C50(int, int, int *, char *);
+void func_0009F330(int, int, char *, int, float *);
+
+void func_00096BB0(int a, int b, int row, float *out)
+{
+    int handle;
+    float w;
+    float sum;
+    int i;
+
+    *out = 0;
+    if (func_00096C50(a, b, &handle, D_0030AB4C) == 0) {
+        func_0009F330(1, handle, D_0030AB4C, 6, D_0030AB34);
+        sum = 0;
+        for (i = 0; i < 3; i++) {
+            w = D_0030AB34[row * 3 + i];
+            *out += i * w;
+            sum += w;
+        }
+        *out /= sum;
+    }
+}
