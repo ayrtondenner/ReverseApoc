@@ -95,7 +95,20 @@ INCLUDE_ASM(func_00095880);
 INCLUDE_ASM(func_00095CA0);
 INCLUDE_ASM(func_00096130);
 INCLUDE_ASM(func_00096940);
-INCLUDE_ASM(func_00096B40);
+extern short D_000E6C30;
+extern short D_000E6C32;
+extern short D_000E6C34;
+extern short D_000E6C36;
+extern unsigned char D_0027A0EA;
+extern int D_0027A0F0;
+
+int func_00096B40(int a)
+{
+    if (a == 0 || D_0027A0EA == 0) {
+        return ((D_000E6C30 * 60 + D_000E6C32) * 60 + D_000E6C34) * 36 + D_000E6C36;
+    }
+    return D_0027A0F0;
+}
 INCLUDE_ASM(func_00096C50);
 INCLUDE_ASM(func_00096F50);
 INCLUDE_ASM(func_00097370);
