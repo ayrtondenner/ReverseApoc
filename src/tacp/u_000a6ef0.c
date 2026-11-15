@@ -45,7 +45,6 @@ int func_000A71A0(void)
     return func_00041140(0);
 }
 
-INCLUDE_ASM(func_000A71F0);
 INCLUDE_ASM(func_000A7200);
 INCLUDE_ASM(func_000A72F0);
 INCLUDE_ASM(func_000A73D0);
@@ -88,4 +87,9 @@ int func_000A71D0(void)
 int func_000A71E0(void)
 {
     return func_00041140(4);
+}
+
+int func_000A71F0(void)
+{
+    return func_00041140(5);
 }
