@@ -7,7 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00087FF0);
 INCLUDE_ASM(func_00088040);
 INCLUDE_ASM(func_00088210);
 INCLUDE_ASM(func_00088390);
@@ -20,6 +19,26 @@ INCLUDE_ASM(func_00089030);
 
 /* func_00021180 returns a record pointer or NULL (callee listing not read). */
 extern u8 *func_00021180(s32 a);
+
+/* s16 guessed: EAX holds the +8 value or the NULL pointer at ret (callers not read). */
+s16 func_00087FF0(s32 a, volatile s16 d, s16 b, s16 c)
+{
+    u8 *p;
+    s16 t;
+
+    p = func_00021180(a);
+    if (p != 0) {
+        p[4] = 0x15;
+        *(s16 *)(p + 0x10) = (s16)a;
+        p[5] = (u8)d;
+        t = (c + 1) * -1;
+        *(s16 *)(p + 0xE) = b;
+        *(s16 *)(p + 0xA) = c;
+        *(s16 *)(p + 8) = t;
+        return t;
+    }
+    return (s16)(s32)p;
+}
 
 void func_000883F0(s32 a)
 {
