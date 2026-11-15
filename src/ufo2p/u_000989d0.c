@@ -11,7 +11,6 @@ INCLUDE_ASM(func_000989D0);
 INCLUDE_ASM(func_00098A70);
 INCLUDE_ASM(func_00099050);
 INCLUDE_ASM(func_00099710);
-INCLUDE_ASM(func_00099880);
 INCLUDE_ASM(func_00099B50);
 INCLUDE_ASM(func_00099CE0);
 INCLUDE_ASM(func_00099DB0);
@@ -61,4 +60,50 @@ int func_00099830(int *a, int *b)
         y = 0;
     }
     return y - x;
+}
+
+extern signed char D_000E12FC[10];
+extern int D_001A88C8[25];
+extern int D_001285E0;
+extern void qsort(void *base, unsigned n, unsigned size, int (*cmp)(int *, int *));
+
+void func_00099880(void)
+{
+    int i;
+    int j;
+    int v;
+    signed char n;
+    signed char c;
+
+    i = 0;
+    n = i + 2;
+    do {
+        D_001A88C8[i] = i + 2;
+        c = n;
+        j = 0;
+        do {
+            if (D_000E12FC[j] == c) {
+                D_000E12FC[j] = -1;
+                break;
+            }
+            j++;
+        } while (j < 10);
+        n++;
+        i++;
+    } while (i < 25);
+    qsort(D_001A88C8, 25, 4, func_00099830);
+    i = 0;
+    do {
+        if (daily_history[D_001A88C8[i]][0] > 0 && daily_history[D_001A88C8[i]][0] < 200) {
+            c = D_001A88C8[i];
+            for (j = 0; j < 10; j++) {
+                if (D_000E12FC[j] == -1) {
+                    D_000E12FC[j] = c;
+                    break;
+                }
+            }
+        }
+        i++;
+    } while (i != 10);
+    D_001285E0 = 1;
 }
