@@ -28,6 +28,7 @@ extern int D_000E7188;
 extern char *D_00182DB4;
 void func_00017C79(void);
 void func_00017C17(void);
+void func_00017D0B(void);
 void func_00016F2B(char *, int, int);
 
 extern u8 D_000D5060;
@@ -132,7 +133,34 @@ void func_000483A0(s16 rows)
 }
 
 INCLUDE_ASM(func_000484F0);
-INCLUDE_ASM(func_00048640);
+void func_00048640(int rows)
+{
+    s16 j;
+    s16 row;
+    u16 *p;
+    s16 s;
+
+    if (D_000D4D72 > -56) {
+        D_000D4D72--;
+        func_00017D0B();
+        p = *D_00182DFC + D_000D4D72 + D_000D4D74 * 100;
+        for (j = 0; j < rows; j++) {
+            for (row = D_000D4D74; row < D_000D4D74 + 44; row++, p += 100) {
+                if (row < 100 && D_000D4D72 < 100 && row >= 0 && D_000D4D72 >= 0) {
+                    if (*p != 0) {
+                        s = D_0015309A[*p].sprite;
+                        if (s != 0) {
+                            func_00016F2B(D_00182DB4 + D_00182D68[s], 0, (u16)((row - D_000D4D74) * 8));
+                        }
+                    }
+                } else if (j == 0) {
+                    func_00016F2B(D_00182DB4 + D_00182D68[D_000E7188], 0, (u16)((row - D_000D4D74) * 8));
+                }
+            }
+            p += 5600;
+        }
+    }
+}
 INCLUDE_ASM(func_000487A0);
 INCLUDE_ASM(func_00048830);
 
