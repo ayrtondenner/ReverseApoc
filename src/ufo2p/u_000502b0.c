@@ -10,7 +10,6 @@
 INCLUDE_ASM(func_000502B0);
 INCLUDE_ASM(func_000504E0);
 INCLUDE_ASM(func_000505A0);
-INCLUDE_ASM(func_00050920);
 INCLUDE_ASM(func_000509C0);
 INCLUDE_ASM(func_00050A20);
 INCLUDE_ASM(func_00050A80);
@@ -81,6 +80,25 @@ void func_00050BB0(void)
     one = 1;
     func_0005EDF0();
     D_000E12F8 = one;
+}
+
+void func_00050920(void)
+{
+    register int one;
+    int zero;
+    short wide;
+
+    if (D_000D4D58 == 600) {
+        one = 1;
+        func_0005EDF0();
+        D_000E12F8 = one;
+    }
+    zero = 0;
+    wide = 1;
+    D_000D4D58 = zero;
+    D_000D4D5C = zero;
+    hover_info_changed = wide;
+    D_00183A80 = wide;
 }
 
 void func_00050970(void)
