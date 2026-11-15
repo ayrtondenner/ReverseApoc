@@ -14,7 +14,10 @@ INCLUDE_ASM(func_000A5D40);
 INCLUDE_ASM(func_000A5D70);
 INCLUDE_ASM(func_000A5DA0);
 INCLUDE_ASM(func_000A5DB0);
-INCLUDE_ASM(func_000A5F90);
+
+extern int D_000E6C24;
+extern int D_002A1C9C;
+void func_000A6000(void);
 
 extern char D_000E3660[];
 int func_000A5CD0(int);
@@ -22,6 +25,27 @@ int func_000A5BA0(int);
 int func_00021180(void);
 extern char D_000E6CC0[];
 extern char D_00284CEE[];
+
+void func_000A5F90(void)
+{
+    char *r_p;
+    short r_s;
+
+    if (D_000E6C24 != 0) {
+        D_002A1C9C = D_000E6C24;
+        func_000A6000();
+    } else {
+        if (D_002A1C9C == 0) D_002A1C9C = 1;
+        r_p = (char *)func_00021180();
+        if (r_p != 0) {
+            r_s = (short)D_002A1C9C;
+            r_p[4] = 14;
+            *(short *)(r_p + 0x12) = r_s;
+        }
+        D_002A1C9C = D_000E6C24;
+    }
+    *(short *)D_00284CEE = *(short *)D_000E6CC0 = 1;
+}
 
 void func_000A6000(void)
 {
