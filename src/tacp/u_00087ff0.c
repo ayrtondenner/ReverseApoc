@@ -11,7 +11,6 @@ INCLUDE_ASM(func_00087FF0);
 INCLUDE_ASM(func_00088040);
 INCLUDE_ASM(func_00088210);
 INCLUDE_ASM(func_00088390);
-INCLUDE_ASM(func_00088410);
 INCLUDE_ASM(func_00088450);
 INCLUDE_ASM(func_000884A0);
 INCLUDE_ASM(func_00088830);
@@ -30,5 +29,34 @@ void func_000883F0(s32 a)
     if (p != 0) {
         p[4] = 0x28;
         p[5] = (u8)a;
+    }
+}
+
+struct unk_0014 {
+    /* 0x00 */ s16 kind;
+    /* 0x02 */ s16 unk_02;
+    /* 0x04 */ s32 unk_04;
+    /* 0x08 */ u8 unk_08[0xC];
+}; /* size: 0x14 */
+
+/* Record table and its end: the target takes their addresses (mov edx, offset). */
+extern struct unk_0014 D_001CA968[];
+extern struct unk_0014 D_001CAE18[];
+
+/* void: EAX is not read after the call (callee listing not read). */
+extern void func_00088040(struct unk_0014 *p);
+
+void func_00088410(s32 a)
+{
+    struct unk_0014 *p;
+
+    p = D_001CA968;
+    if (p < D_001CAE18) {
+        do {
+            if (p->kind != 0 && p->unk_04 == a) {
+                func_00088040(p);
+            }
+            p++;
+        } while (p < D_001CAE18);
     }
 }
