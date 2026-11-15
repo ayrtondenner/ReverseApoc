@@ -7,10 +7,21 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_000520A0);
 INCLUDE_ASM(func_000520C0);
 INCLUDE_ASM(func_00052100);
 INCLUDE_ASM(func_00052150);
+
+/* The return value is unused; the target does not establish one. */
+void func_000520A0(void)
+{
+    extern int D_000E12F0;
+    extern short D_00183A80;
+    extern short hover_info_changed;
+
+    D_000E12F0 = 2;
+    D_00183A80 = 1;
+    hover_info_changed = 1;
+}
 
 /* Sibling of button_group_select_1: stores index 4 as the group's selection.
  * The block-scope externs come before the file-scope ones on purpose: they give
