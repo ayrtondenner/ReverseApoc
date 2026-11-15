@@ -12,13 +12,40 @@ INCLUDE_ASM(func_00098A70);
 INCLUDE_ASM(func_00099050);
 INCLUDE_ASM(func_00099710);
 INCLUDE_ASM(func_00099880);
-INCLUDE_ASM(func_00099950);
 INCLUDE_ASM(func_00099B50);
 INCLUDE_ASM(func_00099CE0);
 INCLUDE_ASM(func_00099DB0);
 INCLUDE_ASM(func_0009A0A0);
 
 extern int daily_history[27][56];
+
+extern volatile int D_00182CB0;
+extern int *D_00182D5C;
+extern int *D_00182D78;
+extern char D_000D2B0C[], D_000D2B10[], D_000D2B14[], D_000D2AD8[], D_001285DC[];
+int func_0002E430(void);
+void func_0002F220(int);
+void func_0002E470(int, int);
+int func_00063800(int);
+signed char func_000B7800(char *);
+void func_00099880(void);
+int func_0002E640(int, int, int, int, int, int *, int, void (*)(void), int);
+void func_0002F7F0(int, int, int *, int, int, char *);
+
+void func_00099950(void)
+{
+    int a;
+    int b;
+
+    func_0002F220(func_0002E430());
+    a = D_00182CB0;
+    func_0002E470(a, 128);
+    func_0002E640(602, 40, 640, 75, 0, D_00182D5C + D_00182D78[79], func_000B7800(D_000D2B0C), func_00099880, func_00063800(22));
+    a = func_0002E640(568, 46, 590, 70, 0, D_00182D5C + D_00182D78[1], func_000B7800(D_000D2B10), 0, 0);
+    b = func_0002E640(568, 352, 590, 374, 0, D_00182D5C + D_00182D78[0], func_000B7800(D_000D2B14), 0, 0);
+    func_0002F7F0(a, b, D_00182D5C + D_00182D78[4], 0, 90, D_001285DC);
+    func_0002E640(602, 443, 640, 480, 0, D_00182D5C + D_00182D78[5], func_000B7800(D_000D2AD8), 0, 0);
+}
 
 int func_00099830(int *a, int *b)
 {
