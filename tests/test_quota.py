@@ -61,6 +61,17 @@ def test_sonnet_has_a_measured_quota_entry():
     assert sizing.sessions == 500
 
 
+def test_fable_has_an_estimated_week_entry():
+    """Owner's Fable A/B of 2026-11-16 (quick 261101-b5f's pending comparison): Fable 5.1,
+    unmeasured, estimated at 0.1% of the Claude week a session (about 2.5 Opus sessions), so
+    25%week buys 250 sessions; the dry run says it is an estimate."""
+    entry = load_quota()["claude-fable-5-1"]
+    assert entry.plan.name == "Claude Code Ultra" and entry.estimate
+    assert entry.per_session == {quota.WEEK: Decimal("0.1")}
+    sizing = size("claude-fable-5-1", parse_budget("25%week"), load_quota(), max_sessions=None)
+    assert sizing.sessions == 250
+
+
 def test_copilot_sonnet_has_an_estimated_credit_entry():
     """Owner's Copilot spend of 2026-11-16: Sonnet 5.5 through Copilot, unmeasured, estimated at
     40 credits a session (a Haiku session's tokens at Sonnet's GitHub rates come to about 35),

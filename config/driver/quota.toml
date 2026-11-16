@@ -110,3 +110,10 @@ credits = 40
 estimate = true
 source = "estimate: a Haiku session's tokens (usage file, run 20261116-copilot) at Sonnet 5.5's GitHub rates come to about 35 credits; re-measure from the records' credits"
 read = 2026-11-16
+
+[arms."claude-fable-5-1"]
+plan = "claude-ultra"
+week_percent = 0.1
+estimate = true
+source = "estimate: about 2.5 Opus sessions (0.04 each); re-measure from the sessions' own seven_day readings (run 20261116-fable-ab)"
+read = 2026-11-16
