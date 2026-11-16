@@ -201,7 +201,43 @@ int func_000A68B0(void)
     return r_eax;
 }
 
-INCLUDE_ASM(func_000A68E0);
+extern char D_0010A0FA[];
+extern char D_000E6D44[];
+
+void func_000A68E0(void)
+{
+    int i;
+    int j;
+    int key;
+    int sel;
+    u8 u;
+    struct unk_0010 *p;
+
+    if (*(short *)D_000E6D42 != 0) {
+        sel = *(short *)D_000E6D44;
+        sel = ((short *)D_001B24AC)[sel];
+        key = *(short *)(D_0010A0FA + sel * 0x49c);
+        for (i = 0, j = 0; i < *(short *)D_000E6D42; j += 2, i++) {
+            if (*(short *)(D_0010A0FA + *(short *)(D_001B24AC + j) * 0x49c) == key) {
+                p = func_00021180();
+                if (p != 0) {
+                    u = *(u8 *)(D_001B24AC + j);
+                    p->kind = 13;
+                    p->field_0E = 0;
+                    p->unit = u;
+                }
+            }
+        }
+        *(short *)D_00284CEE = 1;
+        *(short *)D_000E6CC0 = 1;
+        if (D_0027A0EA != 0 && D_0027A0EB == D_000E6D62 && D_0027A0EC == D_000E6D60) {
+            func_000BAC50();
+        }
+    } else {
+        func_000AF990(185, -11, -1, -1, 0);
+    }
+}
+
 extern char D_000E6D42[];
 extern char D_000E6D44[];
 extern char D_001B24AC[];
