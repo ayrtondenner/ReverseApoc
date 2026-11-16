@@ -1715,7 +1715,22 @@ def _copilot_part_stray(part: str) -> str | None:
     head, _, rest = part.partition(" ")
     if head != COPILOT_WRAPPER:
         return f"has a part that is not the session's wrapper `{COPILOT_WRAPPER}`"
+    if _help_only(rest):
+        return None
     return _command_stray(" ".join((*hooks.ATTEMPT_PREFIX, rest)))
+
+
+_HELP_FLAGS = frozenset({"--help", "-h"})
+_ATTEMPT_VERBS = frozenset(form[0] for form in hooks.MATCHING_FORMS)
+
+
+def _help_only(rest: str) -> bool:
+    """Run 20261116-copilot2: `<wrapper> [<verb>] --help|-h` exactly. The attempt parser's
+    argparse prints usage and exits before any command runs; a help flag beside any other
+    argument may be an option's value, so only these words, single-spaced, count."""
+    words = rest.split(" ")
+    return (words[-1] in _HELP_FLAGS
+            and (len(words) == 1 or (len(words) == 2 and words[0] in _ATTEMPT_VERBS)))  # fmt: skip
 
 
 def copilot_values(claim: _Claim) -> dict:

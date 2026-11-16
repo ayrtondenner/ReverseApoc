@@ -459,6 +459,25 @@ def test_copilot_audit_passes_wrapper_forms_chained_with_semicolons_only():
         assert driver.copilot_command_strays([command]), command
 
 
+def test_copilot_audit_passes_the_wrappers_help_forms_only():
+    """Run 20261116-copilot2: Haiku ran `reverseapoc-attempt check --help` (Copilot's shell rule
+    allows the wrapper with any arguments). The attempt parser's argparse prints usage and
+    exits before any command runs, so exactly `<wrapper> [<verb>] --help|-h` is known, alone or
+    in a `;` chain; a help flag beside any other argument (where it may be an option's value,
+    as in `--note=-h`) or after an unknown verb is still a stray."""
+    wrapper = session.COPILOT_WRAPPER
+    ok = (f"{wrapper} check --help", f"{wrapper} check -h", f"{wrapper} --help",
+          f"{wrapper} asm --help", f"{wrapper} plan -h",
+          f"{wrapper} context; {wrapper} check --help")
+    for command in ok:
+        assert driver.copilot_command_strays([command]) == [], command
+    bad = (f"{wrapper} check --sweep --help", f"{wrapper} check --note=-h",
+           f"{wrapper} shell --help", f"{wrapper} check  --help", f"{wrapper} check --help x",
+           f"{wrapper} --help check", f"{wrapper} check --HELP")
+    for command in bad:
+        assert driver.copilot_command_strays([command]), command
+
+
 def test_copilotjson_a_file_tool_ignores_keys_no_cli_schema_has():
     """Nights 20261114-nearmiss7 and -lanesC3: create carried `file_path: "x"` and
     `description: "Create check-note.json"`, which the CLI drops; it wrote through `path`.
