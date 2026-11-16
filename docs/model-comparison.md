@@ -359,9 +359,34 @@ Sonnet 5.5 matched 0 of 55 on the same lane (estimated cost, small sample) and G
 objdiff's 100% only under another compiler rule, and no proposal for them passes its re-gate
 (todo `flag-blocked-rows`); the lane leaves them out.
 
-**Next (owner, 2026-11-14).** Put the strongest model on the near-miss lane, not on the tier
-queue: Opus runs there from run `20261114-opus-near`. Its result is recorded here when the
-run ends.
+**Opus and Sonnet on the near-miss lane (2026-11-14/15).** The owner moved the strongest model
+to the near-miss lane (runs `20261114-opus-near`, `20261115-claude-push`, `-claude-push2`; lane
+at 60% then 50%) for a 20-point spend of the Claude week (8% to 28%):
+
+| Arm | Lane | Matched | Rate |
+|---|---|---|---|
+| Opus 5.5 | tier queue (`20261114-opus-sonnet*`) | 1 of 41 | 2.4% |
+| Opus 5.5 | near-miss | 8 of 255 | 3.1% |
+| Sonnet 5.5 | near-miss | 10 of 415 | 2.4% |
+| GPT-6.1 Terra | tier queue, same runs | 14 of 734 | 1.9% |
+
+The first near-miss run alone gave Opus 4 of 57 (7%) and Sonnet 7 of 148 (4.7%): the closest
+rows went first, and the rate fell as the lane worked down to 50-60% rows. Opus finished rows that
+Haiku (both harnesses) and Sonnet had failed several times, the 99.43% `tacp func_00087FF0` among
+them. Terra matched both functions of the flag-blocked proposal F-0028 (`func_000520A0`,
+`func_000520C0`) under the default rule, and Opus and Sonnet the targets of the failed proposals
+F-0004 and F-0002: those rows needed a better source, not another compiler rule.
+
+**Cost.** The 20 points bought 296 Opus and 415 Sonnet sessions: about 0.04% of the week per
+Opus session and 0.02% per Sonnet session (upper bounds, this coordinator's own use included),
+far below the 0.1% read for Opus on 2026-11-07. quota.toml carries the new figures. Every Claude
+session's stream also carries the live weekly reading (`rate_limit_event`, `seven_day.utilization`),
+which tracked the owner's panel to the point; the usage meters can read it (todo
+`budget-meter-wiring`).
+
+**Reading.** On this queue the near-miss lane roughly matches the tier queue's rate for Opus
+(3.1% against 2.4%), better at its top rows and worse lower down; it pays most when it is fresh.
+Keep strong models on it (owner, 2026-11-14), and rank it so each drive starts at the closest rows.
 
 ## Adding the next comparison
 

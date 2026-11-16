@@ -19,3 +19,12 @@ so `flags approve` cannot land them:
 | tacp func_00088450, func_000AB650 | none | never proposed | `flags propose` from their sweep hits, then regate |
 
 The owner approves landings (`flags approve`); this todo is the work that makes them approvable.
+
+## Update (2026-11-15)
+
+Three of these rows no longer need a rule: Terra matched ufo2p func_000520A0 and func_000520C0
+(F-0028) under the default rule on run 20261115-claude-push2, and the targets of the failed
+proposals F-0004 (ufo2p func_0004DFD0, Opus) and F-0002 (tacp func_000779C0, Sonnet) were matched
+on 20261114-opus-near. Left: func_0005DB80 (F-0029), func_0008A0C0 (F-0037), func_000B4B80
+(F-0072), tacp func_00088450 and func_000AB650. Before repairing a rule, give the row a near-miss
+pass with a strong model: a better source may match under the default.

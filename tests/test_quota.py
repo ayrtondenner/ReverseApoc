@@ -50,15 +50,15 @@ def test_parse_budget_refuses(text):
 # ---- config/driver/quota.toml ----
 
 
-def test_sonnet_has_an_estimated_quota_entry():
-    """Owner, 2026-11-14: half of a 20%week spend goes to Sonnet 5.5 beside Opus. No meter
-    reading exists yet, so its figure is an estimate (half of Opus's 0.1, as GitHub's per-token
-    prices for Sonnet 5.5 are half of Opus 5.5's), marked to re-measure."""
+def test_sonnet_has_a_measured_quota_entry():
+    """Owner's 20-point spend of 2026-11-14/15: Sonnet 5.5 at 0.02% of the week per session
+    (measured with Opus at 0.04, from 296 Opus and 415 Sonnet sessions moving the bar 8% to
+    28%), no longer an estimate."""
     entry = load_quota()["claude-sonnet-5-5"]
-    assert entry.plan.name == "Claude Code Ultra" and entry.estimate
-    assert entry.per_session == {quota.WEEK: Decimal("0.05")}
+    assert entry.plan.name == "Claude Code Ultra" and not entry.estimate
+    assert entry.per_session == {quota.WEEK: Decimal("0.02")}
     sizing = size("claude-sonnet-5-5", parse_budget("10%week"), load_quota(), max_sessions=None)
-    assert sizing.sessions == 200
+    assert sizing.sessions == 500
 
 
 def test_the_committed_table_loads_with_its_plans_named_in_config():
@@ -69,7 +69,7 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     assert table[HAIKU].plan.name == "Claude Code Ultra"
     assert table[HAIKU].per_session == {quota.WEEK: Decimal("0.01")}
     assert (table[HAIKU].matched, table[HAIKU].sessions) == (22, 312)
-    assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.1")}
+    assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.04")}
     assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("1.35"),
                                         quota.WEEK: Decimal("0.22")}  # fmt: skip
     assert (table[TERRA].matched, table[TERRA].sessions) == (11, 335)

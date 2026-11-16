@@ -50,19 +50,21 @@ rate_source = "all recorded sessions to 2026-11-14 (near-miss lane 4 of 71 on 20
 
 [arms."claude-opus-5-5"]
 plan = "claude-ultra"
-week_percent = 0.1
-source = "owner's meter (S): 100 sessions moved the weekly bar 17% to 27%"
-read = 2026-11-07
+week_percent = 0.04
+source = "owner's meter (S) and the sessions' own seven_day readings: 296 Opus and 415 Sonnet sessions moved the weekly bar 8% to 28% (orchestrator use included, so an upper bound), at Opus = 2 x Sonnet per session"
+read = 2026-11-15
+matched = 9
+sessions = 296
+rate_source = "runs 20261114-opus-sonnet to 20261115-claude-push2 (near-miss lane 8 of 255, tier queue 1 of 41)"
 
 [arms."claude-sonnet-5-5"]
 plan = "claude-ultra"
-week_percent = 0.05
-source = "estimate, re-measure: half of Opus 5.5's 0.1, as Sonnet 5.5's per-token prices are half of Opus 5.5's (GitHub's table, read 2026-11-13)"
-read = 2026-11-14
-estimate = true
-matched = 5
-sessions = 20
-rate_source = "spike 012 and earlier recorded sessions"
+week_percent = 0.02
+source = "owner's meter (S) and the sessions' own seven_day readings: 296 Opus and 415 Sonnet sessions moved the weekly bar 8% to 28% (orchestrator use included, so an upper bound), at Sonnet = half of Opus per session"
+read = 2026-11-15
+matched = 10
+sessions = 415
+rate_source = "near-miss lane, runs 20261114-opus-sonnet to 20261115-claude-push2"
 
 [arms."gpt-6.1-terra"]
 plan = "chatgpt-plus"
