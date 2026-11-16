@@ -10,7 +10,6 @@
 INCLUDE_ASM(func_000502B0);
 INCLUDE_ASM(func_000504E0);
 INCLUDE_ASM(func_000505A0);
-INCLUDE_ASM(func_000509C0);
 INCLUDE_ASM(func_00050A20);
 INCLUDE_ASM(func_00050A80);
 
@@ -28,6 +27,30 @@ extern short D_00183B04;
 extern short D_00183B06;
 
 void func_0005EDF0(void);
+
+void func_000509C0(void)
+{
+    register int one;
+    int two;
+    int other;
+    short zero;
+    short wide;
+
+    if (D_000D4D58 == 600) {
+        one = 1;
+        func_0005EDF0();
+        D_000E12F8 = one;
+    }
+    two = 2;
+    other = 1;
+    zero = 0;
+    wide = 1;
+    D_000D4D58 = two;
+    D_000D4D5C = other;
+    D_000D5064 = zero;
+    hover_info_changed = wide;
+    D_00183A80 = wide;
+}
 
 extern short D_000D4E28;
 extern unsigned char D_000D5060;
