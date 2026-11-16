@@ -438,9 +438,9 @@ not which model is better. The last Terra run, `20261115-terra-credits` (4 worke
 **Harness lessons of the same nights.** Eleven drives on 2026-11-14 stopped on the guardrail,
 each time at a step that was safe but not yet known. Every fix widened the audit by one exact
 shape, test first, and was then replayed against every saved transcript. The full list is in
-[learnings.md](learnings.md). Only one shape is still unknown: Copilot's
-`view {path, forceReadLargeFiles}`. Copilot arms stay out of drives until it and the rest of the
-CLI's tool schema are reviewed (todo `copilot-cli-drive-arm`).
+[learnings.md](learnings.md). The last of them, Copilot's
+`view {path, forceReadLargeFiles}`, became known on 2026-11-16 after a review of the CLI's full
+tool schema.
 
 ## Adding the next comparison
 

@@ -201,7 +201,9 @@ def test_copilot_arms_load():
         assert (arm.harness, arm.backend, arm.model) == ("copilot", "github", model), name
         assert arm.sends_disassembly and arm.egress and arm.billing == backends.SUBSCRIPTION
         assert arm.accepted_init == (model,) and arm.coauthor == coauthor, name
-        assert (arm.max_workers, arm.max_ai_credits) == (4, 30), name
+        # Haiku 10 (owner, 2026-11-16: spend the month's credits in 5 hours, ~308 s and 2.2
+        # credits a session); the others keep 4 until they have run
+        assert (arm.max_workers, arm.max_ai_credits) == (10 if name == HAIKU else 4, 30), name
         assert (arm.base_url, arm.key_env) == (None, None), name
         got = (arm.prices.input, arm.prices.output, arm.prices.cache_read,
                arm.prices.cache_creation)  # fmt: skip
@@ -359,7 +361,27 @@ def test_copilotjson_a_view_with_a_line_range_is_known():
         assert copilotjson.unknown_steps(events), bad
 
 
-SPILL = str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
+def test_copilotjson_a_view_forcing_a_large_read_is_known():
+    """Run 20261114-opus-sonnet: a view with `forceReadLargeFiles` stopped the night. 1.0.111's
+    own view schema is {path, view_range?, forceReadLargeFiles?: boolean} (runtime.node, read
+    2026-11-16): the flag lifts only the size check, and the path is judged as any view. Its
+    flattened `view_range[0]`/`[1]` form and powershell's `detach` stay unknown."""
+    path = f"{WS}\\x.txt"
+    for flag in (True, False):
+        events = [_start(), *_call("t1", "view", {"path": path, "forceReadLargeFiles": flag})]
+        assert copilotjson.unknown_steps(events) == [], flag
+        assert copilotjson.read_targets(events) == [path]
+    both = {"path": path, "view_range": [1, 40], "forceReadLargeFiles": True}
+    assert copilotjson.unknown_steps([_start(), *_call("t1", "view", both)]) == []
+    for bad in ({"path": path, "forceReadLargeFiles": "true"},
+                {"path": path, "forceReadLargeFiles": 1},
+                {"path": path, "view_range[0]": 1, "view_range[1]": 40}):
+        assert copilotjson.unknown_steps([_start(), *_call("t1", "view", bad)]), bad
+    detached = {"command": "reverseapoc-attempt context", "detach": True}
+    assert copilotjson.unknown_steps([_start(), *_call("t1", "powershell", detached)])
+
+
+SPILL =str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
                                      "1ab393a8-15b8-44fc-a7e1-ddd8ce48b339.txt"))
 
 

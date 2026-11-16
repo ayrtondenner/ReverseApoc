@@ -34,9 +34,12 @@ Entry format:
     app-execution reparse point.
 
   Each fix accepts one exact shape, test first, and was replayed against every saved
-  transcript. Copilot's `view {forceReadLargeFiles}` is still unknown. The vendor docs list
-  none of these shapes, so read the CLI's bundled tool schema (`cli-main.js`) before a
-  Copilot arm runs again, not after the next stop.
+  transcript. The vendor docs list none of these shapes. Copilot's view schema is in the native
+  `prebuilds/win32-x64/runtime.node`, not in `cli-main.js`, which holds only a help table. So
+  read the package's own schemas (search `runtime.node` for `{"type":"object","properties"`)
+  for every new CLI version before a Copilot arm runs, not after the next stop. That review,
+  on 2026-11-16, made `view {forceReadLargeFiles}` known, and kept powershell's `detach`
+  unknown.
 - agy updated itself from 1.5.8 to 1.5.9 between the Gemini canary and the drive launch, so
   the launch refused for lack of a canary on the new version. That refusal is the version
   pin working. Re-run an agy canary right before the launch, not hours earlier.

@@ -706,7 +706,7 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   `context_limit` is counted like a turn cap, anything else stops the night, and so does a
   result with a non-zero exit and no error.
 - **The audit (fail closed).** Every tool call is read from the stream by its `toolCallId`. Only
-  `view {path[, view_range]}`, `create {path, file_text}`, `edit {path, old_str[, new_str]}`,
+  `view {path[, view_range, forceReadLargeFiles]}`, `create {path, file_text}`, `edit {path, old_str[, new_str]}`,
   `powershell {command[, description, mode, initial_wait, timeout, async, shellId]}` and
   `read_powershell {shellId[, delay]}` by the main agent are known. They are widened by exact
   shape after the 2026-11-14 guardrail stops ([learnings.md](learnings.md)):
@@ -718,7 +718,11 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   - A powershell command may chain wrapper calls with `;` when every part is an exact wrapper
     form.
 
-  `view {path, forceReadLargeFiles}` is still unknown. Another tool, another argument, a subagent's call (`agentId`, a parent,
+  The schema review of 2026-11-16 read every key of the five tools from 1.0.111's own package
+  (the native `runtime.node` and `cli-main.js`). It added `forceReadLargeFiles`, a boolean that
+  only lifts the size check. It left two keys unknown on purpose: view's flattened
+  `view_range[0]`/`[1]`, and powershell's `detach`, which starts a process that outlives the
+  session and so the audit. Another tool, another argument, a subagent's call (`agentId`, a parent,
   program or MCP field), a completion with no start and any event type outside the known set (a
   hook, a skill, a subagent, a permission prompt, a model switch) are strays. A call ended
   `denied` with exactly one of 1.0.111's two refusal texts (a rule named, or "no interactive
@@ -762,14 +766,15 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   sign-in under the per-session home, the `shell(reverseapoc-attempt)` rule, the long-command
   tool shapes,
   each refusal's text).
-- **Sizing.** Each arm runs with `max_workers = 4` and `max_ai_credits = 30` (Copilot's minimum
+- **Sizing.** Each arm runs with `max_workers = 4` (Haiku 10 since 2026-11-16, to spend the
+  month's credits in hours) and `max_ai_credits = 30` (Copilot's minimum
   per-session cap; a soft cap, one response may pass it). The capture spent 0.437 credits on
   three model calls. A matching Haiku session measured 2.2 credits (123 sessions on 2026-11-14,
   the records' `credits`, within 10% of the account meter), so the month's 1,500 credits cover
   about 680 Haiku sessions and far fewer Sonnet ones (Sonnet 5.5's rates are 20 times Haiku's).
 - **Status (2026-11-16).** Copilot Haiku 5.5 ran 123 sessions on 2026-11-14 and matched 6. It is
-  out of drives since run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`,
-  until the CLI's full tool schema is reviewed (todo `copilot-cli-drive-arm`).
+  out of drives after run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`.
+  The 2026-11-16 schema review above made that shape known, and the arm is back in drives.
 
 ## The local arm
 

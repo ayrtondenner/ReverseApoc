@@ -89,17 +89,25 @@ def _line_range(value: object) -> bool:
             and all(isinstance(v, int) and not isinstance(v, bool) for v in value))  # fmt: skip
 
 
+def _flag(value: object) -> bool:
+    return isinstance(value, bool)
+
+
 _SHAPES: dict[str, tuple[dict, dict]] = {
-    VIEW: ({"path": _text}, {"view_range": _line_range}),
+    # view: 1.0.111's own schema {path, view_range?, forceReadLargeFiles?: boolean} (its
+    # runtime.node, read 2026-11-16 after run 20261114-opus-sonnet): the flag lifts only the
+    # size check. Its flattened view_range[0]/[1] form stays unknown.
+    VIEW: ({"path": _text}, {"view_range": _line_range, "forceReadLargeFiles": _flag}),
     CREATE: ({"path": _text, "file_text": _text}, {}),
     # edit: the CLI's own schema is {path, old_str, new_str?} (its bundled cli-main.js)
     EDIT: ({"path": _text, "old_str": _text}, {"new_str": _text}),
     # 1.0.111's own schema adds timeout, async and shellId (cli-main.js, read 2026-11-14; night
     # 20261114-nearmiss6 named a shell "ctx" for the wrapper): the command stays Copilot's
-    # permission check's and the audit's to judge. Its sandbox-bypass requests stay unknown.
+    # permission check's and the audit's to judge. Its sandbox-bypass requests stay unknown, and
+    # so does `detach` (runtime.node: a process that outlives the session, past the audit).
     SHELL: ({"command": _text}, {"description": _text, "mode": lambda v: v in ("sync", "async"),
                                  "initial_wait": _seconds, "timeout": _seconds,
-                                 "async": lambda v: isinstance(v, bool), "shellId": _text}),
+                                 "async": _flag, "shellId": _text}),
     POLL: ({"shellId": _text}, {"delay": _seconds}),
 }
 KNOWN_TOOLS = frozenset(_SHAPES)

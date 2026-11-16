@@ -72,7 +72,14 @@ Before building:
   CLI refused or failed with ENOENT, `timeout`/`async`/named `shellId`, extra
   `description`/`file_path` keys, `%TEMP%` result spills, and `;`-chained wrapper calls
   (docs/learnings.md, 2026-11-16).
-- Still open: run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`. Before
-  Copilot arms return, review the CLI's whole bundled tool schema (`cli-main.js` of the
-  installed version), not one shape per stop. Then add every safe optional key test-first,
-  re-run the canary and replay every saved transcript.
+- Run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`. Done on 2026-11-16:
+  the review read all five tools' keys from 1.0.111's package. The view schema is in
+  `prebuilds/win32-x64/runtime.node`; `cli-main.js` has only a help table.
+  - `forceReadLargeFiles` (boolean) is now known, test-first.
+  - Kept unknown on purpose: view's flattened `view_range[0]`/`[1]`, and powershell's `detach`,
+    a process that outlives the session.
+  - `edit` stays `{path, old_str[, new_str]}`. The JSON schema requires only `path`, but the CLI
+    refuses an edit without `old_str` at run time (nights -nearmiss3/-5).
+
+  The Haiku arm's `max_workers` went from 4 to 10 for the owner's 5-hour spend of the month's
+  credits.
