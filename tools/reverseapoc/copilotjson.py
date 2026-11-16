@@ -142,6 +142,19 @@ _CACHE_BREAK = "prompt_cache_break"
 _CACHE_REQUESTS = ("beforeRequest", "afterRequest")
 
 
+# Run 20261116-fable-ab: "runtime events like background task completion" (1.0.111's event
+# schema). Only kind shell_completed is known: it reports a powershell command the audit judges
+# by its own call. Its other kinds (instruction_discovered, an agent's completion) stay unknown.
+_NOTIFICATION = "system.notification"
+
+
+def _notification_known(event: dict) -> bool:
+    kind = _mapping(_data(event).get("kind"))
+    code = kind.get("exitCode")
+    return (kind.get("type") == "shell_completed" and isinstance(kind.get("shellId"), str)
+            and isinstance(code, int) and not isinstance(code, bool))  # fmt: skip
+
+
 def _cache_requests(event: dict) -> list:
     return [_data(event).get(side) for side in _CACHE_REQUESTS]
 
@@ -521,7 +534,9 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
         kind, ident = event.get("type"), _data(event).get("toolCallId")
         if kind == _CACHE_BREAK and not _cache_break_known(event):
             out.append(f"event type {kind!r} lists a tool the session was not given")
-        elif kind not in KNOWN_EVENTS and kind != _CACHE_BREAK:
+        elif kind == _NOTIFICATION and not _notification_known(event):
+            out.append(f"event type {kind!r} of a kind the Copilot audit does not know")
+        elif kind not in KNOWN_EVENTS and kind not in (_CACHE_BREAK, _NOTIFICATION):
             out.append(f"event type {kind!r} is not one the Copilot audit knows")
         if kind not in (_TOOL_START, _TOOL_DONE):
             continue

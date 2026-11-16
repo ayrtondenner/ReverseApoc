@@ -414,6 +414,29 @@ def test_copilotjson_a_prompt_cache_break_of_the_sessions_tools_is_known(tmp_pat
                                      max_ai_credits=30) == []  # fmt: skip
 
 
+def _notification(kind: dict) -> dict:
+    """1.0.111's `system.notification` (run 20261116-fable-ab, cut to what is judged)."""
+    content = ("<system_notification>\nShell command \"Print context pack\" (shellId: 1) has "
+               "completed successfully.\n</system_notification>")
+    return {"type": "system.notification", "data": {"content": content, "kind": kind}}
+
+
+def test_copilotjson_only_a_shell_completed_notification_is_known():
+    """Run 20261116-fable-ab stopped on `system.notification` ("runtime events like background
+    task completion", 1.0.111's event schema): kind `shell_completed` reports a powershell
+    command the audit already judged by its own call. Only that kind, with a string shellId
+    and an integer exit code, is known; another kind (`instruction_discovered`, an agent's
+    completion) or a malformed one stays unknown."""
+    done = {"type": "shell_completed", "shellId": "1", "exitCode": 0,
+            "description": "Print context pack"}
+    assert copilotjson.unknown_steps([_start(), _notification(done)]) == []
+    for bad in ({"type": "instruction_discovered", "path": "AGENTS.md"},
+                {**done, "shellId": 1}, {**done, "exitCode": "0"}, {**done, "exitCode": True},
+                {"type": "agent_completed"}):
+        assert copilotjson.unknown_steps([_start(), _notification(bad)]), bad
+    assert copilotjson.unknown_steps([_start(), {"type": "system.notification", "data": {}}])
+
+
 SPILL = str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
                                      "1ab393a8-15b8-44fc-a7e1-ddd8ce48b339.txt"))
 
