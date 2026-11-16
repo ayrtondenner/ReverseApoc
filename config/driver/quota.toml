@@ -70,11 +70,12 @@ rate_source = "near-miss lane, runs 20261114-opus-sonnet to 20261115-claude-push
 plan = "chatgpt-plus"
 five_hour_percent = 1.35
 week_percent = 0.22
-source = "owner's meter (S): 74 sessions filled one 5-hour window, the week 50% to 66%"
-read = 2026-11-13
-matched = 11
-sessions = 335
-rate_source = "all recorded sessions to 2026-11-14 (recorded sessions undercount)"
+credits = 2.3
+source = "owner's meter (S): 74 sessions filled one 5-hour window, the week 50% to 66% (2026-11-13); past the week, Codex credits: 2,120 over 910 timed sessions, 2026-11-14 to 2026-11-16 (docs/model-comparison.md \"Plan credits per session\")"
+read = 2026-11-16
+matched = 18
+sessions = 978
+rate_source = "runs 20261114-cascade to 20261115-terra-credits (tier queue)"
 
 [arms."gemini-flash"]
 plan = "google-ai-plus"
@@ -96,9 +97,9 @@ rate_source = "cascade nights 2026-11-12 to 2026-11-13 (small sample)"
 
 [arms."copilot-haiku-5-5"]
 plan = "copilot-pro"
-credits = 2.6
-source = "usage files (totalNanoAiu): 8 sessions of runs 20261114-nearmiss and -nearmiss2, 1.55 to 3.49 credits, mean 2.58"
+credits = 2.2
+source = "usage files (totalNanoAiu): 123 sessions of runs 20261114-nearmiss to -opus-sonnet, 273.6 credits, mean 2.22; within 10% of the account meter"
 read = 2026-11-14
-matched = 3
-sessions = 82
-rate_source = "near-miss lane, runs 20261114-nearmiss to -nearmiss7"
+matched = 6
+sessions = 123
+rate_source = "runs 20261114-nearmiss to -opus-sonnet (near-miss lane, then one tier-queue lane)"

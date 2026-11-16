@@ -398,7 +398,9 @@ All four ids ran in spike 012: each arm's canary passed on codex-cli 0.167.0
   canaries' rejected-command lines). The audit takes exactly one such layer off and audits
   `<cmd>`, only for the real shells at their absolute paths
   (`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
-  `C:\Program Files\PowerShell\7\pwsh.exe`; any case, either slash), at most one `-NoProfile`
+  `C:\Program Files\PowerShell\7\pwsh.exe`, and the Microsoft Store alias
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` only while it is an app-execution reparse
+  point, as seen in run `20261114-cascade`; any case, either slash), at most one `-NoProfile`
   and one argument after `-Command`. A bare `powershell.exe`, a relative path or any other
   directory could be a binary the session planted, so it is audited as the whole text (a
   stray), as are a shell left inside, a compound `<cmd>` and any other shape.
@@ -436,7 +438,8 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   in-place edit as the `edit_file` step (below), which the audit did not know: it stopped the
   20261113-cascade night, while the Gemini canary had passed on 1.5.7 because it never edited a
   file. The canary now edits a file, and every agy arm needs a new canary on 1.5.8 before a
-  night. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
+  night. On 2026-11-14 agy moved to 1.5.9 between a Gemini canary and the launch, which then
+  refused for lack of a 1.5.9 canary. Run an agy canary just before the launch. The ids in backends.toml are the slugs that list showed on 2026-11-09. Slugs
   vary per account, and agy exits 1 on an unknown one, so a wrong id fails the canary. For an
   effort comparison, set `gemini-3.8-flash-high` or `-low` as the `gemini-flash` model.
 - **The session.** `agy --output-format stream-json --model <slug> --sandbox --add-dir <attempt
@@ -703,9 +706,19 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   `context_limit` is counted like a turn cap, anything else stops the night, and so does a
   result with a non-zero exit and no error.
 - **The audit (fail closed).** Every tool call is read from the stream by its `toolCallId`. Only
-  `view {path}`, `create {path, file_text}`, `edit {path, old_str, new_str}`, `powershell
-  {command[, description, mode, initial_wait]}` and `read_powershell {shellId[, delay]}` by the
-  main agent are known; another tool, another argument, a subagent's call (`agentId`, a parent,
+  `view {path[, view_range]}`, `create {path, file_text}`, `edit {path, old_str[, new_str]}`,
+  `powershell {command[, description, mode, initial_wait, timeout, async, shellId]}` and
+  `read_powershell {shellId[, delay]}` by the main agent are known. They are widened by exact
+  shape after the 2026-11-14 guardrail stops ([learnings.md](learnings.md)):
+  - A create or edit whose only extra keys are `description` or `file_path`, and whose
+    completion edited exactly its own path, is judged as that write.
+  - An edit the CLI refused for a missing required field, or failed with ENOENT, wrote nothing.
+  - A result spilled to `%TEMP%\<n>-copilot-tool-output-<pid>-<uuid>.txt` and announced in that
+    result may be viewed at that exact path.
+  - A powershell command may chain wrapper calls with `;` when every part is an exact wrapper
+    form.
+
+  `view {path, forceReadLargeFiles}` is still unknown. Another tool, another argument, a subagent's call (`agentId`, a parent,
   program or MCP field), a completion with no start and any event type outside the known set (a
   hook, a skill, a subagent, a permission prompt, a model switch) are strays. A call ended
   `denied` with exactly one of 1.0.111's two refusal texts (a rule named, or "no interactive
@@ -751,9 +764,12 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   each refusal's text).
 - **Sizing.** Each arm runs with `max_workers = 4` and `max_ai_credits = 30` (Copilot's minimum
   per-session cap; a soft cap, one response may pass it). The capture spent 0.437 credits on
-  three model calls; a matching session is about 3 to 5 credits per Haiku session (a placeholder:
-  re-measure from the first night's `credits`), so the month's 1,500 credits cover a few hundred
-  Haiku sessions and far fewer Sonnet ones (Sonnet 5.5's rates are 20 times Haiku's).
+  three model calls. A matching Haiku session measured 2.2 credits (123 sessions on 2026-11-14,
+  the records' `credits`, within 10% of the account meter), so the month's 1,500 credits cover
+  about 680 Haiku sessions and far fewer Sonnet ones (Sonnet 5.5's rates are 20 times Haiku's).
+- **Status (2026-11-16).** Copilot Haiku 5.5 ran 123 sessions on 2026-11-14 and matched 6. It is
+  out of drives since run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`,
+  until the CLI's full tool schema is reviewed (todo `copilot-cli-drive-arm`).
 
 ## The local arm
 
@@ -1092,16 +1108,18 @@ meters" below) now reads the meters directly; re-measure this table from its rea
 
 | Arm (plan) | Tokens per session, average (T) | One session moves | Rough sizing |
 |---|---|---|---|
-| Haiku 5.5 (Claude Ultra) | about 1.07M cache read, 24k output, 80k cache creation | about 0.03% of the weekly bar (S: 30 sessions, 93% to 94%) | 3% of the week: about 90 sessions |
-| Opus 5.5 (Claude Ultra) | - | about 0.1% of the weekly bar (S, 2026-11-07: 100 sessions, 17% to 27%) | 3% of the week: about 30 sessions |
-| GPT-6.1 Terra (ChatGPT Plus) | about 0.94M input, 0.9M cache read, 3k output | about 1.35% of the 5-hour window and 0.22% of the week (S: 74 sessions filled one window, the week 50% to 66%) | one 5-hour window: about 74 sessions |
+| Haiku 5.5 (Claude Ultra) | about 1.07M cache read, 24k output, 80k cache creation | at most 0.01% of the weekly bar (S, 2026-11-14: about 160 sessions, 6% to 7%; 0.03% read earlier from 30 sessions) | 3% of the week: about 300 sessions |
+| Opus 5.5 (Claude Ultra) | - | about 0.04% of the weekly bar (S, 2026-11-15: 296 Opus and 415 Sonnet sessions, 8% to 28%; 0.1% read on 2026-11-07) | 3% of the week: about 75 sessions |
+| Sonnet 5.5 (Claude Ultra) | - | about 0.02% of the weekly bar (S, the same reading) | 3% of the week: about 150 sessions |
+| GPT-6.1 Terra (ChatGPT Plus) | about 0.94M input, 0.9M cache read, 3k output | about 1.35% of the 5-hour window and 0.22% of the week (S: 74 sessions filled one window, the week 50% to 66%); past the week, about 2.3 Codex credits (S and T, 2026-11-14 to 2026-11-16: 2,120 credits over 910 sessions) | one 5-hour window: about 74 sessions; 500 credits: about 217 |
 | Gemini 3.8 Flash (Google AI Plus) | about 175k input, 2.8M cache read, 28k output | about 15% of the agy week (S, one session; a canary about 6.6%) | the week: about 6 sessions |
 | DeepSeek V4.1-Flash (OpenRouter) | about 76k input, 620k cache read, 28k output | about $0.30 (A) | $10: about 33 sessions |
 | GLM-5.3 (OpenRouter) | about 215k input, 1.8M cache read, 77k output | about $0.60 (A) | left the rows on 2026-11-13: no match in about 45 sessions |
-| Haiku 5.5 (Copilot Pro) | not measured yet | about 3 to 5 AI credits (a placeholder; the record's `credits` measures it) | 1,500 credits a month: a few hundred sessions; re-measure |
+| Haiku 5.5 (Copilot Pro) | - | about 2.2 AI credits (the records' `credits`, 2026-11-14: 273.6 over 123 sessions, within 10% of the account meter) | 1,500 credits a month: about 680 sessions |
 
-Past the Codex 5-hour window, Codex keeps running on the account's credits (about 1 to 2 credits
-per session, chatgpt.com/settings/usage), and a full reset restores both the week and the window.
+Past the Codex limits, Codex keeps running on the account's credits (about 2.3 credits per
+Terra session, chatgpt.com/settings/usage; [model-comparison.md](model-comparison.md#plan-credits-per-session-codex-and-copilot-2026-11-14-to-2026-11-16)),
+and a full reset restores both the week and the window.
 `stats` prices an OpenRouter arm at list price, which came in below the credits API's real spend
 on these nights; size OpenRouter budgets from (A).
 
@@ -1118,7 +1136,7 @@ be read gives a reading with an `error` instead. A drive sized to a budget calls
 |---|---|---|
 | OpenRouter | `GET https://openrouter.ai/api/v1/credits` with `OPENROUTER_API_KEY` | total credits and usage in USD; without the key in the process environment the reading is unavailable. The key is never printed. |
 | Codex (ChatGPT Plus) | the last `token_count` event with `rate_limits` in the newest `~/.codex/sessions/**/rollout-*.jsonl` | the 5-hour (primary) and weekly (secondary) `used_percent` with their resets, and the credits balance. Only non-ephemeral sessions write rollouts: a drive's `codex exec --ephemeral` writes none and its `--json` stream carries no rate limits, so the figure dates from the owner's last interactive Codex session (`as_of`). |
-| GitHub Copilot (Pro) | `~/.copilot/session-state/*/events.jsonl`, each session's last `accountingSnapshot.totalNanoAiu` | the AI credits spent this UTC month by Copilot CLI sessions on this machine, taking 1e9 nano AIU as one credit (not yet checked against the account page). The month's balance (1,500 on Pro, reset on the 1st) is not stored locally, so there is no limit or remaining. |
+| GitHub Copilot (Pro) | `~/.copilot/session-state/*/events.jsonl`, each session's last `accountingSnapshot.totalNanoAiu` | the AI credits spent this UTC month by Copilot CLI sessions on this machine, taking 1e9 nano AIU as one credit (this reader not yet checked against the account page; a drive session runs under its own COPILOT_HOME and is not in it, but its record's `credits` from the same `totalNanoAiu` came within 10% of the account meter on 2026-11-14). The month's balance (1,500 on Pro, reset on the 1st) is not stored locally, so there is no limit or remaining. |
 | agy (Google AI Plus) | `agy -p /usage` under an agy arm's session env (as the driver's quota step runs it), parsed by `driver.agy_quota` | spike 012 found it prints nothing machine-readable, so the reading is normally unavailable; agy's logs (`~/.gemini/antigravity-cli/`) only note `doRefreshQuota` with no figures. |
 | Claude Code (Ultra) | `~/.claude.json` `cachedUsageUtilization.limits` | the usage panel's cache: the weekly bar (`weekly_all`) and each scoped bar (`weekly_scoped Fable`) in percent, with `fetchedAtMs` as `as_of`. It refreshes only when the CLI fetches the panel; no Anthropic endpoint is called. |
 

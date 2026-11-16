@@ -11,6 +11,36 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-16: plan credits per session, and the shapes the audits did not know
+
+- Past a plan's included quota, Terra spent about 2.3 Codex credits a session (2,120 credits over
+  910 sessions, steady across four owner readings) and Haiku 5.5 through Copilot about 2.2 AI
+  credits (273.6 over 123 sessions, from the records' own `credits`, within 10% of the
+  account meter). Both replace placeholders, and the credit budgets in quota.toml use them.
+  Detail: [model-comparison.md](model-comparison.md#plan-credits-per-session-codex-and-copilot-2026-11-14-to-2026-11-16).
+- The guardrail stopped eleven drives on 2026-11-14, each on a safe step the audit did not
+  know yet:
+  - Copilot CLI 1.0.111:
+    - `view` with `view_range`.
+    - A tool result spilled to `%TEMP%\<n>-copilot-tool-output-<pid>-<uuid>.txt` and then viewed.
+    - `edit` calls missing `path` or `old_str`. The CLI refused each one for the missing field,
+      or failed it with ENOENT on a file not yet written, so none wrote anything. The CLI's own
+      schema also makes `new_str` optional.
+    - `powershell` with `timeout`, `async` or a named `shellId`.
+    - `create` or `edit` carrying stray `description` or `file_path` keys.
+    - Wrapper calls chained with `;`.
+  - Codex: the shell through the Microsoft Store `pwsh.exe` alias
+    (`%LOCALAPPDATA%\Microsoft\WindowsApps`). It is trusted only while that path is an
+    app-execution reparse point.
+
+  Each fix accepts one exact shape, test first, and was replayed against every saved
+  transcript. Copilot's `view {forceReadLargeFiles}` is still unknown. The vendor docs list
+  none of these shapes, so read the CLI's bundled tool schema (`cli-main.js`) before a
+  Copilot arm runs again, not after the next stop.
+- agy updated itself from 1.5.8 to 1.5.9 between the Gemini canary and the drive launch, so
+  the launch refused for lack of a canary on the new version. That refusal is the version
+  pin working. Re-run an agy canary right before the launch, not hours earlier.
+
 ## 2026-11-14: match rates fall with function size, not with the models
 
 - All arms together matched about 26-35% of functions under 64 B on the early nights, 5-13% at

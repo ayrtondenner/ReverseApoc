@@ -71,8 +71,9 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     assert (table[HAIKU].matched, table[HAIKU].sessions) == (22, 312)
     assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.04")}
     assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("1.35"),
-                                        quota.WEEK: Decimal("0.22")}  # fmt: skip
-    assert (table[TERRA].matched, table[TERRA].sessions) == (11, 335)
+                                        quota.WEEK: Decimal("0.22"),
+                                        quota.CREDITS: Decimal("2.3")}  # fmt: skip
+    assert (table[TERRA].matched, table[TERRA].sessions) == (18, 978)
     assert table[GEMINI].per_session == {quota.WEEK: Decimal("15.0")}
     assert (table[GEMINI].matched, table[GEMINI].sessions) == (0, 1)
     assert table[DEEPSEEK].per_session == {quota.USD: Decimal("0.30")}
@@ -82,13 +83,13 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
 
 def test_the_copilot_entry_is_measured_and_needs_no_backends_arm():
     """The Copilot Pro plan (1 credit = $0.01) and its arm's figure, measured from the usage
-    files of 8 sessions on 2026-11-14 (it replaced the placeholder of 4), load although
+    files of 123 sessions to 2026-11-14 (it replaced the placeholder of 4), load although
     backends.toml may not have that arm; an arm of backends.toml with no entry is fine."""
     table = load_quota()
     entry = table[COPILOT]
     assert not entry.estimate and "usage files" in entry.source
     assert entry.plan.credit_usd == Decimal("0.01")
-    assert entry.per_session == {quota.CREDITS: Decimal("2.6")}
+    assert entry.per_session == {quota.CREDITS: Decimal("2.2")}
     assert "glm-5.3" in backends.load_arms() and "glm-5.3" not in table
 
 
@@ -177,16 +178,18 @@ def test_terra_takes_either_window():
     table = load_quota()
     assert size(TERRA, parse_budget("100%5h"), table, max_sessions=None).sessions == 74
     assert size(TERRA, parse_budget("10%week"), table, max_sessions=None).sessions == 45
+    # past the week: Codex credits, 2.3 a session (2,120 over 910 sessions, 2026-11-14 to 16)
+    assert size(TERRA, parse_budget("500credits"), table, max_sessions=None).sessions == 217
 
 
 def test_a_plan_credit_converts_dollars_and_credits():
-    """Copilot Pro: 2.6 credits a session at $0.01 a credit, so $1 buys 38 sessions and 100
-    credits buy 38; the line carries its measured rate (3 of 82, 2026-11-14)."""
+    """Copilot Pro: 2.2 credits a session at $0.01 a credit, so $1 buys 45 sessions and 100
+    credits buy 45; the line carries its measured rate (6 of 123, 2026-11-14)."""
     table = load_quota()
     dollars = size(COPILOT, parse_budget("$1"), table, max_sessions=None)
-    assert (dollars.sessions, dollars.per_session) == (38, Decimal("0.026"))
-    assert size(COPILOT, parse_budget("100credits"), table, max_sessions=None).sessions == 38
-    assert "3 of 82" in dollars.line()
+    assert (dollars.sessions, dollars.per_session) == (45, Decimal("0.022"))
+    assert size(COPILOT, parse_budget("100credits"), table, max_sessions=None).sessions == 45
+    assert "6 of 123" in dollars.line()
 
 
 def test_an_arm_with_no_quota_entry_is_refused():

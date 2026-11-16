@@ -60,3 +60,19 @@ Before building:
 6. The usage file written; re-measure the per-session credits (placeholder 3 to 5 per Haiku
    session).
 7. No model switch and no unlisted event type (`session.skills_loaded` would be one).
+
+## Status (2026-11-16)
+
+- The live canary passed on 1.0.111 on its third run (2026-11-13). The arm ran 123 Haiku 5.5
+  sessions on 2026-11-14 (runs `20261114-nearmiss` to `-opus-sonnet`) and matched 6.
+- Item 6: measured 2.2 credits a session (273.6 over 123), within 10% of the account meter;
+  quota.toml carries it.
+- Item 4 and beyond: the nights showed shapes the capture had not. Each stopped a drive, and
+  each is now known by its exact shape: `view_range`, edits missing `path` or `old_str` that the
+  CLI refused or failed with ENOENT, `timeout`/`async`/named `shellId`, extra
+  `description`/`file_path` keys, `%TEMP%` result spills, and `;`-chained wrapper calls
+  (docs/learnings.md, 2026-11-16).
+- Still open: run `20261114-opus-sonnet` stopped on `view {path, forceReadLargeFiles}`. Before
+  Copilot arms return, review the CLI's whole bundled tool schema (`cli-main.js` of the
+  installed version), not one shape per stop. Then add every safe optional key test-first,
+  re-run the canary and replay every saved transcript.

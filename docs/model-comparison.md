@@ -388,6 +388,60 @@ which tracked the owner's panel to the point; the usage meters can read it (todo
 (3.1% against 2.4%), better at its top rows and worse lower down; it pays most when it is fresh.
 Keep strong models on it (owner, 2026-11-14), and rank it so each drive starts at the closest rows.
 
+## Plan credits per session: Codex and Copilot (2026-11-14 to 2026-11-16)
+
+Once a plan's included quota ran out, the sessions after it were paid in that plan's credits:
+Terra in Codex credits, past the ChatGPT Plus week, and Haiku 5.5 in Copilot AI credits. These
+are the first measured credit costs per session. Before, both were placeholders: "about 1 to 2"
+for Codex and "3 to 5" for Copilot in [model-routing.md](model-routing.md#quota-per-session).
+
+**Codex credits per Terra session.** The owner read the balance five times (S). The sessions in
+each interval come from joining every Terra attempt record to its timestamped line in the
+drive's console log (T). The times are BRT.
+
+| From | To | Credits spent (S) | Terra sessions (T) | Credits per session |
+|---|---|---|---|---|
+| 11-14 09:58 (2,120 left) | 11-14 19:37 (1,903) | 217 | 88 | 2.47 |
+| 11-14 19:37 | 11-15 11:17 (622) | 1,281 | 556 | 2.30 |
+| 11-15 11:17 | 11-15 12:32 (564) | 58 | 16 | 3.62 |
+| 11-15 12:32 | 11-16 00:58 (0, the drive's first usage-limit pause) | 564 | 250 | 2.26 |
+| **total** | | **2,120** | **910** | **2.33** |
+
+The figure held from cascade lanes (runs `20261114-cascade2` and `-lanesC4`) to Terra alone
+(`20261115-terra-credits`), so it is a property of the arm, not of the run. The 16-session
+interval is noisy: a reading taken mid-session puts that session's tokens on the next
+interval. Size Codex credit budgets at about 2.3 credits a Terra session (quota.toml
+`credits`).
+
+**Copilot AI credits per Haiku 5.5 session.** Each Copilot record carries the session's own
+`credits`, read from its usage file. Over 123 sessions (runs `20261114-nearmiss` to
+`-opus-sonnet`) they add up to 273.6 credits: 2.22 a session, with run means of 2.1 to 2.7.
+The owner's account meter (S) moved from 1 used (2026-11-13) to 202 before the last near-miss
+run's records were read, then 211, 283 and about 300 (the 20% bar). Against it, the records
+undercount by under 10%: for example, 186.3 recorded for the 82 near-miss sessions against
+about 200 on the meter, the three canaries included. So the usage file is a sound meter, and
+quota.toml's 2.6 (8 sessions) becomes 2.2.
+
+**What the credits bought.**
+
+| Arm | Sessions | Matched | Credits per match |
+|---|---|---|---|
+| GPT-6.1 Terra (Codex credits), 2026-11-14 to 2026-11-16 | 978 | 18 | about 120 Codex credits (2.33 a session, 54 sessions a match) |
+| Haiku 5.5 (Copilot AI credits), near-miss lane and one tier-queue lane | 123 | 6 | about 46 AI credits, $0.46 at GitHub's $0.01 a credit |
+
+The two credits are different currencies, and the lanes differ: Terra worked the tier queue,
+and Copilot mostly the near-miss lane. So the table compares what each budget bought,
+not which model is better. The last Terra run, `20261115-terra-credits` (4 workers, tier queue,
+22:28 to 00:58 BRT before the pause), matched 3 of 41 functions at 64-255 B and 0 of 5 at
+256 B and up in 119 sessions ($93.54 API-equivalent, T).
+
+**Harness lessons of the same nights.** Eleven drives on 2026-11-14 stopped on the guardrail,
+each time at a step that was safe but not yet known. Every fix widened the audit by one exact
+shape, test first, and was then replayed against every saved transcript. The full list is in
+[learnings.md](learnings.md). Only one shape is still unknown: Copilot's
+`view {path, forceReadLargeFiles}`. Copilot arms stay out of drives until it and the rest of the
+CLI's tool schema are reviewed (todo `copilot-cli-drive-arm`).
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
