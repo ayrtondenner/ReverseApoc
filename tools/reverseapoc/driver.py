@@ -2911,6 +2911,11 @@ class _Halt(Exception):
         self.note = note
 
 
+class _SessionEnded(_Halt):
+    """Owner ruling 2026-11-16: a Copilot session whose only strays were writes Copilot's rules
+    denied ended GAVE_UP guardrail; its arm goes on, so the pass ends quietly, inline too."""
+
+
 class _PackOver(Exception):
     """Quick 261113: the attempt's context pack is over the cap (`over`, PackOverCap). `_launch`
     raises it before any session, with the attempt directory and its view removed; the unwind
@@ -3156,6 +3161,8 @@ class _Worker:
         self._bind()
         try:
             self.outcome = self.night._function(self.pick, self.difficult)
+        except _SessionEnded as ended:
+            self.night._note(ended.note)
         finally:
             self.coordinator.release(self)
 
@@ -5117,7 +5124,7 @@ class _Night:
             self._count()
         denied_only = not other and not note and all(denied for _, denied in writes)
         if denied_only and self._stop_arm(session, stray, record=counted):
-            raise _Halt()
+            raise _SessionEnded() if session.claim.copilot else _Halt()
         self._guardrail(session, stray, record=counted)
 
     def _stop_arm(self, session: _Session, stray: Sequence[str], *, record: bool) -> bool:
@@ -5128,8 +5135,10 @@ class _Night:
         in flight finish) and name it on the console and in the night's run record. False,
         and the night stops as before: one arm (stopping it is stopping the night), a night
         already stopping, or a reset or a check that failed or found a change (the guardrail
-        that follows contains and names it)."""
-        if len(self.lanes) == 1 or self.stop.is_set():
+        that follows contains and names it). Owner ruling 2026-11-16: on a Copilot arm only the
+        session ends (GAVE_UP guardrail, named on the console); its arm goes on, even alone."""
+        copilot = session.claim.copilot
+        if (len(self.lanes) == 1 and not copilot) or self.stop.is_set():
             return False
         try:
             self._reset(session)
@@ -5141,13 +5150,17 @@ class _Night:
         paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray]
         denier = ("agy's permission check" if claim.agy
                   else "Copilot's permission rules" if claim.copilot else "the hook")  # fmt: skip
-        line = (f"{self._label(claim.pick, claim.n)}: arm {self.lane.arm} stopped (guardrail): "
-                f"{denier} denied its write to {_listed(paths)} and nothing changed; the other "
-                "arms go on")  # fmt: skip
-        with self.cond:
-            self.lane.stopped = True
-            self.arm_stops.append(line)
-            self.cond.notify_all()
+        denied = f"{denier} denied its write to {_listed(paths)} and nothing changed"
+        if copilot:
+            line = (f"{self._label(claim.pick, claim.n)}: session ended (guardrail): {denied}; "
+                    "the arm goes on")  # fmt: skip
+        else:
+            line = (f"{self._label(claim.pick, claim.n)}: arm {self.lane.arm} stopped "
+                    f"(guardrail): {denied}; the other arms go on")  # fmt: skip
+            with self.cond:
+                self.lane.stopped = True
+                self.arm_stops.append(line)
+                self.cond.notify_all()
         if record:
             self._record_attempt(session, GAVE_UP, GUARDRAIL, read_checks(claim.attempt_dir))
         self.deps.say(line)

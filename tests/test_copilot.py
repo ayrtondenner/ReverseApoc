@@ -77,7 +77,7 @@ def copilot_night(tmp_path: Path, monkeypatch, *, scenario: str = "night_success
     def drive(config, deps, *, lock=None):
         moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
                         attempts_per_function=1)  # fmt: skip
-        return real(moved, night.deps(copilot_argv=fake_copilot_argv))
+        return real(moved, night.deps(copilot_argv=fake_copilot_argv, say=deps.say))
 
     monkeypatch.setattr(driver, "drive", drive)
     env = _keyed(rig.env, FAKECOPILOT_SCENARIO=scenario, **(extra_env or {}))
@@ -570,6 +570,24 @@ def test_copilotjson_only_an_edit_missing_a_required_field_is_excused():
     assert copilotjson.unknown_steps(edited)
 
 
+def test_copilotjson_a_create_missing_file_text_is_excused():
+    """Run 20261116-copilot3: Haiku called `create {path, file_path: "\\n"}`, and the CLI refused
+    it (`"file_text": Required`, code failure, no fileEdits): it wrote nothing. A create refused
+    in one of the two exact forms for a required field it lacks is excused like an edit; one
+    that names a field the call has, or carries edits, stays unknown."""
+    path = f"{WS}\\check-note.json"
+    lacking = {"file_path": "\n", "path": path}
+    seen = [_start(), *_call("t1", "create", lacking, ok=False, error='"file_text": Required',
+                             code="failure")]  # fmt: skip
+    assert copilotjson.unknown_steps(seen) == [] and copilotjson.write_targets(seen) == []
+    has_text = {"path": path, "file_text": "x", "mode": "w"}
+    assert copilotjson.unknown_steps([_start(), *_call(
+        "t1", "create", has_text, ok=False, error='"file_text": Required', code="failure")])
+    assert copilotjson.unknown_steps([_start(), *_call(
+        "t1", "create", lacking, ok=False, error='"file_text": Required', code="failure",
+        edits=((path, "create"),))])  # fmt: skip
+
+
 def _enoent(path: str) -> str:
     return f"Unhandled error: Error: ENOENT: no such file or directory, open '{path}'"
 
@@ -937,16 +955,22 @@ def test_copilot_audit_clean_session(tmp_path, capsys, monkeypatch):
 
 
 def test_copilot_denied_steps_are_not_strays(tmp_path, capsys, monkeypatch):
-    """A command and a write Copilot's rules refused never ran: both are hook blocks; the
-    refused write is a denied write, so the one-arm night stops at the guardrail naming it and
-    quarantining nothing."""
+    """A command and a write Copilot's rules refused never ran: both are hook blocks. Owner
+    ruling 2026-11-16: on a Copilot arm a session whose only strays are writes Copilot's rules
+    denied, with nothing changed after its reset, ends GAVE_UP guardrail and its arm goes on,
+    even alone: the night is not stopped, nothing is quarantined, and the console names the
+    attempt and the denied path."""
     rig, night, env = copilot_night(tmp_path, monkeypatch, scenario="denied_steps")
-    code, _, _ = _run(capsys, rig, env)
-    assert code != 0
-    stopped = _stopped(night)
-    assert stopped["reason"] == driver.GUARDRAIL and "quarantined: none" in stopped["detail"]
-    assert "tools/x.py (transcript)" in stopped["detail"], stopped
-    assert night.kinds("attempt")[0]["hook_blocks"] == 2
+    _, out, err = _run(capsys, rig, env)
+    runs = night.kinds("run")
+    assert [r for r in runs if r["event"] == "STOPPED"] == [], [r.get("detail") for r in runs]
+    (attempt,) = night.kinds("attempt")
+    assert (attempt["outcome"], attempt["abort_reason"]) == ("GAVE_UP", driver.GUARDRAIL)
+    assert attempt["hook_blocks"] == 2
+    said = out + err
+    assert "session ended (guardrail)" in said and "tools/x.py" in said, said
+    assert "the arm goes on" in said
+    assert list((night.repo / "build" / "driver").rglob("quarantine/*")) == []
 
 
 def test_copilot_init_problems_stop_the_night(tmp_path, capsys, monkeypatch):

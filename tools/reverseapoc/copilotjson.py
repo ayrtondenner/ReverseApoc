@@ -489,18 +489,21 @@ _REJECTED_EDIT = (re.compile(r"Invalid inputs: (\w+) is required"),
 
 
 def _rejected(call: Call) -> bool:
-    """A main-agent edit the CLI refused for a missing required field: it never ran."""
+    """A main-agent edit (run 20261116-copilot3: or create) the CLI refused for a missing
+    required field: it never ran."""
     done = _mapping(call.complete)
     error = _mapping(done.get("error"))
     message = error.get("message")
-    if not (call.own and call.tool == EDIT and isinstance(call.arguments, Mapping)
+    if not (call.own and call.tool in _WRITE_TOOLS and isinstance(call.arguments, Mapping)
             and done.get("success") is False and error.get("code") == _FAILURE_CODE
             and isinstance(message, str) and not done.get("fileEdits")):  # fmt: skip
         return False
     found = next((m for form in _REJECTED_EDIT if (m := form.fullmatch(message))), None)
-    need, may = _SHAPES[EDIT]
+    need, may = _SHAPES[call.tool]
     if found is not None:
         return found.group(1) in need and found.group(1) not in call.arguments
+    if call.tool != EDIT:
+        return False
     # night 20261114-nearmiss5: an edit lacking old_str of a file not yet written failed with
     # ENOENT on its own path before the CLI checked old_str: it wrote nothing
     path = call.arguments.get("path")

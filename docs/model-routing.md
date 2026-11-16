@@ -735,8 +735,13 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   filesModified must pass the session's write allowlist; every view path must stay inside the
   checkout and name no forbidden root; no tool result may carry hook text; the per-session
   settings must hold the driver's bytes; and the attempt dir is judged against the launch
-  inventory and the wrapper ledger. A refused create or edit is a denied write, so on a night of
-  several arms a session whose only strays are such writes stops its arm only.
+  inventory and the wrapper ledger. A create or edit refused by Copilot's permission rules is a
+  denied write. Owner ruling 2026-11-16: a Copilot session whose only strays are such writes,
+  with nothing changed after its reset, ends GAVE_UP guardrail and its arm goes on, even as the
+  night's only arm. Other harnesses keep the 2026-11-10 rule: that arm stops. This came after
+  Sonnet 5.5 twice stopped its arm by trying to write scratch files (`plan2.json`,
+  `giveup.json.tmp`). A create or edit the CLI itself refused for a missing required field
+  (`"file_text": Required`) never ran.
 - **What the audit cannot do.** Path rules do not reach shell commands, and Copilot runs
   commands it deems read-only without asking, so a read-only command (`Get-Content` of an orig/
   path) is refused only if Copilot's shell path check refuses it; the canary's shell-read probe
