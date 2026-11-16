@@ -103,3 +103,10 @@ read = 2026-11-14
 matched = 6
 sessions = 123
 rate_source = "runs 20261114-nearmiss to -opus-sonnet (near-miss lane, then one tier-queue lane)"
+
+[arms."copilot-sonnet-5-5"]
+plan = "copilot-pro"
+credits = 40
+estimate = true
+source = "estimate: a Haiku session's tokens (usage file, run 20261116-copilot) at Sonnet 5.5's GitHub rates come to about 35 credits; re-measure from the records' credits"
+read = 2026-11-16

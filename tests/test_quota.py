@@ -61,6 +61,18 @@ def test_sonnet_has_a_measured_quota_entry():
     assert sizing.sessions == 500
 
 
+def test_copilot_sonnet_has_an_estimated_credit_entry():
+    """Owner's Copilot spend of 2026-11-16: Sonnet 5.5 through Copilot, unmeasured, estimated at
+    40 credits a session (a Haiku session's tokens at Sonnet's GitHub rates come to about 35),
+    so 200 credits buy 5 sessions; the dry run says it is an estimate."""
+    entry = load_quota()["copilot-sonnet-5-5"]
+    assert entry.plan.name == "GitHub Copilot Pro (AI credits)" and entry.estimate
+    assert entry.per_session == {quota.CREDITS: Decimal("40")}
+    sizing = size("copilot-sonnet-5-5", parse_budget("200credits"), load_quota(),
+                  max_sessions=None)  # fmt: skip
+    assert sizing.sessions == 5
+
+
 def test_the_committed_table_loads_with_its_plans_named_in_config():
     """The plans come from the file, the seeded per-session figures from docs/model-routing.md
     "Quota per session", and the measured rates from docs/model-comparison.md "Cascade

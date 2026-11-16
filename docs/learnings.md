@@ -39,7 +39,12 @@ Entry format:
   read the package's own schemas (search `runtime.node` for `{"type":"object","properties"`)
   for every new CLI version before a Copilot arm runs, not after the next stop. That review,
   on 2026-11-16, made `view {forceReadLargeFiles}` known, and kept powershell's `detach`
-  unknown.
+  unknown. The same day, run `20261116-copilot` stopped on an event type the review had not
+  covered: `prompt_cache_break`, "a detected loss of a previously cached prompt prefix", after
+  37 messages, once the history was rewritten. Events are listed in
+  `schemas/session-events.schema.json`, so check that file too. The event is now known only
+  while both its requests list the session's five tools and nothing else, and its models join
+  the model-switch check.
 - agy updated itself from 1.5.8 to 1.5.9 between the Gemini canary and the drive launch, so
   the launch refused for lack of a canary on the new version. That refusal is the version
   pin working. Re-run an agy canary right before the launch, not hours earlier.

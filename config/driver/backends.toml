@@ -264,7 +264,7 @@ model = "claude-haiku-5.5"
 sends_disassembly = true
 accepted_init = ["claude-haiku-5.5"]
 coauthor = "Claude Haiku 5.5 <noreply@anthropic.com>"
-max_workers = 10
+max_workers = 16
 max_ai_credits = 30
 
 [arms."copilot-haiku-5-5".prices]
@@ -281,7 +281,7 @@ sends_disassembly = true
 accepted_init = ["claude-sonnet-5.5"]
 coauthor = "Claude Sonnet 5.5 <noreply@anthropic.com>"
 max_workers = 4
-max_ai_credits = 30
+max_ai_credits = 60
 
 [arms."copilot-sonnet-5-5".prices]
 input = 2.00

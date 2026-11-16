@@ -722,7 +722,9 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   (the native `runtime.node` and `cli-main.js`). It added `forceReadLargeFiles`, a boolean that
   only lifts the size check. It left two keys unknown on purpose: view's flattened
   `view_range[0]`/`[1]`, and powershell's `detach`, which starts a process that outlives the
-  session and so the audit. Another tool, another argument, a subagent's call (`agentId`, a parent,
+  session and so the audit. The event `prompt_cache_break` (run `20261116-copilot`) is known only
+  while both its requests list the session's five tools and nothing else; the models they name
+  join the model-switch check. Another tool, another argument, a subagent's call (`agentId`, a parent,
   program or MCP field), a completion with no start and any event type outside the known set (a
   hook, a skill, a subagent, a permission prompt, a model switch) are strays. A call ended
   `denied` with exactly one of 1.0.111's two refusal texts (a rule named, or "no interactive

@@ -135,6 +135,34 @@ KNOWN_EVENTS = frozenset({
 })  # fmt: skip
 # the events whose `model` field names the model that served the session
 _MODEL_EVENTS = frozenset({"model.call_start", "assistant.message", _TOOL_START})
+# Run 20261116-copilot: "a detected loss of a previously cached prompt prefix" (1.0.111's event
+# schema). It runs nothing; it is known only while both of its requests list none but the
+# session's tools (_cache_break_known), and their models join init_problems' model check.
+_CACHE_BREAK = "prompt_cache_break"
+_CACHE_REQUESTS = ("beforeRequest", "afterRequest")
+
+
+def _cache_requests(event: dict) -> list:
+    return [_data(event).get(side) for side in _CACHE_REQUESTS]
+
+
+def _cache_break_known(event: dict) -> bool:
+    for request in _cache_requests(event):
+        tools = _mapping(request).get("tools")
+        if not isinstance(tools, list) or not tools:
+            return False
+        if any(_mapping(tool).get("name") not in AVAILABLE_TOOLS for tool in tools):
+            return False
+    return True
+
+
+def _served_models(events: Sequence[dict]) -> list:
+    """Every model a model call, message, tool call or cache-break request names."""
+    out = [_data(e).get("model") for e in events if e.get("type") in _MODEL_EVENTS]
+    for event in events:
+        if event.get("type") == _CACHE_BREAK:
+            out += [_mapping(r).get("model") for r in _cache_requests(event)]
+    return out
 # 1.0.111's two refusal texts (the capture): a rule named, and no allow rule with nobody to ask
 _DENIED_CODE = "denied"
 _BY_RULES = re.compile(r"Permission to run this tool was denied due to the following rules: "
@@ -194,9 +222,8 @@ def init_problems(events: Sequence[dict], *, cwd: Path, accepted: Sequence[str],
     if init["max_ai_credits"] != max_ai_credits or isinstance(init["max_ai_credits"], bool):
         problems.append(f"session.start sessionLimits.maxAiCredits {init['max_ai_credits']!r} is "
                         f"not the requested {max_ai_credits}")  # fmt: skip
-    others = sorted({str(model) for e in events if e.get("type") in _MODEL_EVENTS
-                     and (model := _data(e).get("model")) is not None
-                     and model not in accepted})  # fmt: skip
+    others = sorted({str(model) for model in _served_models(events)
+                     if model is not None and model not in accepted})  # fmt: skip
     if others:
         problems.append(f"the session was served by {', '.join(others)}, not {list(accepted)}")
     return problems
@@ -489,7 +516,9 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
     seen: dict[tuple[object, object], int] = {}
     for event in events:
         kind, ident = event.get("type"), _data(event).get("toolCallId")
-        if kind not in KNOWN_EVENTS:
+        if kind == _CACHE_BREAK and not _cache_break_known(event):
+            out.append(f"event type {kind!r} lists a tool the session was not given")
+        elif kind not in KNOWN_EVENTS and kind != _CACHE_BREAK:
             out.append(f"event type {kind!r} is not one the Copilot audit knows")
         if kind not in (_TOOL_START, _TOOL_DONE):
             continue

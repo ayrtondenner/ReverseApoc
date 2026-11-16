@@ -201,9 +201,11 @@ def test_copilot_arms_load():
         assert (arm.harness, arm.backend, arm.model) == ("copilot", "github", model), name
         assert arm.sends_disassembly and arm.egress and arm.billing == backends.SUBSCRIPTION
         assert arm.accepted_init == (model,) and arm.coauthor == coauthor, name
-        # Haiku 10 (owner, 2026-11-16: spend the month's credits in 5 hours, ~308 s and 2.2
-        # credits a session); the others keep 4 until they have run
-        assert (arm.max_workers, arm.max_ai_credits) == (10 if name == HAIKU else 4, 30), name
+        # owner, 2026-11-16: spend the month's credits in 5 hours. Haiku 16 workers (~700 s and
+        # 2.7 credits a session); Sonnet a 60-credit cap, since a Haiku-length session at its
+        # rates is about 35 credits and 30 would cut it short; Luna keeps 4 and 30
+        caps = {HAIKU: (16, 30), SONNET: (4, 60)}.get(name, (4, 30))
+        assert (arm.max_workers, arm.max_ai_credits) == caps, name
         assert (arm.base_url, arm.key_env) == (None, None), name
         got = (arm.prices.input, arm.prices.output, arm.prices.cache_read,
                arm.prices.cache_creation)  # fmt: skip
@@ -381,7 +383,38 @@ def test_copilotjson_a_view_forcing_a_large_read_is_known():
     assert copilotjson.unknown_steps([_start(), *_call("t1", "powershell", detached)])
 
 
-SPILL =str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
+def _cache_break(tools=copilotjson.AVAILABLE_TOOLS, model: str = HAIKU_MODEL,
+                 after: bool = True) -> dict:  # fmt: skip
+    """1.0.111's `prompt_cache_break` (run 20261116-copilot, its shape cut to what is judged)."""
+    request = {"model": model, "tool_count": len(tools), "tools_truncated": 0,
+               "tools": [{"name": t, "schema_hash": "0", "safe": True} for t in tools]}
+    data = {"primaryReason": "history_rewritten", "contributingReasons": ["history_rewritten"],
+            "beforeRequest": request, **({"afterRequest": request} if after else {})}
+    return {"type": "prompt_cache_break", "data": data}
+
+
+def test_copilotjson_a_prompt_cache_break_of_the_sessions_tools_is_known(tmp_path):
+    """Run 20261116-copilot stopped on `prompt_cache_break`: the CLI's event schema calls it "a
+    detected loss of a previously cached prompt prefix"; it runs nothing. It is known only when
+    both its requests list no tool but the five the session was given; the models they name
+    join the init check, so another model still fails closed."""
+    assert copilotjson.unknown_steps([_start(), _cache_break()]) == []
+    for bad in (_cache_break(tools=(*copilotjson.AVAILABLE_TOOLS, "web_fetch")),
+                _cache_break(after=False),
+                {"type": "prompt_cache_break", "data": {"beforeRequest": "x", "afterRequest": {}}}):
+        assert copilotjson.unknown_steps([_start(), bad]), bad
+    cwd = tmp_path / "ws"
+    cwd.mkdir()
+    events = [_start(context={"cwd": str(cwd)}), _cache_break(model="gpt-6-luna")]
+    problems = copilotjson.init_problems(events, cwd=cwd, accepted=(HAIKU_MODEL,),
+                                         max_ai_credits=30)  # fmt: skip
+    assert any("gpt-6-luna" in p for p in problems)
+    events[1] = _cache_break()
+    assert copilotjson.init_problems(events, cwd=cwd, accepted=(HAIKU_MODEL,),
+                                     max_ai_credits=30) == []  # fmt: skip
+
+
+SPILL = str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"
                                      "1ab393a8-15b8-44fc-a7e1-ddd8ce48b339.txt"))
 
 
