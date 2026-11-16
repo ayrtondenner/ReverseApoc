@@ -10,7 +10,24 @@
 INCLUDE_ASM(func_00092250);
 INCLUDE_ASM(func_00092260);
 INCLUDE_ASM(func_00092270);
-INCLUDE_ASM(func_000922B0);
+extern signed char D_0016EC28[][0x1C];
+extern signed char D_001277E5;
+
+int func_000922B0(s16 a, s16 b)
+{
+    s16 v;
+    s16 w;
+    int r;
+
+    r = 0;
+    v = D_0016EC28[a][b];
+    w = D_001277E5;
+    if (v >= w) {
+        r = 1;
+    }
+    return r;
+}
+
 extern char D_00170FC2[];
 extern char D_00170FA0[];
 extern char D_0017144A[];
