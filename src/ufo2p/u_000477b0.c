@@ -191,7 +191,31 @@ void func_00048640(int rows)
         }
     }
 }
-INCLUDE_ASM(func_000487A0);
+struct cell_487a0 {
+    char *src;
+    u32 val;
+};
+extern struct cell_487a0 *D_00182CAC;
+extern char *D_00182DEC;
+
+void func_000487A0(char *p1, u16 p2, u16 p3)
+{
+    char *src;
+    s16 i;
+    s16 j;
+
+    src = D_00182DEC + (((s16)p2 >> 2) * 4) + (s16)p3 * 0x280;
+    for (i = 0; i < 8; i++) {
+        for (j = 0; j < 2; j++) {
+            D_00182CAC->src = src;
+            D_00182CAC->val = *(u32 *)src;
+            D_00182CAC++;
+            src += 4;
+        }
+        src += 0x278;
+    }
+    func_00016F2B(p1, p2, p3);
+}
 INCLUDE_ASM(func_00048830);
 
 int func_00046400(int, int, int, int, int);
