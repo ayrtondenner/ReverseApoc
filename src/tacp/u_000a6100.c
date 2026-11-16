@@ -20,7 +20,22 @@ INCLUDE_ASM(func_000A6440);
 INCLUDE_ASM(func_000A6480);
 INCLUDE_ASM(func_000A64C0);
 INCLUDE_ASM(func_000A6500);
-INCLUDE_ASM(func_000A6580);
+
+extern char D_000E6D4E[];
+extern char D_00284CEE[];
+extern char D_000E6CC0[];
+extern char D_001EBDDC[];
+
+/* void: EAX holds only the toggled word at ret; callers not read. */
+void func_000A6580(void)
+{
+    *(short *)D_000E6D4E = *(short *)D_000E6D4E == 0;
+    *(short *)D_00284CEE = 1;
+    *(short *)D_000E6CC0 = 1;
+    if (*(int *)D_001EBDDC != 0) {
+        *(int *)D_001EBDDC = -1;
+    }
+}
 
 struct unk_0010 {
     /* 0x00 */ u8 pad_00[4];
