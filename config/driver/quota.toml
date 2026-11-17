@@ -69,9 +69,9 @@ rate_source = "near-miss lane, runs 20261114-opus-sonnet to 20261115-claude-push
 [arms."gpt-6.1-terra"]
 plan = "chatgpt-plus"
 five_hour_percent = 1.35
-week_percent = 0.22
+week_percent = 0.25
 credits = 2.3
-source = "owner's meter (S): 74 sessions filled one 5-hour window, the week 50% to 66% (2026-11-13); past the week, Codex credits: 2,120 over 910 timed sessions, 2026-11-14 to 2026-11-16 (docs/model-comparison.md \"Plan credits per session\")"
+source = "owner's meter (S): 74 sessions filled one 5-hour window (2026-11-13); the week 84% to 53% left over 123 sessions of run 20261116-week (2026-11-16/17), so 0.25%; past the week, Codex credits: 2,120 over 910 timed sessions, 2026-11-14 to 2026-11-16 (docs/model-comparison.md \"Plan credits per session\")"
 read = 2026-11-16
 matched = 18
 sessions = 978
