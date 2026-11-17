@@ -95,7 +95,7 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     assert (table[HAIKU].matched, table[HAIKU].sessions) == (22, 312)
     assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.04")}
     assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("1.35"),
-                                        quota.WEEK: Decimal("0.22"),
+                                        quota.WEEK: Decimal("0.25"),
                                         quota.CREDITS: Decimal("2.3")}  # fmt: skip
     assert (table[TERRA].matched, table[TERRA].sessions) == (18, 978)
     assert table[GEMINI].per_session == {quota.WEEK: Decimal("15.0")}
@@ -201,7 +201,7 @@ def test_max_sessions_bounds_the_budget_and_says_so():
 def test_terra_takes_either_window():
     table = load_quota()
     assert size(TERRA, parse_budget("100%5h"), table, max_sessions=None).sessions == 74
-    assert size(TERRA, parse_budget("10%week"), table, max_sessions=None).sessions == 45
+    assert size(TERRA, parse_budget("10%week"), table, max_sessions=None).sessions == 40
     # past the week: Codex credits, 2.3 a session (2,120 over 910 sessions, 2026-11-14 to 16)
     assert size(TERRA, parse_budget("500credits"), table, max_sessions=None).sessions == 217
 
