@@ -481,6 +481,23 @@ after a session that ended on a denied write, so Copilot Sonnet tried `ufo2p fun
 three times and wrote nothing each time (to fix: count such a session as the function's
 attempt).
 
+## Spending out the Codex week and the Copilot month (2026-11-16 to 2026-11-17)
+
+After the Fable A/B, the owner asked to use up the Codex weekly limit and the Copilot credits.
+Run `20261116-week` (cut off by a power outage) and run `20261117-week` (stopped by the owner)
+did that:
+
+| Arm | Lane | Sessions | Functions | Matched | Spent |
+|---|---|---|---|---|---|
+| GPT-6.1 Terra | tier queue | 262 | 96 | 1 (`tacp func_000A67B0`) | the Codex week from 84% to about 33% left, plus later windows (S) |
+| Haiku 5.5 (Copilot) | near-miss, 50% and up | 127 | 48 | 0 | 296.3 credits (records); account 1,458 of 1,500 (S) |
+
+Terra's week cost came to 0.25% a session (quota.toml; it was 0.22). Haiku's 2.33 credits a
+session matched the account meter to one credit. Neither arm earns much on the current queue:
+Terra 1 match in 262 sessions, and Copilot Haiku none in 127 on rows the stronger models had
+already worked down. The first Copilot night with no audit stop came after the 2026-11-16
+fixes.
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
