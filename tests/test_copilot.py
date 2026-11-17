@@ -527,6 +527,19 @@ def test_copilotjson_a_file_tool_ignores_keys_no_cli_schema_has():
     assert copilotjson.unknown_steps([_start(), *shell])
 
 
+def test_copilotjson_an_edit_with_an_old_path_key_is_judged_by_its_write():
+    """Run 20261116-fable-ab: Haiku's edit carried `old_path: "x"`, which the CLI dropped; it
+    edited exactly its own `path`. Under the same rule, `old_path` joins the observed keys; an
+    edit whose completion names another path, or none, stays unknown."""
+    unit = f"{WS}\\view\\src\\ufo2p\\u_000120a0.c"
+    args = {"path": unit, "old_str": "a", "new_str": "b", "old_path": "x"}
+    call = _call("t1", "edit", args, edits=((unit, "edit"),))
+    assert copilotjson.unknown_steps([_start(), *call]) == []
+    assert copilotjson.write_targets([_start(), *call]) == [unit]
+    for edits in ((), ((f"{WS}\\other.c", "edit"),)):
+        assert copilotjson.unknown_steps([_start(), *_call("t1", "edit", args, edits=edits)])
+
+
 def test_copilotjson_edit_follows_the_clis_own_schema():
     """Copilot 1.0.111's bundled schema for edit is {path, old_str, new_str?} (cli-main.js,
     read 2026-11-14): an edit without new_str is known and its path is a write."""

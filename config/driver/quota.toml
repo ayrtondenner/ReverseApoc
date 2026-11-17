@@ -113,7 +113,9 @@ read = 2026-11-16
 
 [arms."claude-fable-5-1"]
 plan = "claude-ultra"
-week_percent = 0.1
-estimate = true
-source = "estimate: about 2.5 Opus sessions (0.04 each); re-measure from the sessions' own seven_day readings (run 20261116-fable-ab)"
+week_percent = 0.18
+source = "token math, run 20261116-fable-ab: $3.10 a session (133 sessions, $411.70 API-equivalent) at $17.73 a point of the week (296 Opus + 415 Sonnet sessions, $354.59, moved the bar 20 points); the bar itself was shared with another project"
 read = 2026-11-16
+matched = 2
+sessions = 133
+rate_source = "run 20261116-fable-ab, held, near-miss picks (Opus 1 of 157 on the same picks)"

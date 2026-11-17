@@ -332,7 +332,7 @@ def _shaped(tool: object, arguments: object) -> bool:
 # Nights 20261114-nearmiss7 and -lanesC3: the two keys seen on create calls that the CLI drops
 # (no schema of its own has them). Security review of 469cab57: an allowlist of exactly these,
 # on create and edit only, and only when the completion's fileEdits name the call's own path.
-_DROPPED_KEYS = frozenset({"description", "file_path"})
+_DROPPED_KEYS = frozenset({"description", "file_path", "old_path"})  # old_path: 20261116-fable-ab
 
 
 def _dropped_keys_only(call: Call) -> bool:

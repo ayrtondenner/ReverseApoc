@@ -442,6 +442,45 @@ shape, test first, and was then replayed against every saved transcript. The ful
 `view {path, forceReadLargeFiles}`, became known on 2026-11-16 after a review of the CLI's full
 tool schema.
 
+## Fable 5.1 against Opus 5.5, held (2026-11-16)
+
+Quick task 261101-b5f (`--fable-trial`, 2026-11-01) left an A/B of Fable against Opus on
+partial rows that never ran. Run `20261116-fable-ab` ran it as a held run, so nothing landed
+until `--land-held`. Every arm worked the same frozen list of 158 near-miss rows: partial rows
+at 50% or better, closest by bytes left first (`status.csv` and `functions.csv`, the near-miss
+lane's own rule). The Copilot and Terra arms left the run early (Copilot on audit stops, Terra
+on its spent 5-hour window), so only Fable and Opus give a clean comparison.
+
+| Arm | Sessions | Functions | Held exact | Gave up | API-equivalent | Per session | Mean session |
+|---|---|---|---|---|---|---|---|
+| Fable 5.1 | 133 | 132 | 2 (`tacp func_00090960`, `func_00056D70`) | 31 | $411.70 | $3.10 | 20.4 min |
+| Opus 5.5 | 157 | 157 | 1 (`tacp func_00056D70`) | 52 | $91.96 | $0.59 | 13.5 min |
+| GPT-6.1 Terra | 25 | 25 | 0 | 23 | (Plus) | - | 11.8 min |
+| Haiku 5.5 (Copilot) | 26 | 25 | 0 | 15 | 65.6 credits | 2.5 credits | 19.5 min |
+| Sonnet 5.5 (Copilot) | 8 | 5 | 0 | 8 | 191.8 credits | 24 credits | 21.5 min |
+
+On the 132 rows both attempted, Fable matched 2 and Opus 1. Both matched `func_00056D70`,
+Fable in 5 minutes against Opus's 24. Fable costs 5.3 times Opus a session for twice the
+matches, so per dollar Opus is still ahead ($92 a match against $206). Three exact matches are
+too few to rank the models: take this as a cost figure, not a quality verdict. Both landed
+functions went in from Fable's attempts (c466ec6e, 2a312094), the driver picking the cheapest
+exact attempt per function.
+
+**Cost on the Claude week, by tokens.** The owner's weekly bar was shared with another project
+that evening, so the per-session figures come from token math, not the bar. The calibration
+runs `20261114-opus-sonnet` to `20261115-claude-push2` (296 Opus and 415 Sonnet sessions,
+$354.59 API-equivalent) moved the bar 20 points: $17.73 a point. This coordinator's own use was
+in those 20 points, so the figure is a little low and the points below lean high. By that, a
+Fable session is 0.18% of the week (quota.toml) and an Opus session 0.033%, against the 0.04
+read from the bar.
+
+**The run itself.** It took five launches. One Docker removal fault, one stop on Copilot's
+`system.notification`, and one on a Copilot `edit` with an `old_path` key each stopped the
+night; after the third stop the Copilot lanes were dropped. A held run picks a function again
+after a session that ended on a denied write, so Copilot Sonnet tried `ufo2p func_000A5980`
+three times and wrote nothing each time (to fix: count such a session as the function's
+attempt).
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks

@@ -11,6 +11,26 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-16: Fable against Opus, and a long day of Copilot stops
+
+- Fable 5.1 against Opus 5.5 on the same 132 near-miss rows, held: 2 matches against 1, at
+  $3.10 against $0.59 a session. Opus is still cheaper per match. Detail:
+  [model-comparison.md](model-comparison.md#fable-51-against-opus-55-held-2026-11-16).
+- When the weekly bar is shared with other work, measure a run's share by its tokens: the
+  records' `cost_usd` at a calibrated dollars per point ($17.73 here). Each Claude session's
+  stream also carries `seven_day.utilization`, but that is the whole account's bar.
+- Copilot stopped the day's drives six times, each on a shape or event its audit did not
+  know: `prompt_cache_break`, `reverseapoc-attempt check --help`, a create missing
+  `file_text`, `system.notification`, and an `edit` with `old_path`. A sixth stop was a stray
+  temp file from a killed check, still open. Each fix is narrow and test-first. A stop on a
+  multi-arm drive also ends every other arm's sessions in flight, so give Copilot its own drive
+  until a full night runs clean.
+- Owner ruling 2026-11-16: on a Copilot arm a denied write ends only its session. Sonnet 5.5
+  tries scratch files (`plan2.json`, `giveup.json.tmp`) in most sessions.
+- The coordinator broke the drive rule once: it edited `tools/` and ran pytest in the checkout
+  during run `20261116-copilot3`. The audit restored the edits, quarantined the bytecode and
+  stopped the night. During a drive, work only in a scratchpad clone.
+
 ## 2026-11-16: plan credits per session, and the shapes the audits did not know
 
 - Past a plan's included quota, Terra spent about 2.3 Codex credits a session (2,120 credits over
