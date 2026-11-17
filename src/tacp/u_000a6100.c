@@ -144,7 +144,17 @@ void func_000A6740(void)
         func_000BAC50();
     }
 }
-INCLUDE_ASM(func_000A67B0);
+/* void: EAX is not a definite return value; callers not read. */
+void func_000A67B0(void)
+{
+    func_000A65D0(3, 2);
+    *(short *)D_00284CEE = 1;
+    *(short *)D_000E6CC0 = 1;
+    if (D_0027A0EA != 0 && D_0027A0EB == D_000E6D62 && D_0027A0EC == D_000E6D60
+            && *(short *)D_000E6D42 > 0) {
+        func_000BAC50();
+    }
+}
 int func_000A65D0(int, int);
 extern char D_00284CEE[];
 extern char D_000E6CC0[];
