@@ -1,7 +1,7 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
 batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats, causes,
-compare-objects, fetch-watcom, install-watcom, check-watcom."""
+requests, compare-objects, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from . import (
     picker,
     probe,
     quota,
+    requests,
     search,
     session,
     splits,
@@ -2732,6 +2733,8 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     repo = args.repo
     log = args.log if args.log is not None else repo / attempt.ATTEMPT_LOG
     config = args.config if args.config is not None else repo / "config"
+    if args.compare is not None:
+        return _stats_compare(args, repo, log)
     try:
         report = stats.collect(repo, log, config, runs=args.run)
     except stats.StatsError as exc:
@@ -2742,6 +2745,22 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         print(f"reverseapoc stats: unattended {report.unattended} is below --min-unattended "
               f"{args.min_unattended}", file=sys.stderr)  # fmt: skip
         return 1
+    return 0
+
+
+def _stats_compare(args: argparse.Namespace, repo: Path, log: Path) -> int:
+    """Todo held-benchmark-statistics: exit 0 done, 2 when the log cannot be read, a run has
+    no matching attempt or --min-unattended is given too."""
+    if args.min_unattended is not None:
+        print("reverseapoc stats: error: --compare does not take --min-unattended",
+              file=sys.stderr)  # fmt: skip
+        return EXIT_TOOL
+    try:
+        doc = stats.compare(repo, log, *args.compare)
+    except stats.StatsError as exc:
+        print(f"reverseapoc stats: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    print(json.dumps(doc, indent=2, sort_keys=True) if args.json else stats.format_comparison(doc))
     return 0
 
 
@@ -2762,9 +2781,14 @@ def _add_stats_command(sub: argparse._SubParsersAction) -> None:
                    help="functions.csv sizes and the members file; default: <repo>/config")
     p.add_argument("--min-unattended", type=_non_negative, default=None, metavar="N",
                    help="exit 1 when fewer than N matches are unattended (AGT-11)")
-    p.add_argument("--run", action="append", default=None, metavar="RUN",
-                   help="only the records of run RUN (repeatable; a trailing * names a prefix, "
-                   "as in spike012-*), matched by their own logged matches")  # fmt: skip
+    runs = p.add_mutually_exclusive_group()
+    runs.add_argument("--run", action="append", default=None, metavar="RUN",
+                      help="only the records of run RUN (repeatable; a trailing * names a "
+                      "prefix, as in spike012-*), matched by their own logged matches")  # fmt: skip
+    runs.add_argument("--compare", nargs=2, default=None, metavar=("RUN_A", "RUN_B"),
+                      help="only compare two runs (a trailing * names a prefix): each run's "
+                      "exact functions with a Wilson 95%% interval, and the functions both "
+                      "attempted paired, with an exact McNemar test")  # fmt: skip
     p.set_defaults(func=_cmd_stats)
 
 
@@ -2800,6 +2824,36 @@ def _add_causes_command(sub: argparse._SubParsersAction) -> None:
                    help="the checkout whose build/driver/ and config/ are read; "
                    "default: %(default)s")  # fmt: skip
     p.set_defaults(func=_cmd_causes)
+
+
+# ---- requests: the tooling requests in attempt notes (todo agent-requests-collector) ----
+
+
+def _cmd_requests(args: argparse.Namespace) -> int:
+    """Exit 0 done, 2 when a named run does not exist or a notes file cannot be read."""
+    try:
+        report = requests.collect(args.repo, args.run)
+    except requests.RequestsError as exc:
+        print(f"reverseapoc requests: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    print(json.dumps(report.to_json(), indent=2, sort_keys=True) if args.json
+          else report.format())  # fmt: skip
+    return 0
+
+
+def _add_requests_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "requests",
+        help="the tooling requests agents wrote in their attempt notes, grouped with counts and "
+        "example paths, most raised first; reads build/driver/<RUN>/**/notes.md only (host, "
+        "stdlib)",
+    )
+    p.add_argument("run", nargs="*", metavar="RUN",
+                   help="a run under build/driver/ (repeatable); default: every run")  # fmt: skip
+    p.add_argument("--json", action="store_true", help="print the report as JSON (sorted keys)")
+    p.add_argument("--repo", type=Path, default=REPO_ROOT, metavar="PATH",
+                   help="the checkout whose build/driver/ is read; default: %(default)s")
+    p.set_defaults(func=_cmd_requests)
 
 
 # ---- compare-objects: one unit's base and head objects, names by address (D-23; plan 07.2-08) ----
@@ -2945,6 +2999,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_flags_command(sub)
     _add_stats_command(sub)
     _add_causes_command(sub)
+    _add_requests_command(sub)
     _add_compare_objects_command(sub)
     _add_meters_command(sub)
     _add_watcom_commands(sub)
