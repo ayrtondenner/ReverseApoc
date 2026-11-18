@@ -11,6 +11,19 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-18: a Store pwsh alias breaks Codex's sandbox
+
+- Every Codex canary failed with `CreateProcessAsUserW failed: 5 (Access denied)` on every command,
+  `whoami` included. The Codex sandbox log showed the shell started as
+  `%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`, an app execution alias that PowerShell 7.7 from
+  the Microsoft Store created on 2026-11-13. A restricted token cannot start a Store app alias.
+- Fix: the drive launcher removes the WindowsApps folder from `PATH`, so Codex falls back to Windows
+  PowerShell. Terra and Sol canaries passed again at once. A night launched from a fresh terminal
+  with WindowsApps on `PATH` will hit this; read the sandbox log
+  (`~/.codex/.sandbox/sandbox.<date>.log`, its `START:` lines) first.
+- `~/.codex/cap_sid` lists 1,744 workspace SIDs (one per attempt dir). It was not the cause, but it
+  only grows.
+
 ## 2026-11-18: Echo-style rewrite axis: null result on 5 near-miss rows
 
 - On 5 near-miss rows (97.29% to 99.85%) the search's new rewrite axis tried 0 to 8
