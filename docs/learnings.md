@@ -13,7 +13,7 @@ Entry format:
 
 ## 2026-11-18: Echo-style rewrite axis: null result on 5 near-miss rows
 
-- On 5 near-miss rows (98.3% to 99.85%) the search's new rewrite axis tried 0 to 8
+- On 5 near-miss rows (97.29% to 99.85%) the search's new rewrite axis tried 0 to 8
   meaning-keeping rewrites each and moved no score.
 - The narrow rule set yields few rewrites per function; the full near-miss measurement is still
   to run.

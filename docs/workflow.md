@@ -20,7 +20,7 @@ flowchart TD
     B --> C["Step 3: context pack<br/>target asm<br/>neighbours and draft<br/>compiler rules"]
     C --> D
     subgraph S["Step 4: one Claude Code session, guardrails on"]
-        D["Edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>up to 25 per attempt"]
+        D["Edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>up to 15 per attempt"]
         E --> F["Watcom C 10.6<br/>compile in container"]
         F --> G["objdiff score<br/>relocation check<br/>splice into EXE copy<br/>whole-EXE SHA-1"]
         G -->|not identical yet| D
