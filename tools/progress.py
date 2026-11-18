@@ -1394,6 +1394,12 @@ def _snapshots(repo: Path) -> list[Snapshot]:
     return out
 
 
+def _trailer_pairs(text: str) -> tuple[tuple[str, str], ...]:
+    """(key, value) of each trailer of a `%(trailers:...,separator=%x1d)` field."""
+    return tuple((key.strip(), value.strip()) for key, sep, value
+                 in (t.partition(":") for t in text.split(_TRAILER_SEP)) if sep)  # fmt: skip
+
+
 def _logged_commits(repo: Path) -> list[LoggedCommit]:
     """Every commit of HEAD, oldest first, with its subject and trailers; a commit with more
     than one parent is a merge."""
@@ -1403,9 +1409,8 @@ def _logged_commits(repo: Path) -> list[LoggedCommit]:
     out = []
     for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
         sha, parents, day, subject, trailers = chunk.rstrip("\n").split(_UNIT_SEP, 4)
-        pairs = tuple((key.strip(), value.strip()) for key, sep, value
-                      in (t.partition(":") for t in trailers.split(_TRAILER_SEP)) if sep)
-        out.append(LoggedCommit(sha, day, subject, pairs, len(parents.split()) > 1))
+        out.append(LoggedCommit(sha, day, subject, _trailer_pairs(trailers),
+                                len(parents.split()) > 1))  # fmt: skip
     return out
 
 
@@ -1429,6 +1434,159 @@ def load_timeline(repo: Path, asm: Iterable[tuple[str, int]]) -> Timeline | None
     return build_timeline(_snapshots(repo), _logged_commits(repo),
                           parse_runs(_repo_text(repo / ATTEMPTS_JSONL), ATTEMPTS_JSONL),
                           parse_learnings(_repo_text(repo / LEARNINGS_MD)), asm)  # fmt: skip
+
+
+# ---- the provenance split (todo progress-provenance-split) ----
+#
+# Who made each match, from committed trailers only, as `reverseapoc stats` classes it (DEC-07):
+# walking the non-merge commits that change a status.csv in topological order, a start that
+# becomes `matched` is a match event, classed by its commit's trailers (stats.classify's rule,
+# pinned by tests/test_progress_provenance.py) and credited by _credit, the timeline's rule. A
+# function counts once, by its latest event; one status.csv calls matched with no event (a
+# history cut short) is unclassed, so the classes and unclassed add up to the matched count.
+
+PROVENANCE_CLASSES = ("unattended", "human-hints", "human-written")  # stats.CLASSES
+UNATTENDED, HUMAN_HINTS, HUMAN_WRITTEN = PROVENANCE_CLASSES
+MATCH_HINTS, FLAGS_APPROVED_BY = "match-hints", "flags-approved-by"
+STATUS_PATHS = {f"config/{stem}/{STATUS_CSV}": stem for stem, _label in EXES}
+_NO_BLOB = re.compile(r"0+")  # --raw's id of the side a commit adds or deletes
+PROVENANCE_SHALLOW_NOTE = ("This checkout is a shallow clone, so the commits that made the "
+                           "matches are cut; the split is left out.")  # fmt: skip
+
+
+@dataclass(frozen=True)
+class MatchEvent:
+    """A start that became matched in a commit: its class, flag approval and credit."""
+
+    stem: str
+    start: int
+    cls: str  # one of PROVENANCE_CLASSES
+    flagged: bool  # the commit carries Flags-Approved-By (stats' flag-approved subset)
+    credit: str  # _credit of the commit's trailers
+
+
+@dataclass(frozen=True)
+class ExeProvenance:
+    """One EXE: its matched function count and the latest event of each that has one."""
+
+    stem: str
+    label: str
+    matched: int
+    events: tuple[MatchEvent, ...]
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Every EXE in EXES order; no EXE and a note when the history cannot be read."""
+
+    exes: tuple[ExeProvenance, ...] = ()
+    note: str = ""
+
+
+def provenance_class(trailers: Iterable[tuple[str, str]]) -> tuple[str, bool]:
+    """A match commit's class and whether it is flag-approved (stats.classify's rule): the
+    driver's Matched-By without Match-Hints is unattended, with it human-hints, no driver
+    Matched-By human-written."""
+    pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
+    keys = {key for key, _value in pairs}
+    flagged = FLAGS_APPROVED_BY in keys
+    if (MATCHED_BY, MATCHED_BY_DRIVE) not in pairs:
+        return HUMAN_WRITTEN, flagged
+    return (HUMAN_HINTS if MATCH_HINTS in keys else UNATTENDED), flagged
+
+
+def build_provenance(events: Iterable[MatchEvent], progress: Progress) -> Provenance:
+    """Per EXE, the latest of `events` (oldest first) for each function `progress` calls
+    matched; events of functions no longer matched are left out."""
+    latest = {(e.stem, e.start): e for e in events}
+    out = []
+    for exe in progress.exes:
+        matched = [f.start for f in exe.functions if f.status == MATCHED]
+        found = tuple(latest[(exe.stem, s)] for s in matched if (exe.stem, s) in latest)
+        out.append(ExeProvenance(exe.stem, exe.label, len(matched), found))
+    return Provenance(tuple(out))
+
+
+def _matched_starts(text: str | None) -> frozenset[int]:
+    """The starts of a status.csv text's matched rows, read loosely (driver.matched_starts'
+    rule: any column order, `#` lines skipped), since a past table only needs start and status."""
+    out = set()
+    lines = (line for line in (text or "").splitlines() if line and not line.startswith(_COMMENT))
+    for rec in csv.DictReader(lines):
+        if rec.get("status") != MATCHED or not _ADDRESS_CELL.fullmatch(rec.get("start") or ""):
+            continue
+        out.add(int(rec["start"], 16))
+    return frozenset(out)
+
+
+def _status_commits(repo: Path) -> list[tuple[tuple[tuple[str, str], ...], list[tuple]]]:
+    """(trailers, [(stem, old blob or None, new blob or None)]) of every non-merge commit that
+    changed a status.csv, parents first (topological order, as stats walks them)."""
+    raw = _git(repo, ["log", "--reverse", "--topo-order", "--no-merges", "--raw", "--no-abbrev",
+                      f"--format={_RECORD}%(trailers:only,unfold,separator=%x1d)", "HEAD", "--",
+                      *STATUS_PATHS])  # fmt: skip
+    out = []
+    for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
+        head, *lines = chunk.split("\n")
+        changes = []
+        for line in lines:
+            meta, _tab, path = line.partition("\t")
+            if not line.startswith(":") or path not in STATUS_PATHS:
+                continue
+            old, new = meta.split()[2:4]
+            changes.append((STATUS_PATHS[path], None if _NO_BLOB.fullmatch(old) else old,
+                            None if _NO_BLOB.fullmatch(new) else new))  # fmt: skip
+        out.append((_trailer_pairs(head), changes))
+    return out
+
+
+def load_provenance(repo: Path, progress: Progress) -> Provenance | None:
+    """The split of the checkout at `repo` for the matched functions of `progress`: None when
+    it is no checkout, no EXE and PROVENANCE_SHALLOW_NOTE in a shallow clone. Each status.csv
+    blob is read once. A git failure is a ProgressError."""
+    repo = Path(repo)
+    if not (repo / ".git").exists():
+        return None
+    if _git(repo, ["rev-parse", "--is-shallow-repository"]).strip() == b"true":
+        return Provenance(note=PROVENANCE_SHALLOW_NOTE)
+    commits = _status_commits(repo)
+    blobs = sorted({blob for _t, changes in commits for _s, *pair in changes for blob in pair
+                    if blob is not None})  # fmt: skip
+    matched = dict(zip(blobs, map(_matched_starts, _cat_files(repo, blobs)), strict=True))
+    events = []
+    for trailers, changes in commits:
+        cls, flagged = provenance_class(trailers)
+        credit = _credit(trailers)
+        for stem, old, new in changes:
+            gained = matched.get(new, frozenset()) - matched.get(old, frozenset())
+            events += [MatchEvent(stem, start, cls, flagged, credit) for start in sorted(gained)]
+    return build_provenance(events, progress)
+
+
+def _split_doc(matched: int, events: Sequence[MatchEvent]) -> dict[str, object]:
+    def one(cls: str) -> dict[str, object]:
+        mine = [e for e in events if e.cls == cls]
+        credits: dict[str, int] = {}
+        for e in mine:
+            credits[e.credit] = credits.get(e.credit, 0) + 1
+        return {"functions": len(mine), "flags_approved": sum(e.flagged for e in mine),
+                "by_credit": dict(_by_count(credits))}  # fmt: skip
+
+    return {"matched": matched, "classes": {cls: one(cls) for cls in PROVENANCE_CLASSES},
+            "unclassed": matched - len(events)}  # fmt: skip
+
+
+def build_provenance_doc(provenance: Provenance | None) -> dict[str, object] | None:
+    """progress.json's "provenance": per EXE and combined, the matched count, per class its
+    functions, flag-approved subset and credits (most first), and the unclassed count; None
+    outside a checkout."""
+    if provenance is None:
+        return None
+    exes = {e.stem: {"label": e.label, **_split_doc(e.matched, e.events)}
+            for e in provenance.exes}  # fmt: skip
+    combined = _split_doc(sum(e.matched for e in provenance.exes),
+                          [ev for e in provenance.exes for ev in e.events]) if exes else None
+    return {"note": provenance.note, "exes": exes, "combined": combined}
 
 
 
@@ -1508,9 +1666,11 @@ def build_mechanics(mechanics: Mechanics | None) -> dict[str, object] | None:
 
 
 def build_progress(progress: Progress, commit: str | None = None,
-                   mechanics: Mechanics | None = None) -> dict[str, object]:  # fmt: skip
+                   mechanics: Mechanics | None = None, *,
+                   provenance: Provenance | None = None) -> dict[str, object]:  # fmt: skip
     """progress.json: per EXE and combined counts, the percent, the mechanics coverage view
-    (null without mechanics.toml) and the notes (D-26, D-50, DEC-05)."""
+    (null without mechanics.toml), the provenance split (null outside a checkout) and the notes
+    (D-26, D-50, DEC-05)."""
     return {
         "version": PROGRESS_VERSION,
         "commit": commit,
@@ -1518,6 +1678,7 @@ def build_progress(progress: Progress, commit: str | None = None,
                  for exe in progress.exes},  # fmt: skip
         "combined": _totals_doc(progress.combined),
         "mechanics": build_mechanics(mechanics),
+        "provenance": build_provenance_doc(provenance),
         "notes": list(NOTES),
     }
 
@@ -1564,8 +1725,10 @@ def build_exe_figure_shield(exe: ExeProgress, figure: str) -> dict[str, object]:
 
 
 def write_progress_json(progress: Progress, path: Path, commit: str | None = None,
-                        mechanics: Mechanics | None = None) -> None:  # fmt: skip
-    _write_atomic(path, render(build_progress(progress, commit, mechanics)))
+                        mechanics: Mechanics | None = None, *,
+                        provenance: Provenance | None = None) -> None:  # fmt: skip
+    _write_atomic(path, render(build_progress(progress, commit, mechanics,
+                                              provenance=provenance)))  # fmt: skip
 
 
 def write_shield(progress: Progress, path: Path) -> None:
@@ -2181,10 +2344,11 @@ def _assembler_css() -> list[str]:
             f"margin-top:{TICK_HEIGHT - TICK_SHORT}px}}"]  # fmt: skip
 
 
-def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False) -> str:
+def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False,
+              split: bool = False) -> str:  # fmt: skip
     """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
-    section's, the assembler tick's and the timeline charts' rules only when the page has
-    them."""
+    section's, the assembler tick's, the timeline charts' and the provenance split's rules
+    only when the page has them."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
         "color-scheme:light dark}",
@@ -2235,6 +2399,7 @@ def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = 
           for attr, token, var in MOSAIC_PAINTS),
         *(_coverage_css() if coverage else []),
         *(_timeline_css() if timeline else []),
+        *(_provenance_css() if split else []),
         "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
         ".exe h2{margin-bottom:.5rem}.mosaic svg{min-width:48rem}}",
     ])
@@ -2688,9 +2853,70 @@ def _timeline_html(timeline: Timeline | None) -> list[str]:
             *_days_table_html(timeline), "</section>"]  # fmt: skip
 
 
+PROVENANCE_HEADING = "Who made the matches"
+PROVENANCE_CAPTION = (
+    "Every function matched in status.csv, by the commit that last matched it, classed from its "
+    "trailers the way reverseapoc stats classes it. Unattended: the driver ran the session "
+    "(Matched-By: reverseapoc drive) and no human hint went in. Human-hints: the driver ran the "
+    "session with the owner's notes (Match-Hints). "
+    "Human-written: no driver session, so a person in an AI-assisted session, a converter "
+    "(reverseapoc lift) or a spike wrote it. Each match is credited to the model that made it "
+    "(the commit's first co-author) or to the converter. Under approved flags: the owner "
+    "approved compiler flags for the match's unit (Flags-Approved-By), a subset of its class.")
+# The table's class rows: (row header, its number in one _split_doc), each class then its
+# flag-approved subset.
+_PROVENANCE_ROWS: tuple[tuple[str, Callable[[Mapping], int]], ...] = tuple(
+    row for cls in PROVENANCE_CLASSES for row in (
+        (cls, lambda d, c=cls: d["classes"][c]["functions"]),
+        (f"{cls}, under approved flags", lambda d, c=cls: d["classes"][c]["flags_approved"])))
+UNCLASSED_ROW = "no match commit in the history"
+MATCHED_ROW = "matched in status.csv"
+
+
+def _provenance_css() -> list[str]:
+    return [".split{border-collapse:collapse;margin-top:.5rem;font-size:.875rem;"
+            "font-variant-numeric:tabular-nums}",
+            ".split th,.split td{padding:0 1rem .25rem 0;text-align:left;vertical-align:top}",
+            ".split thead th{font-weight:600}",
+            ".split tbody th{font-weight:400}",
+            ".credits{max-width:70ch;margin:.75rem 0 0;padding-left:1.25rem;font-size:.875rem;"
+            "overflow-wrap:anywhere}"]  # fmt: skip
+
+
+def _provenance_html(provenance: Provenance | None) -> list[str]:
+    """The `Who made the matches` section: a table of the classes per EXE and both, the
+    unclassed row only when a matched function has no match commit, then each class's credits
+    over both EXEs; the note alone in a shallow clone; nothing outside a checkout."""
+    if provenance is None:
+        return []
+    lines = ['<section class="provenance" aria-labelledby="provenance">',
+             f'<h2 id="provenance">{PROVENANCE_HEADING}</h2>']
+    doc = build_provenance_doc(provenance)
+    if not doc["exes"]:
+        return [*lines, f'<p class="caption">{_xml(provenance.note)}</p>', "</section>"]
+    docs = [*doc["exes"].values(), doc["combined"]]
+    head = "".join(f'<th scope="col">{_xml(e.label)}</th>' for e in provenance.exes)
+    rows = list(_PROVENANCE_ROWS)
+    if doc["combined"]["unclassed"]:
+        rows.append((UNCLASSED_ROW, lambda d: d["unclassed"]))
+    rows.append((MATCHED_ROW, lambda d: d["matched"]))
+    body = [f'<tr><th scope="row">{_xml(name)}</th>{"".join(f"<td>{get(d)}</td>" for d in docs)}'
+            "</tr>" for name, get in rows]  # fmt: skip
+    credits = [f"<li>{_xml(cls)}: {_xml(', '.join(f'{n} {k}' for n, k in by.items()))}</li>"
+               for cls in PROVENANCE_CLASSES
+               if (by := doc["combined"]["classes"][cls]["by_credit"])]  # fmt: skip
+    return [*lines, f'<p class="caption">{_xml(PROVENANCE_CAPTION)}</p>',
+            '<table class="split">',
+            f'<thead><tr><th scope="col">Class</th>{head}<th scope="col">Both</th></tr></thead>',
+            "<tbody>", *body, "</tbody>", "</table>",
+            *(['<ul class="credits">', *credits, "</ul>"] if credits else []),
+            "</section>"]  # fmt: skip
+
+
 def render_html(progress: Progress, commit: str | None = None,
                 mechanics: Mechanics | None = None,
-                timeline: Timeline | None = None) -> str:  # fmt: skip
+                timeline: Timeline | None = None, *,
+                provenance: Provenance | None = None) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, the three figures (strict, functions, fuzzy: todo progress-three-figures), a
     percent bar, the figures in text and the function strip (one tick per game and
@@ -2705,16 +2931,18 @@ def render_html(progress: Progress, commit: str | None = None,
     no external request: every link is relative or to the repository. The same CSVs and commit
     give the same bytes; without a commit only the "Updated from commit" line is missing. Given
     `mechanics` (derive_mechanics), the `Mechanics coverage` section follows the strip's key;
-    without it the page has no such section and no rule of it. Signed asm rows that
-    exclude_assembler moved out are stated per EXE, drawn as assembler ticks and library cells,
-    and keyed under the strip's key (D-23)."""
+    without it the page has no such section and no rule of it. Given `provenance`
+    (load_provenance), the `Who made the matches` section comes first after the keys. Signed asm
+    rows that exclude_assembler moved out are stated per EXE, drawn as assembler ticks and
+    library cells, and keyed under the strip's key (D-23)."""
     assembler = any(exe.assembler_rows for exe in progress.exes)
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
              _page_css(coverage=mechanics is not None, assembler=assembler,
-                       timeline=timeline is not None and bool(timeline.days)), "</style>",
+                       timeline=timeline is not None and bool(timeline.days),
+                       split=provenance is not None and bool(provenance.exes)), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
@@ -2723,6 +2951,7 @@ def render_html(progress: Progress, commit: str | None = None,
         lines += _exe_html(exe)
     lines += [STRIP_KEY,
               *([ASSEMBLER_KEY] if assembler else []),
+              *_provenance_html(provenance),
               *_mechanics_html(mechanics),
               *_timeline_html(timeline),
               "<h2>The mosaic</h2>",
@@ -2736,8 +2965,10 @@ def render_html(progress: Progress, commit: str | None = None,
 
 def write_html(progress: Progress, path: Path, commit: str | None = None,
                mechanics: Mechanics | None = None,
-               timeline: Timeline | None = None) -> None:  # fmt: skip
-    _write_atomic(path, render_html(progress, commit, mechanics, timeline).encode("utf-8"))
+               timeline: Timeline | None = None, *,
+               provenance: Provenance | None = None) -> None:  # fmt: skip
+    _write_atomic(path, render_html(progress, commit, mechanics, timeline,
+                                    provenance=provenance).encode("utf-8"))  # fmt: skip
 
 
 # ---- command line ----
@@ -2768,6 +2999,7 @@ class _Derived:
     shown: Progress
     mechanics: Mechanics | None
     timeline: Timeline | None = None
+    provenance: Provenance | None = None
 
 
 Writer = Callable[[_Derived, Path], None]
@@ -2791,7 +3023,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda d, path: write_progress_json(
-            d.shown, path, args.commit, d.mechanics)
+            d.shown, path, args.commit, d.mechanics, provenance=d.provenance)
         yield args.out / SHIELD_JSON, _on_shown(write_shield)
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
@@ -2799,7 +3031,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         yield from _figure_shield_writes(args.out)
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
-            d.shown, path, args.commit, d.mechanics, d.timeline)
+            d.shown, path, args.commit, d.mechanics, d.timeline, provenance=d.provenance)
     if args.report is not None:
         yield args.report, _on_shown(write_report)
     if args.decomphub is not None:
@@ -2807,6 +3039,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         yield args.decomphub, lambda d, path: write_decomphub(d.progress, path)
 
 
+HISTORY_SPLIT_NOTE = ("The split is left out: the repository history could not be read; the log "
+                      "of the run that built this page says why.")  # fmt: skip
 HISTORY_FAILED_NOTE = ("The chart is left out: the repository history could not be read; the "
                        "log of the run that built this page says why.")  # fmt: skip
 
@@ -2823,6 +3057,16 @@ def _timeline(config: Path, mechanics: Mechanics | None) -> Timeline | None:
         return Timeline(tuple(label for _stem, label in EXES), note=HISTORY_FAILED_NOTE)
 
 
+def _provenance(config: Path, shown: Progress) -> Provenance | None:
+    """The provenance split of the checkout holding `config`; a history the walk cannot read
+    leaves it out with a note on the page and a warning on stderr, like the timeline."""
+    try:
+        return load_provenance(Path(config).resolve().parent, shown)
+    except ProgressError as exc:
+        print(f"progress.py: warning: the provenance split is left out: {exc}", file=sys.stderr)
+        return Provenance(note=HISTORY_SPLIT_NOTE)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -2836,7 +3080,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         found = derive_mechanics(args.config, progress)
         shown = exclude_assembler(progress, found.assembler) if found else progress
         timeline = _timeline(args.config, found) if args.out is not None else None
-        derived = _Derived(progress, shown, found, timeline)
+        provenance = _provenance(args.config, shown) if args.out is not None else None
+        derived = _Derived(progress, shown, found, timeline, provenance)
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
             write(derived, path)
