@@ -166,6 +166,7 @@ from typing import Protocol
 
 from . import (
     agyjson,
+    asm,
     attempt,
     backends,
     broker,
@@ -200,15 +201,21 @@ from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
 from .picker import (
     EXE_ORDER,
+    HANDOFF_CSV,
     NEAR_MISS_MIN,
+    ORDER_SCORE,
+    ORDER_SIMILARITY,
     PILOT_PER_EXE,
     Key,
     NearMissItem,
     NearMissQueue,
     Pick,
+    PickerError,
+    Similarity,
     TierItem,
     TierQueue,
     near_miss_queue,
+    read_handoff,
     readability_queue,
     tier_queue,
 )
@@ -7133,7 +7140,11 @@ class DriveOptions:
     night_model: str | None = None  # `--night-model ARM` (07.2-12: a backends.toml arm)
     picks: Path | None = None  # `--picks FILE` (read_picks)
     stratify: tuple[int, int, int] | None = None  # `--stratify A,B,C` (STRATA), dry run only
-    write_picks: Path | None = None  # `--write-picks FILE`, with --stratify
+    write_picks: Path | None = None  # `--write-picks FILE`, with --stratify or a near-miss lane
+    # todo near-miss-write-picks: `--max-picks N`, the near-miss rows --write-picks writes at
+    # most (None: every one)
+    max_picks: int | None = None
+    order: str = ORDER_SCORE  # todo similarity-first-picking: `--order score|similarity`
     hold: bool = False  # `--hold`
     land_held: tuple[str, ...] = ()  # `--land-held RUN...` (stats.run_selected names)
     # 07.2-12 (D-11): `--allow-egress ARM`, each the --night-model arm that sends the context
@@ -7185,6 +7196,9 @@ class ExeWorld:
     graph: Callable[[], CallGraph] | None = None
     # 07-34 (D-19): the EXE's LE data objects, where a data rename must lie (SymbolTable's rule)
     data_ranges: tuple[tuple[int, int], ...] = ()
+    # todo similarity-first-picking: a game/thunk row's mnemonic sequence (contextpack.mnemonics,
+    # the look-alikes' view) by its start; None: the world has none, so every ratio is 0.0
+    mnemonics: Callable[[int], Sequence[str]] | None = None
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -7303,13 +7317,22 @@ def _status_rows(config_root: Path, exe: str) -> list:
 def excluded_keys(config_root: Path, today: str) -> frozenset[Key]:
     """D-09: the starts the picker skips besides the difficult list: every matched row, and
     every partial row of this pass (dated `today`; a partial row from an earlier day is
-    eligible again)."""
-    out: set[Key] = set()
+    eligible again); todo long-tail-handoff-board: and every row of the hand-off board."""
+    out: set[Key] = set(handoff_keys(config_root))
     for exe in EXE_ORDER:
         for row in _status_rows(config_root, exe):
             if row.status == STATUS_MATCHED or (row.status == STATUS_PARTIAL and row.date == today):
                 out.add((exe, row.start))
     return frozenset(out)
+
+
+def handoff_keys(config_root: Path) -> frozenset[Key]:
+    """Todo long-tail-handoff-board: the rows of config/handoff.csv (picker.read_handoff), which
+    no queue offers; a malformed board refuses the run."""
+    try:
+        return read_handoff(Path(config_root) / HANDOFF_CSV)
+    except (PickerError, OSError, UnicodeDecodeError) as exc:
+        raise Refused("handoff", str(exc)) from exc
 
 
 def matched_keys(config_root: Path) -> frozenset[Key]:
@@ -7364,31 +7387,47 @@ def read_picks(path: Path) -> frozenset[Key]:
 def restricted_keys(options: DriveOptions) -> frozenset[Key] | None:
     """The only functions a night may queue, or None for the whole queue: a Fable trial's
     (`fable_trial_keys`, quick 261101-b5f) and, 07.2-06 (D-17), the `--picks` file's; with
-    both, the functions in both."""
+    both, the functions in both. Todo long-tail-handoff-board: never a hand-off board row."""
     keys = fable_trial_keys(options.config_root) if options.fable_trial else None
-    if options.picks is None:
-        return keys
-    picks = read_picks(options.picks)
-    return picks if keys is None else keys & picks
+    if options.picks is not None:
+        picks = read_picks(options.picks)
+        keys = picks if keys is None else keys & picks
+    return None if keys is None else keys - handoff_keys(options.config_root)
 
 
 def _key_list(keys: Iterable[Key]) -> str:
     return _listed([f"{exe} 0x{start:08X}" for exe, start in sorted(keys)])
 
 
-def refuse_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
-    """07.2-06 (D-17): before the night starts, every pick must be in the queue the night
-    builds (the signed tier's items, else the Phase 6 pools) and not yet matched; otherwise a
-    Refused names every pick that is not."""
-    picks = read_picks(options.picks)
+def refuse_board(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
+    """Todo long-tail-handoff-board: a board row that is no functions.csv row start of its EXE
+    (a typo would retire nothing, silently) refuses the run, naming every such row."""
+    unknown = [key for key in handoff_keys(options.config_root)
+               if key[1] not in worlds[key[0]].units]  # fmt: skip
+    if unknown:
+        raise Refused("handoff", f"{HANDOFF_CSV}: not a function row start of its EXE: "
+                                 f"{_key_list(unknown)}")  # fmt: skip
+
+
+def picks_queue_keys(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> frozenset[Key]:
+    """07.2-06 (D-17): the functions a `--picks` night may queue: the signed tier's items (never
+    a hand-off board row), else the Phase 6 pools' candidates."""
     source = tier_source(options.config_root, worlds)
     if source is not None:
-        members = {item.key for item in source(None).items}
-    else:
-        members = {(exe, c.address) for exe in EXE_ORDER for c in worlds[exe].pool}
+        return frozenset(item.key for item in source(None).items)
+    return frozenset((exe, c.address) for exe in EXE_ORDER for c in worlds[exe].pool)
+
+
+def refuse_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
+    """07.2-06 (D-17): before the night starts, every pick must be in the queue the night
+    builds (`picks_queue_keys`), not yet matched and (todo long-tail-handoff-board) not on the
+    hand-off board; otherwise a Refused names every pick that is not."""
+    picks = read_picks(options.picks)
+    members = picks_queue_keys(options, worlds)
     matched = matched_keys(options.config_root)
-    outside, done = picks - members - matched, picks & matched
-    problems = []
+    board = picks & handoff_keys(options.config_root)
+    outside, done = picks - members - matched - board, picks & matched
+    problems = [f"on the hand-off board ({HANDOFF_CSV}): {_key_list(board)}"] if board else []
     if outside:
         problems.append(f"not in the queue: {_key_list(outside)}")
     if done:
@@ -7502,7 +7541,8 @@ TierSource = Callable[[Mapping[Key, int] | None], TierQueue]
 
 
 def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
-                only: Container[Key] | None = None) -> TierSource | None:  # fmt: skip
+                only: Container[Key] | None = None,
+                similar: bool = False) -> TierSource | None:  # fmt: skip
     """07-26 (DEC-02): when config/mechanics.toml has a signed tier whose digest still matches
     (mechanics.signed_tiers), a builder of a fresh tier queue (picker.tier_queue) over the
     committed members file, the worlds' call graphs, ranks and units, with the matched set of
@@ -7511,7 +7551,12 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     The signed asm list's held rows (07-44, `mechanics.signed_held`) are never queued (D-09:
     no pass on a span that cannot compile from C); an unsigned or changed list raises.
     `only` (quick 261101-b5f, a Fable trial) restricts each built queue to those keys
-    (`TierQueue.only`: the queue's own order, no wait on a key outside them)."""
+    (`TierQueue.only`: the queue's own order, no wait on a key outside them). The hand-off
+    board's rows (todo long-tail-handoff-board, `handoff_keys`) are never queued either, and
+    nothing waits on them. `similar` (todo similarity-first-picking) gives every built queue the
+    similarity order through one Similarity (`similarity`), so each ratio is computed once and a
+    match one lane's queue records raises the ratios of every lane's; each build adds the
+    matched set it reads."""
     root = Path(config_root)
     if not (root / mechanics.MECHANICS_TOML).is_file():
         return None
@@ -7519,17 +7564,37 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     if not mechanics.signed_tiers(mech, rows):
         return None
     held = mechanics.signed_held(root, mech)
+    retired = handoff_keys(root)
+    shared = similarity(worlds, ()) if similar else None
     exes = {row.exe for row in rows}
     graphs = {exe: world.graph() for exe, world in worlds.items()
               if exe in exes and world.graph is not None}  # fmt: skip
     ranks = {exe: world.ranks for exe, world in worlds.items()}
 
     def build(passes: Mapping[Key, int] | None = None) -> TierQueue:
-        queue = tier_queue(mech, rows, graphs, ranks, _units(worlds),
-                           matched=matched_keys(root), passes=passes, held=held)  # fmt: skip
+        matched = matched_keys(root)
+        for key in matched if shared is not None else ():
+            shared.matched(key)
+        queue = tier_queue(mech, rows, graphs, ranks, _units(worlds), matched=matched,
+                           passes=passes, held=held, retired=retired,
+                           similarity=shared)  # fmt: skip
         return queue if only is None else queue.only(only)
 
     return build
+
+
+def similarity(worlds: Mapping[str, ExeWorld], matched: Iterable[Key]) -> Similarity:
+    """Todo similarity-first-picking: picker.Similarity over both EXEs' game/thunk rows (the
+    worlds' ranks) with the worlds' mnemonic sequences; a row of a world without them has none."""
+
+    def sequence(key: Key) -> Sequence[str] | None:
+        exe, start = key
+        world = worlds.get(exe)
+        if world is None or world.mnemonics is None or start not in world.ranks:
+            return None
+        return world.mnemonics(start)
+
+    return Similarity(sequence, matched=matched)
 
 
 def near_miss_source(config_root: Path, worlds: Mapping[str, ExeWorld],
@@ -7538,12 +7603,12 @@ def near_miss_source(config_root: Path, worlds: Mapping[str, ExeWorld],
     each EXE's status.csv partial rows at `minimum` best_percent or more, read when it is called,
     with the worlds' ranks and units. The signed asm list's asm and held rows are never queued
     (D-23, 07-44: no pass on a span that cannot compile from C); an unsigned or changed list
-    raises, as `tier_source` does."""
+    raises, as `tier_source` does. Nor are the hand-off board's (todo long-tail-handoff-board)."""
     root = Path(config_root)
-    excluded: frozenset[Key] = frozenset()
+    excluded = handoff_keys(root)
     if (root / mechanics.MECHANICS_TOML).is_file():
         mech = mechanics.load(root / mechanics.MECHANICS_TOML)
-        excluded = mechanics.signed_asm(root, mech) | mechanics.signed_held(root, mech)
+        excluded |= mechanics.signed_asm(root, mech) | mechanics.signed_held(root, mech)
     ranks = {exe: world.ranks for exe, world in worlds.items()}
 
     def build() -> NearMissQueue:
@@ -7553,6 +7618,10 @@ def near_miss_source(config_root: Path, worlds: Mapping[str, ExeWorld],
                                excluded=excluded)  # fmt: skip
 
     return build
+
+
+def _similar(options: DriveOptions) -> bool:
+    return options.order == ORDER_SIMILARITY
 
 
 def near_miss_on(options: DriveOptions) -> bool:
@@ -7586,7 +7655,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     readability = options.session == READABILITY
     trial = restricted_keys(options)
     excluded = excluded_keys(config_root, day) if trial is None else matched_keys(config_root)
-    tiers = None if readability else tier_source(config_root, worlds, only=trial)
+    tiers = None if readability else tier_source(config_root, worlds, only=trial,
+                                                 similar=_similar(options))  # fmt: skip
     units_queue = readability_source(options.repo, _world_callees(worlds),
                                      git=seams.git)  # 07-38: read from HEAD
     candidates = _pools(worlds) if trial is None else _trial_pools(worlds, trial)
@@ -7658,8 +7728,9 @@ def _pick_of(entry: DryPick) -> Pick:
 
 
 def _pick_doc(options: DriveOptions, entry: DryPick, pack: Path, info: PackInfo) -> dict:
-    """One dry-run pick; a tier pick (07-26, ruling F8) adds its tier, level and pass; a
-    near-miss pick (todo near-miss-lane) its best_percent, bytes left and pass instead."""
+    """One dry-run pick; a tier pick (07-26, ruling F8) adds its tier, level and pass, and under
+    the similarity order (todo similarity-first-picking) its best look-alike ratio; a near-miss
+    pick (todo near-miss-lane) its best_percent, bytes left and pass instead."""
     pick = _pick_of(entry)
     doc = {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
            "unit": pick.unit, "size": pick.size, "score": pick.score,
@@ -7670,6 +7741,8 @@ def _pick_doc(options: DriveOptions, entry: DryPick, pack: Path, info: PackInfo)
                             "bytes_left": round(entry.bytes_left, 2), "pass": entry.pass_n}
     elif isinstance(entry, TierItem):
         doc.update({"tier": entry.tier, "level": entry.level, "pass": entry.pass_n})
+        if entry.similarity is not None:
+            doc["similarity"] = round(entry.similarity, 4)
     return doc
 
 
@@ -7679,7 +7752,7 @@ def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], count: int
     at its next pass by the committed log's pass index; None without a signed tier. Todo
     near-miss-lane: the `skip` keys (the near-miss lane's) are left out, as the night's
     coordinator leaves them out of every other lane."""
-    source = tier_source(options.config_root, worlds)
+    source = tier_source(options.config_root, worlds, similar=_similar(options))
     if source is None:
         return None
     queue = source(pass_index(Path(options.repo) / ATTEMPT_LOG))
@@ -7705,7 +7778,7 @@ def restricted_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     difficult list. The dry run and the night's drafts both list them (discretion (b): no
     5 + 5 pilot, which a short set could not fill)."""
     keys = restricted_keys(options)
-    source = tier_source(options.config_root, worlds, only=keys)
+    source = tier_source(options.config_root, worlds, only=keys, similar=_similar(options))
     if source is not None:
         return list(source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count))
     difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
@@ -7734,7 +7807,7 @@ def stratified_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> l
     many it found; without a signed tier there is no queue order to stratify."""
     from .stats import read_sizes  # stats imports this module
 
-    source = tier_source(options.config_root, worlds)
+    source = tier_source(options.config_root, worlds, similar=_similar(options))
     if source is None:
         raise Refused("stratify", "--stratify reads the signed tier queue, and no tier is "
                                   "signed")  # fmt: skip
@@ -7763,6 +7836,31 @@ def write_picks(path: Path, picks: Sequence[Key], header: Sequence[str]) -> None
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_atomic(path, ("\n".join(lines) + "\n").encode("utf-8"))
+
+
+def near_miss_written(options: DriveOptions, worlds: Mapping[str, ExeWorld],
+                      near: Sequence[NearMissItem]) -> tuple[list[Key], list[Key]]:  # fmt: skip
+    """Todo near-miss-write-picks: the keys `--write-picks` writes from the near-miss lane's rows
+    `near` (`near_miss_picks`, the lane's own order): the first `--max-picks` (all without it)
+    of those a following `--picks` night can queue (`picks_queue_keys`, as `refuse_picks`
+    checks them), and the lane's rows it left out for that, in lane order. The file keeps
+    the lane's order, which picks the first N; the `--picks` night queues them in its own."""
+    queue = picks_queue_keys(options, worlds)
+    kept = [item.key for item in near if item.key in queue]
+    outside = [item.key for item in near if item.key not in queue]
+    return kept[:options.max_picks], outside
+
+
+def _near_miss_header(options: DriveOptions, rows: int, kept: Sequence[Key],
+                      outside: Sequence[Key]) -> list[str]:  # fmt: skip
+    """The `#` lines of a near-miss picks file: the command, the counts, and one line per lane
+    row left out because a `--picks` night could not queue it."""
+    most = "" if options.max_picks is None else f" --max-picks {options.max_picks}"
+    head = [f"reverseapoc drive --dry-run --near-miss {_near_miss_min(options):g} --write-picks "
+            f"{Path(options.write_picks).name}{most} (run {options.run_id}, {_today()})",
+            f"near-miss lane rows by bytes left: {len(kept)} of {rows} written"]
+    return [*head, *(f"left out (outside the queue a --picks night builds): {exe} 0x{start:08X}"
+                     for exe, start in outside)]  # fmt: skip
 
 
 def _stratified_header(options: DriveOptions) -> list[str]:
@@ -8092,7 +8190,9 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     261112-fds: with --cascade each pick's line ends with its size bucket and the arm of each
     of its ATTEMPTS_PER_FUNCTION attempts at its next pass, and its document adds `cascade`
     {bucket, pass, attempts}; quick 261112-fdr (IN-05): with each arm's cap of `caps` applied
-    (`_cascade_previews`). Todo budget-runs-and-contributors: each --arm-budget's line comes
+    (`_cascade_previews`). Todo similarity-first-picking: under the similarity order a tier
+    pick's line ends with its best look-alike ratio, its document adds `similarity`. Todo
+    budget-runs-and-contributors: each --arm-budget's line comes
     first (`_budget_lines`: budget, quota per session with its source and date, sessions and
     expected matches), and the document adds `budgets` (quota.Sizing.doc). Todo
     near-miss-lane: with a near-miss lane (`near_rows`, its row count; None: no lane) a
@@ -8122,6 +8222,8 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         docs.append(doc)
         place = "" if "tier" not in doc else (
             f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
+        if "similarity" in doc:  # todo similarity-first-picking
+            place += f" similarity {entry.similarity:.2f}"
         if isinstance(entry, NearMissItem):
             if not any("near_miss" in other for other in docs[:-1]):
                 lines.append(_near_miss_line(options, NEAR_MISS_DRY_RUN, near_rows or 0))
@@ -8540,6 +8642,10 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                     return readability_dry_run(options, worlds, git=seams.git)
         else:
             with _phase("picks"):
+                refuse_board(options, worlds)  # todo long-tail-handoff-board
+                if _similar(options) and tier_source(options.config_root, worlds) is None:
+                    raise Refused("order", "--order similarity orders the signed tier queue, "
+                                           "and no tier is signed")  # fmt: skip
                 if options.picks is not None:  # 07.2-06: refused before anything is built
                     refuse_picks(options, worlds)
                 if options.stratify is not None:  # 07.2-06: a dry run only (cli refuses else)
@@ -8548,6 +8654,10 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                                 _stratified_header(options))  # fmt: skip
                 else:  # todo near-miss-lane: the near-miss lane's first max_sessions too
                     picks, near = _lane_picks(options, worlds, today=today)
+                    if options.write_picks is not None:  # todo near-miss-write-picks (dry run)
+                        kept, outside = near_miss_written(options, worlds, near)
+                        write_picks(options.write_picks, kept,
+                                    _near_miss_header(options, len(near), kept, outside))
                     picks = [*picks, *near[:options.max_sessions]]
                 held = tier_held(options, worlds) if options.dry_run else None
             with _phase("drafts"):
@@ -10070,6 +10180,12 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
                          page_size=data.le.page_size)  # fmt: skip
     calls = CallIndex.build(list(data.rows), data.flat, list(data.fixups))
     rows = {row.start: row for row in data.rows}
+    near = asm.FixupIndex(data.fixups)
+
+    @functools.cache
+    def mnemonics(start: int) -> tuple[str, ...]:
+        row = rows[start]
+        return contextpack.mnemonics(row, data.flat, near.overlapping(row.start, row.end))
 
     def pack(pick: Pick, directory: Path, src: Path | None = None) -> PackInfo:
         """07-13: a session's pack reads its view's src/ (`src`); the dry run reads src/."""
@@ -10090,7 +10206,8 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
                     callees=dict(calls.callees), pack=pack, scaffold=scaffold,
                     ranks=_ranks(assessments, data),
                     graph=functools.cache(lambda: callgraph.build_for(data)),
-                    data_ranges=tuple(data.symbols.data_ranges))  # fmt: skip
+                    data_ranges=tuple(data.symbols.data_ranges),
+                    mnemonics=mnemonics)  # fmt: skip
 
 
 def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Candidate]:

@@ -1679,3 +1679,55 @@ def test_near_miss_in_help(capsys):
     text = _drive_help(capsys)
     assert "--near-miss [MIN_PERCENT]" in text and "--near-miss-arm NAME=WORKERS" in text
     assert "bytes left" in text
+
+
+# ---- todo near-miss-write-picks: drive --dry-run --near-miss --write-picks FILE [--max-picks N]
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--near-miss-arm", f"{HAIKU}=1", "--write-picks", "p.txt"], "--write-picks needs --dry-run"),
+    (["--dry-run", "--max-picks", "3"], "--max-picks needs --near-miss and --write-picks"),
+    (["--dry-run", "--near-miss", "--max-picks", "3"], "--max-picks needs"),
+    (["--dry-run", "--stratify", "1,1,1", "--write-picks", "p.txt", "--max-picks", "3"],
+     "--max-picks needs"),
+], ids=["night", "alone", "no-file", "stratify"])  # fmt: skip
+def test_near_miss_write_picks_refusals(argv, conflict, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+def test_near_miss_write_picks_reach_the_options(tmp_path, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    picks = tmp_path / "near.txt"
+    assert main(["drive", "--dry-run", "--near-miss", "--write-picks", str(picks),
+                 "--max-picks", "160"]) == 0  # fmt: skip
+    assert (seen[-1].near_miss, seen[-1].write_picks, seen[-1].max_picks) == (80.0, picks, 160)
+    assert main(["drive", "--dry-run", "--near-miss-arm", f"{HAIKU}=1", "--write-picks",
+                 str(picks)]) == 0  # fmt: skip
+    assert (seen[-1].write_picks, seen[-1].max_picks) == (picks, None)
+
+
+# ---- todo similarity-first-picking: drive --order score|similarity ----
+
+
+def test_order_flag(monkeypatch, capsys):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--dry-run"]) == 0
+    assert seen[-1].order == "score"
+    assert main(["drive", "--dry-run", "--order", "similarity"]) == 0
+    assert seen[-1].order == "similarity"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["drive", "--order", "size"])
+    assert "--order {score,similarity}" in _drive_help(capsys)
+
+
+@pytest.mark.parametrize("argv", [
+    ["--session", "readability"], ["--land-held", "spike012-*"]])  # fmt: skip
+def test_order_similarity_refusals(argv, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--order", "similarity", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "--order similarity" in err, err
+    assert seen == []
