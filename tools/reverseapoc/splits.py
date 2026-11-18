@@ -52,12 +52,13 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import asm, asmclass, mechanics
+from . import asm, asmclass, locate, mechanics
+from .callgraph import WALKED_KINDS
 from .functions import KIND_GAME, KIND_RUNTIME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, SRC_PTR1632
 from .mechanics import AsmRow
 from .status import MATCHED
-from .x86 import Insn, is_filler
+from .x86 import Insn, is_alignment_filler, is_filler
 
 if TYPE_CHECKING:
     from .check import ExeInputs
@@ -360,12 +361,17 @@ def splits_json(pairs: Sequence[SplitPair], exes: Sequence[str]) -> dict[str, An
 
 # ---- interior branches: suspected bad splits (`mechanics interior`) ----
 #
-# A game row whose call or jump lands strictly inside another row (not on its start) points at
-# a wrong boundary: no C source of one function branches into the middle of another, so neither
-# row can match as cut. Each such branch proposes one fix:
+# A game row whose call or jump lands strictly inside another game or thunk row (not on its
+# start) points at a wrong boundary: no C source of one function branches into the middle of
+# another, so neither row can match as cut. Runtime and data-in-code rows are not targets, as in
+# callgraph's mid-row references (WALKED_KINDS): a Watcom library routine may have several
+# entries, and functions.csv does not cut runtime rows. callgraph reports mid-row pointer
+# fixups; this report reads the relative calls and jumps, which carry no fixup. Each such
+# branch proposes one fix:
 #
-# - `split`: a call, or a jmp that is its row's first real instruction (a tail-jump stub such
-#   as tacp's func_000AF170), lands on a function entry, so the target row holds a missed split;
+# - `split`: a call, or a tail-jump stub (a row whose first real instruction is a jmp followed
+#   only by alignment filler, such as tacp's func_000AF170), lands on a function entry, so the
+#   target row holds a missed split;
 # - `merge`: any other jump lands on a label of the function it belongs to, so the source row,
 #   the target row and every row between them are one function. Merge spans that share a row
 #   are one merge.
@@ -374,7 +380,7 @@ def splits_json(pairs: Sequence[SplitPair], exes: Sequence[str]) -> dict[str, An
 # boundaries are proven by the gate, so the branch crosses two real functions (a shared tail,
 # say) and the owner looks at it; no change is proposed.
 #
-# Two kinds of branch are noise and only counted (`skipped`): one decoded from a row that
+# Two kinds of branch are noise and only counted (`skipped`): one from or into a row that
 # carries a CONTENT_TAGS tag (data read as code: text decodes as jcc, since bytes 0x70 to 0x7F
 # are the letters p to DEL), and one whose destination is no instruction start of the decoded
 # target row (a real branch lands on an instruction). The fixes are proposals for the owner,
@@ -421,18 +427,13 @@ class InteriorReport:
     exe: str
     suspects: tuple[Interior, ...]  # by source row, then site
     fixes: tuple[Fix, ...]  # splits by address, then merges by first row
-    skipped: int  # noise: branches from content-tagged rows or into no instruction start
+    skipped: int  # noise: branches from or into content-tagged rows, or into no insn start
 
 
 def _branch_word(insn: Insn) -> str:
     if insn.is_call:
         return CALL
     return JCC if insn.is_conditional else JMP
-
-
-def _row_at(rows: Sequence[FunctionRow], starts: Sequence[int], va: int) -> FunctionRow | None:
-    i = bisect.bisect_right(starts, va) - 1
-    return rows[i] if i >= 0 and va < rows[i].end else None
 
 
 def _merges(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -464,14 +465,18 @@ def _fixes(exe: str, suspects: Sequence[Interior], starts: Sequence[int],
     return tuple(found)
 
 
-def _proposal(insn: Insn, first: Insn) -> str:
-    """SPLIT for a call or a tail-jump stub (a jmp that is the row's first real instruction),
-    else MERGE."""
-    stub = insn is first and insn.is_jump and not insn.is_conditional
-    return SPLIT if insn.is_call or stub else MERGE
+def _stub(items: Sequence[asm.Item]) -> Insn | None:
+    """The jmp of a tail-jump stub: the row's first real instruction is an unconditional jmp
+    and only alignment filler follows it."""
+    insns = _real_insns(items)
+    if not insns or not insns[0].is_jump or insns[0].is_conditional:
+        return None
+    rest = items[list(items).index(insns[0]) + 1 :]
+    filler = all(isinstance(item, Insn) and is_alignment_filler(item) for item in rest)
+    return insns[0] if filler else None
 
 
-def _interior(exe: str, row: FunctionRow, insn: Insn, first: Insn, target: FunctionRow,
+def _interior(exe: str, row: FunctionRow, insn: Insn, stub: Insn | None, target: FunctionRow,
               statuses: Mapping[int, str]) -> Interior:  # fmt: skip
     return Interior(
         exe=exe, source=row.start, source_unit=row.unit, site=insn.va - row.start,
@@ -479,13 +484,42 @@ def _interior(exe: str, row: FunctionRow, insn: Insn, first: Insn, target: Funct
         offset=insn.branch_target - target.start,
         touching=row.end == target.start or target.end == row.start,
         source_status=statuses.get(row.start, NONE),
-        target_status=statuses.get(target.start, NONE), fix=_proposal(insn, first))  # fmt: skip
+        target_status=statuses.get(target.start, NONE),
+        fix=SPLIT if insn.is_call or insn is stub else MERGE)  # fmt: skip
 
 
-def _insn_starts(decoded: Mapping[int, tuple[FunctionRow, _Decoded]]) -> dict[int, set[int]]:
-    """Each decoded row's instruction addresses, by row start."""
-    return {start: {item.va for item in dec.items if isinstance(item, Insn)}
-            for start, (_row, dec) in decoded.items()}  # fmt: skip
+class _Facts:
+    """The decoded rows and the per-row facts the report needs, each computed once and only
+    for the rows a branch reaches."""
+
+    def __init__(self, exe: ExeInputs) -> None:
+        self.decoded = _decode_all(exe)
+        self.rows = locate._Rows(exe.rows)
+        self._data: dict[int, bool] = {}
+        self._heads: dict[int, frozenset[int]] = {}
+
+    def target(self, row: FunctionRow, va: int) -> FunctionRow | None:
+        """The game or thunk row other than `row` that `va` lies strictly inside of."""
+        target = self.rows.containing(va)
+        if target is None or target.kind not in WALKED_KINDS or va == target.start:
+            return None
+        return None if target.start == row.start else target
+
+    def data(self, start: int) -> bool:
+        """The decoded row at `start` carries a CONTENT_TAGS tag."""
+        if start not in self._data:
+            self._data[start] = bool(_content(*self.decoded[start]))
+        return self._data[start]
+
+    def lands(self, start: int, va: int) -> bool:
+        """`va` is an instruction start of the decoded row at `start`."""
+        if start not in self._heads:
+            items = self.decoded[start][1].items
+            self._heads[start] = frozenset(i.va for i in items if isinstance(i, Insn))
+        return va in self._heads[start]
+
+    def noise(self, row: FunctionRow, target: FunctionRow, va: int) -> bool:
+        return self.data(row.start) or self.data(target.start) or not self.lands(target.start, va)
 
 
 def interior_branches(exe: ExeInputs, *,
@@ -494,27 +528,21 @@ def interior_branches(exe: ExeInputs, *,
     the proposed fixes. `statuses` maps a row start to its status.csv status: shown on each
     suspect, and a fix touching a matched row is REVIEW."""
     statuses = statuses or {}
-    rows = sorted(exe.rows, key=lambda row: row.start)
-    starts = [row.start for row in rows]
-    decoded = _decode_all(exe)
-    heads = _insn_starts(decoded)
+    facts = _Facts(exe)
     suspects, skipped = [], 0
-    for row, dec in sorted(decoded.values(), key=lambda entry: entry[0].start):
+    for row, dec in sorted(facts.decoded.values(), key=lambda entry: entry[0].start):
         if row.kind != KIND_GAME:
             continue
-        data = bool(_content(row, dec))
-        real = _real_insns(dec.items)
-        for insn in real:
-            if insn.branch_target is None:
+        stub = _stub(dec.items)
+        for insn in _real_insns(dec.items):
+            target = None if insn.branch_target is None else facts.target(row, insn.branch_target)
+            if target is None:
                 continue
-            target = _row_at(rows, starts, insn.branch_target)
-            if target is None or target.start in (insn.branch_target, row.start):
-                continue
-            if data or insn.branch_target not in heads.get(target.start, {insn.branch_target}):
+            if facts.noise(row, target, insn.branch_target):
                 skipped += 1
                 continue
-            suspects.append(_interior(exe.stem, row, insn, real[0], target, statuses))
-    fixes = _fixes(exe.stem, suspects, starts, statuses)
+            suspects.append(_interior(exe.stem, row, insn, stub, target, statuses))
+    fixes = _fixes(exe.stem, suspects, facts.rows.starts, statuses)
     return InteriorReport(exe.stem, tuple(suspects), fixes, skipped)
 
 
