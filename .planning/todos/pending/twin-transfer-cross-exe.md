@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** The count is recorded; a test proves a twin lands through the gate; a night reports twin landings separately from agent matches.
 
 **Effort / value.** S-M / high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #5; docs/research/notes-ideas-llm-decomp-research.md #5; docs/workflow.md (Select, line 44).
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U13, merge d8a4b11d): `reverseapoc twins` is built and a test lands a twin through the gate. Dry run: 84 unmatched rows with a matched twin, 72 candidates, 67 pass on the host. Left: the owner's go to land them.

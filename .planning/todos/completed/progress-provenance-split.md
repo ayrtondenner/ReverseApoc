@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** The page shows the split; the numbers match status.csv and attempts.jsonl.
 
 **Effort / value.** S / med. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #12.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U8): 'Who made the matches' on the page; agrees with status.csv and stats.

@@ -23,3 +23,7 @@ the narrower one.
 
 **Done when:** a killed check's leftover temp file no longer stops a night, and any other file
 in `checks/` still does.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U1): a `checks/.NNNN.json.<hex>.tmp` left by an in-flight check is quarantined without stopping the night; other files still stop it. Other wrapper temp files: new todo wrapper-temp-files-other.

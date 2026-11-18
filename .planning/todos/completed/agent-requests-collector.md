@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** The command lists grouped requests with counts and example paths.
 
 **Effort / value.** S / med. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #9.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U7): `reverseapoc requests` (316 lines, 161 groups on 2026-11-18).

@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** A test check on a two-run mismatch prints both runs and their classes; the skill names the command; a held A/B shows whether it raises the match rate at 64-255 B.
 
 **Effort / value.** M / high. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #1, #8; docs/research/notes-ideas-llm-decomp-research.md #2.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U6, merge a326861d): `attempt diff`, the class line and the skill text (9443f1c7) are in. Left: the held A/B at 64-255 B.

@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** A test shows a hint in the pack; the skill tells agents hints come from the owner.
 
 **Effort / value.** S / med-high. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #5.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U10, merge 6b5296f4): config/hints/<exe>.toml in the pack; skill text 9443f1c7. Follow-up: todo hint-file-preflight.

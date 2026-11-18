@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** stats --run shows the correction and its reason; the paper's errata table is generated from it.
 
 **Effort / value.** S-M / med-high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #7.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U7): progress/errata.toml, applied by `stats --run` and listed in JSON.

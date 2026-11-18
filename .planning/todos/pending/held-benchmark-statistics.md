@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** stats --compare prints intervals and the paired test; a pre-registered comparison is run once.
 
 **Effort / value.** M / high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #3; docs/research/notes-ideas-agentic-projects.md #6.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U7): config/benchmarks/held-v1.txt (60 picks, seed 20261118) and `stats --compare` with Wilson intervals and exact McNemar are built. Left: one pre-registered comparison run; and a ruling on picks matched after the freeze (copy without them, or a driver skip option).

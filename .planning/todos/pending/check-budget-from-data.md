@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** `stats` prints the curves; the new budget is justified in docs/model-routing.md with the numbers.
 
 **Effort / value.** S / med. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #7; docs/research/notes-ideas-tooling-reproducibility.md #8; docs/research/notes-ideas-llm-decomp-research.md #3.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U7): `stats` prints check curves; docs/model-routing.md 'The check budget' argues for 15. Left: the owner's ruling (D-07) to change CHECK_BUDGET and MAX_CHECK_RUNS from 25 to 15 (change set in that paragraph).

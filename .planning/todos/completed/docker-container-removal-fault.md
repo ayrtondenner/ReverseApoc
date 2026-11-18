@@ -22,3 +22,7 @@ docs/model-routing.md if the fault tracks the number of parallel sessions.
 
 **Done when:** a fake docker that fails `rm -f` once then succeeds no longer stops a night, and
 one that keeps failing still does.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U1): any failed `docker rm -f` is retried; only a container still listed after the last wait stops the night.

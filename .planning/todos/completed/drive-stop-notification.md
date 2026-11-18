@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** A test fires the notifier on a fake stop; docs name the setting.
 
 **Effort / value.** S / low-med. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #13.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U2): REVERSEAPOC_NOTIFY runs on STOPPED/ENDED; values cut to safe characters after a security review (d3d2b0bd).

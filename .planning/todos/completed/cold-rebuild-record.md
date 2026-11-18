@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** The record appears on the progress page for the latest verified commit.
 
 **Effort / value.** M / med. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #11.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U8): progress/verifications.jsonl, shown on the page; docs/workflow.md 'Recording a verification'.

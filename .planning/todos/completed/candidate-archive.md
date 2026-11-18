@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** The archive exists for near-miss rows; search seeds from it.
 
 **Effort / value.** M / med. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #9.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U12): build/batch/archive/<exe>/<addr>.jsonl seeds `reverseapoc search`.

@@ -20,3 +20,7 @@ behaves as today.
 
 **Done when:** resuming a held run whose arm already spent half its budget launches only the
 other half, and the budget line names the earlier spend.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U3): a resumed hold run budgets only what is left and names the earlier spend.

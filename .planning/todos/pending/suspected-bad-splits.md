@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** A report lists suspects; one confirmed fix is landed or the list is shown to be noise.
 
 **Effort / value.** S-M / med-high. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #4.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U15): `reverseapoc mechanics interior` reports 114 UFO2P / 88 TACP suspects, none on a matched row; the proposed functions.csv splits and merges are listed in the merge report. Left: the owner's rulings on those fixes.

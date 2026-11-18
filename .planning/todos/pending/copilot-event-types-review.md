@@ -27,3 +27,7 @@ wording in a comment, and re-run the review for every new CLI version (docs/lear
 
 **Done when:** every session-family event type is listed in copilotjson as known, shaped or
 deliberately unknown, and a full Copilot night runs with no audit stop.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U5): all 179 schema event types classified; replay of 436 recorded sessions gives 0 event-type stops. Left: a full Copilot night with no audit stop. Note: a test pins the installed CLI to 1.0.111, so a Copilot self-update turns the host suite red until re-reviewed.

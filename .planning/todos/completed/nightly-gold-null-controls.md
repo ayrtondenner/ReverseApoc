@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** A test with a broken checker refuses the night; the run record holds the control results.
 
 **Effort / value.** S / high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #2.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U2, merge 070b7b7f): preflight runs a gold and a null control through `attempt check`; the STARTED record carries the result.

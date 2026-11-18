@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** `drive --dry-run` shows the similarity order; a held comparison against score order is recorded in docs/model-comparison.md.
 
 **Effort / value.** M / high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #4; docs/research/notes-ideas-agentic-projects.md #2; docs/workflow.md (Select).
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U4): `drive --order similarity` is built (cross-EXE ratios; pass order D-08 still dominates). Left: the held comparison run, and cross-EXE look-alikes inside the pack (todo cross-exe-lookalikes-in-pack). Owner question: apply similarity across passes (D-08)?

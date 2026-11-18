@@ -18,3 +18,7 @@ contain.
 
 **Done when:** a Copilot stray's record says "(copilot audit)" and the containment logic still
 skips marked reasons.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U1, merge 355753f8): each harness's stray reason carries its own mark; containment skips every mark.

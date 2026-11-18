@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-re
 **Done when.** search reports matches found by rewrites on the near-miss set, or a documented null result.
 
 **Effort / value.** M / medium. Evidence and sources: docs/research/notes-ideas-llm-decomp-research.md #8.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U12, merge 54e59508): the rewrite axis is built; documented null result on 5 near-miss rows (docs/learnings.md 2026-11-18). The full near-miss measurement remains open in the curve gate.

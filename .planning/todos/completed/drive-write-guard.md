@@ -23,3 +23,7 @@ the drive's own sessions are not affected (they run with their own settings). A 
 
 **Done when:** with a fake live lock, an Edit under `tools/` and `uv run pytest` in the checkout
 are refused with that message, and both are allowed again once the lock is gone.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U9, merge 82719c21): the always hook refuses checkout writes and test runs under a live drive lock, default deny, after a security review.

@@ -25,3 +25,7 @@ had 11 recorded sessions that day, 1 matched (`tacp func_000A68E0`, run 20261116
 
 **Done when:** a Sonnet session no longer writes outside its allowlist in a short run, and
 quota.toml carries its measured cost.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U5): prompt forbids scratch copies; quota.toml Sonnet = 25.4 credits/session (11 records). Left: a short Sonnet validation run (credits), and the owner's keep/drop ruling on the arm.

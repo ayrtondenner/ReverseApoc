@@ -35,3 +35,7 @@ What is left: `REFUSED_HOLDING` still holds `pr_arr_two_two_small` (c2 c2 h h) a
 **A skill's wording: closed by 07.2-14.** `.claude/skills/watcom-readability/SKILL.md:41` no longer says the order of declarations decides the stack slots, through `writing-skills`, RED first (`3d0a8bf1`). `.claude/skills/watcom-decomp/SKILL.md:68` already states the measured rule and needs no change (07.2-14's SUMMARY hands 07.2-09 "none").
 
 **How to measure it.** Use the converter-curve copy, `.planning/converter-curve/measure_curve.py`, with the matched-row control over the exact rows; 07.2-14 measured point 16 there.
+
+## Resolution (2026-11-18)
+
+Closed in batch 2026-11-18 (U12) as a documented partial: both refused frames are proven unreachable by a shape rule (13 pr_nb_ probe frames). Follow-up: todo spill-short-artifact.

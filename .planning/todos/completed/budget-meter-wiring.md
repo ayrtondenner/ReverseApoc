@@ -35,3 +35,7 @@ re-calibrated whenever the owner sends a before and after reading of a run that 
 itself. The sessions' own `seven_day.utilization` (rate_limit_event) is the whole account's bar:
 use it only when nothing else draws on the plan, and read it as about one point of jitter
 (the newest transcript can lag another session's reading).
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U3): meters.budget_meter is the drive's meter seam; Codex and agy plans say no_meter.

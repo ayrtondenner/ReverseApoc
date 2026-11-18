@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** A test submits the same C twice and gets the cached verdict; stats counts the repeats.
 
 **Effort / value.** S / low-med. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #12; docs/research/notes-ideas-llm-decomp-research.md #3.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U6): a repeated C gets the cached verdict and uses no check; stats counts repeats.

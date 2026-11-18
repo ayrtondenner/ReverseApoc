@@ -15,3 +15,7 @@ remaining Claude result was clean. Do (test first): before the reset, copy the s
 session's transcript and stderr to `build/driver/<run>/stop/` and name that path, the arm and
 the classified signal (api_retry code, rate_limit status/errorCode, failure text) in the STOPPED
 record's detail and on the console.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U1): the stopping session's transcript is copied to build/driver/<run>/stop/ and named in the STOPPED detail with the stream's signals.

@@ -19,3 +19,7 @@ not in the queue, and the drive refused at start until they were removed.
 
 **Done when:** a dry run writes a picks file that a following `--hold --picks FILE` drive
 accepts without refusal.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U4, merge 9b458157): `drive --dry-run --near-miss --write-picks FILE [--max-picks N]`.

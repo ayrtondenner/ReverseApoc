@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-re
 **Done when.** Generated table; packs include the callee signatures.
 
 **Effort / value.** M / medium. Evidence and sources: docs/research/notes-ideas-llm-decomp-research.md #9.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U10): `reverseapoc signatures EXE` and the pack's Callee signatures section.

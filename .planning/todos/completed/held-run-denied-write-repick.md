@@ -20,3 +20,7 @@ sessions a stop really cut short (an interrupt, another arm's guardrail).
 
 **Done when:** a hold-run test with a Copilot denied-write session shows the function attempted
 once by that arm, and a resumed hold run does not pick it again.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U3, merge b68c306e).

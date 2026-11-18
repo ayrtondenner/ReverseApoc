@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-re
 **Done when.** A generated header set; a held A/B on functions that touch those structs.
 
 **Effort / value.** L / high. Evidence and sources: docs/research/notes-ideas-llm-decomp-research.md #7.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U11, merge 2d7b0f9d): `reverseapoc structs` and the pack's Struct shapes section (142 UFO2P / 180 TACP shapes). Left: the held A/B on functions touching them.

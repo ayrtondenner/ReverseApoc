@@ -85,3 +85,7 @@ Before building:
 
   The Haiku arm's `max_workers` went from 4 to 10 for the owner's 5-hour spend of the month's
   credits.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U5): code side covered; closes once the two live runs in copilot-event-types-review and copilot-sonnet-scratch-files pass.

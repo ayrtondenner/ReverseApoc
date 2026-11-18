@@ -19,3 +19,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 ## Unblocked (2026-11-18)
 
 The owner put the 1997 disc images in `C:\Users\Ayrton\Documents\x-com-apocalypse\`, outside the repo: two byte-identical ISOs plus a MODE1/2352 bin+cue. Inside each ISO, `XCOM3/UFOEXE/UFO2P.EXE` and `XCOM3/TACEXE/TACP.EXE` hash to the `[[cd_builds]]` SHA-1s in `config/targets.toml`. `UFO2P4.EXE` and `TACP4.EXE` hash to our `orig/` files.
+
+## Resolution (2026-11-18)
+
+Done in batch 2026-11-18 (U13): `ingest --cd` (ISO and MODE1/2352), `reverseapoc cd-map`, committed config/<exe>/cd-map.csv (UFO2P 632 of 1,892 rows mapped, TACP 660 of 1,874). OpenApoc's FUN_0005faf0 has no masked twin; installed func_0005F830 is its counterpart by shape; data offsets carry over (all but 258 bytes equal).

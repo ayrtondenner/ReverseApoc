@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-proje
 **Done when.** The picker skips board rows; the progress page lists the board; a rule says when a row returns.
 
 **Effort / value.** S-M / high. Evidence and sources: docs/research/notes-ideas-agentic-projects.md #3.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U4 + U8): config/handoff.csv, the picker skip and the page listing are built. Left: the owner's retirement threshold N and the first rows.

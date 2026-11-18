@@ -15,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-re
 **Done when.** A dated report in docs/research and a paragraph in the paper's threats section.
 
 **Effort / value.** S / medium (high for the paper). Evidence and sources: docs/research/notes-ideas-llm-decomp-research.md #10.
+
+## Status (2026-11-18)
+
+Status (batch 2026-11-18, U14): docs/research/leakage-controls.md (contamination ledger, pre-registered recall probe, draft threats paragraph). Left: the probe run, and the paper's threats paragraph.
