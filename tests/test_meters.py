@@ -363,3 +363,80 @@ def test_verb_prints_text_by_default(tmp_path, monkeypatch, capsys):
     assert cli.main(["meters", "--source", "openrouter"]) == 0
     out = capsys.readouterr().out
     assert "openrouter" in out and "unavailable: OPENROUTER_API_KEY is not set" in out
+
+
+# ---- todo budget-meter-wiring: the drive's meter seam ----
+
+
+def _log(repo: Path, records: list[dict]) -> None:
+    """attempts.jsonl under `repo` holding `records` (only the fields the meter reads)."""
+    from reverseapoc import driver
+
+    path = repo / driver.ATTEMPT_LOG
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+
+
+def _attempt(harness: str, backend: str, model: str, **figures) -> dict:
+    return {"kind": "attempt", "harness": harness, "backend": backend, "model_requested": model,
+            "cost_usd": 0.0, **figures}  # fmt: skip
+
+
+def test_the_budget_meter_reads_the_copilot_arms_own_credits(tmp_path):
+    """A Copilot arm's reading is the credits its records carry (each session's usage file):
+    a running total in `credits`, other arms' records and other lines left out."""
+    _log(tmp_path, [_attempt("copilot", "github", "claude-haiku-5.5", credits=2.5),
+                    _attempt("copilot", "github", "claude-haiku-5.5", credits=3.0),
+                    _attempt("copilot", "github", "claude-sonnet-5.5", credits=40.0),
+                    {"kind": "run", "event": "ENDED"}])  # fmt: skip
+    reading = meters.budget_meter(tmp_path)("copilot-haiku-5-5")
+    assert (reading.used, reading.unit) == (5.5, "credits")
+
+
+def test_the_budget_meter_reads_a_claude_arms_week_from_its_cost(tmp_path):
+    """A Claude arm's `%week` is its records' cost_usd at $17.73 a point (quota.toml)."""
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73),
+                    _attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=8.865),
+                    _attempt("claude", "anthropic", "claude-opus-5-5", cost_usd=100.0)])
+    reading = meters.budget_meter(tmp_path)("claude-haiku-5-5")
+    assert reading.unit == "%week" and reading.used == pytest.approx(1.5)
+    assert meters.budget_meter(tmp_path / "none")("claude-haiku-5-5").used == 0
+
+
+def test_the_budget_meter_reads_openrouter_live(tmp_path):
+    """An OpenRouter arm's reading is the credits API's total usage, in dollars; a failed read
+    is no reading."""
+    body = json.dumps({"data": {"total_credits": 20.0, "total_usage": 7.25}}).encode()
+    keyed = _seams(tmp_path, env={"OPENROUTER_API_KEY": _KEY}, fetch=lambda url, headers: body)
+    reading = meters.budget_meter(tmp_path, keyed)("deepseek-flash")
+    assert (reading.used, reading.unit) == (7.25, "$")
+    assert meters.budget_meter(tmp_path, _seams(tmp_path))("deepseek-flash") is None
+
+
+def test_the_budget_meter_reads_nothing_where_no_meter_moves(tmp_path):
+    """Codex (--ephemeral sessions write no rollout), agy, and an arm with no quota entry: no
+    reading, so a budget holds by its session cap alone."""
+    meter = meters.budget_meter(tmp_path, _seams(tmp_path))
+    assert [meter(arm) for arm in ("gpt-6.1-terra", "gemini-flash", "glm-5.3")] == [None] * 3
+
+
+def test_the_drives_default_meter_seam_is_the_budget_meter(tmp_path):
+    from reverseapoc import driver
+
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73)])
+    seams = driver.default_seams(tmp_path)
+    assert seams.meter("claude-haiku-5-5").used == pytest.approx(1.0)
+    assert seams.meter("gpt-6.1-terra") is None
+
+
+def test_an_unusable_table_mid_night_is_no_reading(tmp_path, monkeypatch):
+    """refuse_budgets read quota.toml and backends.toml before the night; one that turns
+    unusable during it gives no reading (the session cap holds), never a stopped night."""
+    from reverseapoc import quota
+
+    def broken():
+        raise quota.QuotaError("quota.toml: made up")
+
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73)])
+    monkeypatch.setattr(quota, "load_quota", broken)
+    assert meters.budget_meter(tmp_path)("claude-haiku-5-5") is None

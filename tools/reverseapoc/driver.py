@@ -2376,7 +2376,12 @@ def hold_progress(log: Path, run: str) -> tuple[frozenset[Key], dict[Key, int]]:
     hold-run attempt record that `_hold_counted` wrote (abort_reason null or timeout: HOLD_EXACT,
     PARTIAL, GAVE_UP). Not counted, so attempted again: a GAVE_UP guardrail or tool record (the
     night's stop or its arm's cut the attempt short and reset its work), a transient abort, and
-    a session the stop killed, which left no record."""
+    a session the stop killed, which left no record. Todo held-run-denied-write-repick: a
+    Copilot arm's GAVE_UP guardrail record with a refused call (`hook_blocks`) counts, since such
+    a session ends on its own when its strays are writes Copilot denied (`_SessionEnded`, owner
+    ruling 2026-11-16: its arm goes on); a session another arm's stop or an interrupt cut short
+    is never recorded (`_audit`). The record does not tell that end from a Copilot breach that
+    also had a refused call (`_guardrail`, the night stopped), which counts too."""
     done: set[Key] = set()
     last: dict[Key, int] = {}
     for record in _log_records(log):
@@ -2384,10 +2389,27 @@ def hold_progress(log: Path, run: str) -> tuple[frozenset[Key], dict[Key, int]]:
             continue
         key = (record["exe"], int(record["start"], 16))
         last[key] = max(last.get(key, 0), record["attempt"])
-        if (record["kind"] == KIND_ATTEMPT and record.get("hold_run") is True
-                and record["abort_reason"] not in _CUT_SHORT):  # fmt: skip
+        if record["kind"] == KIND_ATTEMPT and record.get("hold_run") is True and not _cut_short(
+                record):  # fmt: skip
             done.add(key)
     return frozenset(done), last
+
+
+def is_arm_attempt(record: Mapping, arm: backends.Arm) -> bool:
+    """Todo resumed-held-run-budgets: `record` is a schema-3 attempt record of `arm`'s sessions
+    (its harness, backend and requested model)."""
+    return (record.get("kind") == KIND_ATTEMPT and record.get("harness") == arm.harness
+            and record.get("backend") == arm.backend
+            and record.get("model_requested") == arm.model)  # fmt: skip
+
+
+def _cut_short(record: Mapping) -> bool:
+    """A hold-run attempt record a stop cut short (`hold_progress`): a tool record, or a
+    guardrail one but a Copilot session's with a refused call (a denied write's end)."""
+    if (record["abort_reason"] == GUARDRAIL and record.get("harness") == backends.COPILOT
+            and record["hook_blocks"] > 0):  # fmt: skip
+        return False
+    return record["abort_reason"] in _CUT_SHORT
 
 
 def passes_of(log: Path, key: Key) -> int:
@@ -4109,7 +4131,12 @@ class _Night:
                         return self._cascade_end(pick, n, slot)
                 elif not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                     return None
-                outcome = self._settled(pick, n)
+                try:
+                    outcome = self._settled(pick, n)
+                except _SessionEnded:  # todo held-run-denied-write-repick: the arm's attempt
+                    if not self.config.hold:
+                        raise
+                    return self._hold_done(key, GAVE_UP)
                 if outcome == ARM_WAITING:  # 261112-fdt: a usage limit; the row takes it on
                     outcome = self._handed_off(pick, n)
                 if outcome in (ARM_WAITING, ARM_CAPPED):
@@ -7194,8 +7221,8 @@ class Seams:
     copilot_argv: Callable[..., Sequence[str]] = Deps.copilot_argv
     # Owner ruling 2026-11-11: the real wrapper a Codex session's broker runs (Deps's).
     broker_wrapper: Callable[[], Sequence[str]] = Deps.broker_wrapper
-    # Todo budget-runs-and-contributors: the night's meter seam (Deps.meter's); the usage
-    # meters are wired here when they land.
+    # Todo budget-runs-and-contributors: the night's meter seam (Deps.meter's); todo
+    # budget-meter-wiring: default_seams wires meters.budget_meter here.
     meter: Callable[[str], MeterReading | None] = _no_meter
 
 
@@ -8424,13 +8451,20 @@ def refuse_budgets(options: DriveOptions,
     arm's backends.toml max_sessions), before any command. Refused for an arm that is no arm of
     the night (`night_arms`, or the cascade's), an arm budgeted twice or also given an
     --arm-cap, an arm with no quota entry, a unit its entry has no figure for, a budget that
-    buys no session, and an unusable quota.toml."""
+    buys no session, and an unusable quota.toml. Todo resumed-held-run-budgets: on a hold run,
+    less what the arm's records under its run id (`<run>-<arm>` with several arms) in the
+    committed attempts.jsonl already spent (quota.spent), so a resumed run spends only what is
+    left; a fresh run has no such record."""
     if not options.arm_budgets:
         return ()
     night = [name for name, _ in night_arms(options)] or list(
         backends.routing_arms(options.routing))  # fmt: skip
     names = [name for name, _ in options.arm_budgets]
     capped = dict(options.arm_caps)
+    try:
+        records = list(_log_records(options.repo / ATTEMPT_LOG)) if options.hold else []
+    except DriverError as exc:
+        raise Refused("arm budget", f"--arm-budget: {exc}") from exc
     try:
         table = quota.load_quota()
         sized = []
@@ -8441,7 +8475,11 @@ def refuse_budgets(options: DriveOptions,
             if name not in night:
                 raise quota.QuotaError(f"{name} names no arm of this run "
                                        f"({', '.join(night) or 'no --arm or --cascade'})")
-            sized.append(quota.size(name, budget, table, max_sessions=arms[name].max_sessions))
+            run = f"{options.run_id}-{name}" if len(night) > 1 else options.run_id
+            mine = [r for r in records if r["run"] == run and is_arm_attempt(r, arms[name])]
+            spent = quota.spent(table[name], budget.unit, mine, run) if name in table else None
+            sized.append(quota.size(name, budget, table, max_sessions=arms[name].max_sessions,
+                                    spent=spent))  # fmt: skip
     except quota.QuotaError as exc:
         raise Refused("arm budget", f"--arm-budget: {exc}") from exc
     return tuple(sized)
@@ -8538,7 +8576,9 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          night_model=options.night_model, hold=options.hold,
                          land_held=options.land_held, arm_table=arms,
                          arms=lanes, routing=options.routing,
-                         arm_caps=options.arm_caps, budgets=options.arm_budgets,
+                         arm_caps=options.arm_caps,
+                         # todo resumed-held-run-budgets: what is left of each budget
+                         budgets=tuple((sizing.arm, sizing.left) for sizing in sizings),
                          near_miss=tuple(name for name, _ in options.near_miss_arms))  # fmt: skip
     for line in _budget_lines(options, sizings):  # todo budget-runs-and-contributors
         console(options, seams)(line)
@@ -10063,7 +10103,10 @@ def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Cand
 
 def default_seams(repo: Path) -> Seams:
     """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
-    (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
+    (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH, and (todo
+    budget-meter-wiring) meters.budget_meter as the night's meter seam."""
+    from .meters import budget_meter  # meters imports this module
+
     claude = _which("claude")
     codex = _which(CODEX_EXE)  # 07.2-13
     agy = _which(AGY_EXE)  # 07.2-15
@@ -10080,4 +10123,5 @@ def default_seams(repo: Path) -> Seams:
                                                                   **values),
                  copilot=copilot,
                  copilot_argv=lambda prompt, **values: build_copilot_argv(
-                     prompt, copilot=copilot, **values))  # fmt: skip
+                     prompt, copilot=copilot, **values),
+                 meter=budget_meter(repo))  # fmt: skip

@@ -12,13 +12,18 @@ amount is a Decimal, so $0.90 at $0.30 a session is 3 sessions, never a float's 
 The plans are named in the file and nowhere here: a plan with a `credit_usd` lets a `$` budget
 and a `credits` budget convert into each other. An arm of quota.toml need not be in
 backends.toml (and the reverse); only an arm given a budget must have an entry.
+
+Todo budget-meter-wiring: each plan names the `meter` a night holds a budget against between
+launches (METER_UNITS: the unit it reads), or in `no_meter` why none moves during a night, and
+the budget line says which. Todo resumed-held-run-budgets: `spent` is what an arm's records
+under a resumed run already spent, in the budget's unit, and `size` buys only what is left.
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
@@ -38,8 +43,15 @@ _FORMS = {WEEK: re.compile(_NUMBER + "%week"), FIVE_HOUR: re.compile(_NUMBER + "
 _FORMS_SHOWN = "<p>%week, <p>%5h, $<usd> or <n>credits"
 _ARM_KEYS = {"plan", "source", "read", "estimate", "matched", "sessions", "rate_source",
              *_FIELDS}  # fmt: skip
-_PLAN_KEYS = {"name", "credit_usd"}
+_PLAN_KEYS = {"name", "credit_usd", "meter", "no_meter", "usd_per_week_point", "point_source"}
 _TENTH = Decimal("0.1")
+_STEP = Decimal("0.0001")  # a spend and what is left, shown and held to a ten-thousandth
+
+# Todo budget-meter-wiring: a plan's `meter` and the unit it reads: the OpenRouter credits API
+# (the account's whole usage, in dollars), the arm's records' `credits` (each Copilot session's
+# usage file), the arm's records' API-equivalent `cost_usd` over the plan's usd_per_week_point.
+METER_OPENROUTER, METER_CREDITS, METER_COST = "openrouter", "credits", "cost_usd"
+METER_UNITS = {METER_OPENROUTER: USD, METER_CREDITS: CREDITS, METER_COST: WEEK}
 
 BY_BUDGET, BY_MAX_SESSIONS = "budget", "max_sessions"  # which bound set the cap
 
@@ -85,6 +97,19 @@ class Plan:
     id: str
     name: str
     credit_usd: Decimal | None = None
+    meter: str | None = None  # one of METER_UNITS; None: `no_meter` says why none reads live
+    no_meter: str | None = None
+    usd_per_week_point: Decimal | None = None  # a METER_COST plan's calibration
+    point_source: str | None = None  # where and when usd_per_week_point was measured
+
+    def meter_text(self) -> str:
+        """What the plan's meter reads, for the budget line."""
+        if self.meter == METER_OPENROUTER:
+            return "the OpenRouter credits API (the account's whole usage)"
+        if self.meter == METER_CREDITS:
+            return "the arm's records' credits (each session's usage file)"
+        return (f"the arm's records' cost_usd at ${format(self.usd_per_week_point, 'f')} a "
+                "point of the week")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -122,8 +147,20 @@ def _plan(name: str, table: object) -> Plan:
     if stray:
         raise QuotaError(f"unknown key {stray[0]!r} (keys: {', '.join(sorted(_PLAN_KEYS))})")
     credit = table.get("credit_usd")
+    meter, no_meter = table.get("meter"), table.get("no_meter")
+    if (meter is None) == (no_meter is None):
+        raise QuotaError("needs one of meter (the live meter a budget is held against: "
+                         f"{', '.join(METER_UNITS)}) and no_meter (why none reads live)")
+    if meter is not None and meter not in METER_UNITS:
+        raise QuotaError(f"meter {meter!r} is not one of {', '.join(METER_UNITS)}")
+    point = table.get("usd_per_week_point")
+    if meter == METER_COST and point is None:
+        raise QuotaError(f"meter {METER_COST} needs usd_per_week_point")
     return Plan(name, _text(table, "name"),
-                None if credit is None else _positive(credit, "credit_usd"))  # fmt: skip
+                None if credit is None else _positive(credit, "credit_usd"), meter,
+                None if no_meter is None else _text(table, "no_meter"),
+                None if point is None else _positive(point, "usd_per_week_point"),
+                None if point is None else _text(table, "point_source"))  # fmt: skip
 
 
 def _rate(table: Mapping) -> tuple[int | None, int | None, str | None]:
@@ -190,6 +227,88 @@ def load_quota(path: Path = QUOTA_TOML) -> dict[str, ArmQuota]:
 
 
 @dataclass(frozen=True)
+class Spent:
+    """Todo resumed-held-run-budgets: what an arm's `sessions` attempt records under `run`
+    already spent, `amount` in a budget unit, and `how` each was counted."""
+
+    run: str
+    sessions: int
+    amount: Decimal
+    how: str
+
+
+def _rounded(amount: Decimal, unit: str) -> str:
+    return _shown(amount.quantize(_STEP, rounding=ROUND_HALF_UP), unit)
+
+
+def _left(budget: Budget, spent: Spent | None) -> Decimal:
+    """The budget less the earlier spend, rounded down to _STEP (never more than is left)."""
+    if spent is None:
+        return budget.amount
+    return (budget.amount - spent.amount).quantize(_STEP, rounding=ROUND_FLOOR)
+
+
+def _figure(value: object) -> Decimal:
+    return Decimal(str(value))
+
+
+def _measured(entry: ArmQuota, unit: str, record: Mapping) -> tuple[Decimal, str] | None:
+    """The record's own figure in `unit` and what it is, or None when it has none: a Copilot
+    record's `credits` (null: its usage file named none), through credit_usd for dollars;
+    another record's `cost_usd` for dollars, or for the week over usd_per_week_point."""
+    plan = entry.plan
+    if "credits" in record:
+        credits = record["credits"]
+        if credits is None:
+            return None
+        if unit == CREDITS:
+            return _figure(credits), "their credits"
+        if unit == USD and plan.credit_usd is not None:
+            return _figure(credits) * plan.credit_usd, "their credits"
+        return None
+    if unit == USD:
+        return _figure(record["cost_usd"]), "their cost_usd"
+    if unit == WEEK and plan.usd_per_week_point is not None:
+        point = plan.usd_per_week_point
+        return (_figure(record["cost_usd"]) / point,
+                f"their cost_usd at ${format(point, 'f')} a point")  # fmt: skip
+    return None
+
+
+def _tally(entry: ArmQuota, unit: str, records: Sequence[Mapping]) -> tuple[Decimal, str]:
+    """What `records` spent in `unit` (each record's own figure, `_measured`, else the arm's
+    quota per session) and how they were counted. QuotaError when a record needs the quota
+    per session and the arm has none in `unit`."""
+    amount, measured, estimated, what = Decimal(0), 0, 0, ""
+    for record in records:
+        found = _measured(entry, unit, record)
+        if found is None:
+            amount, estimated = amount + _per_session(entry, unit), estimated + 1
+            continue
+        amount, measured, what = amount + found[0], measured + 1, found[1]
+    parts = [f"{measured} by {what}" if measured else "",
+             f"{estimated} at {_shown(_per_session(entry, unit), unit)} per session"
+             if estimated else ""]  # fmt: skip
+    return amount, ", ".join(part for part in parts if part)
+
+
+def spend(entry: ArmQuota, unit: str, records: Sequence[Mapping]) -> Decimal:
+    """Todo budget-meter-wiring: what the arm's attempt `records` spent in `unit` (`_tally`), the
+    running total a records meter reads."""
+    return _tally(entry, unit, records)[0]
+
+
+def spent(entry: ArmQuota, unit: str, records: Sequence[Mapping], run: str) -> Spent | None:
+    """What `records` (the arm's attempt records under `run`) spent in `unit` (`_tally`); None:
+    no record. QuotaError for a unit the arm has no figure for."""
+    if not records:
+        return None
+    _per_session(entry, unit)  # the unit must be the arm's even when every record measures it
+    amount, how = _tally(entry, unit, records)
+    return Spent(run, len(records), amount, how)
+
+
+@dataclass(frozen=True)
 class Sizing:
     """What one arm's budget buys tonight: `by_budget` sessions from floor(budget / per
     session), `sessions` the cap after the arm's max_sessions, and `bound` which one won."""
@@ -202,6 +321,32 @@ class Sizing:
     sessions: int
     bound: str
     max_sessions: int | None
+    spent: Spent | None = None  # todo resumed-held-run-budgets: the resumed run's earlier spend
+
+    @property
+    def left(self) -> Budget:
+        """What the night may spend: the budget less the run's earlier spend."""
+        if self.spent is None:
+            return self.budget
+        return Budget(_left(self.budget, self.spent), self.budget.unit)
+
+    def _spent_text(self) -> str:
+        if self.spent is None:
+            return ""
+        unit = self.budget.unit
+        return (f", {_rounded(self.spent.amount, unit)} spent earlier by {self.spent.sessions} "
+                f"sessions of run {self.spent.run} ({self.spent.how}), "
+                f"{_rounded(self.left.amount, unit)} left")  # fmt: skip
+
+    def _meter_text(self) -> str:
+        """Todo budget-meter-wiring: what holds the budget between launches."""
+        plan, unit = self.quota.plan, self.budget.unit
+        if plan.meter is None:
+            return f"no live meter ({plan.no_meter}), so the session cap alone holds it"
+        if METER_UNITS[plan.meter] != unit:
+            return (f"the meter reads {METER_UNITS[plan.meter]} ({plan.meter_text()}), not "
+                    f"{unit}, so the session cap alone holds it")  # fmt: skip
+        return f"between launches the meter reads {plan.meter_text()}"
 
     @property
     def expected(self) -> Decimal | None:
@@ -224,9 +369,10 @@ class Sizing:
                     if self.expected is None else
                     f"about {self.expected} expected matches ({entry.matched} of "
                     f"{entry.sessions} sessions, {entry.rate_source})")  # fmt: skip
-        return (f"budget {self.arm}: {self.budget} of {entry.plan.name} / "
+        return (f"budget {self.arm}: {self.budget} of {entry.plan.name}{self._spent_text()} / "
                 f"{_shown(self.per_session, self.budget.unit)} per session ({entry.source}"
-                f"{made}) -> {self.sessions} sessions ({bound}) -> {expected}")
+                f"{made}) -> {self.sessions} sessions ({bound}) -> {expected}; "
+                f"{self._meter_text()}")
 
     def doc(self) -> dict:
         """The dry run's JSON form of the line."""
@@ -239,7 +385,11 @@ class Sizing:
                 "max_sessions": self.max_sessions,
                 "expected_matches": None if self.expected is None else str(self.expected),
                 "rate": None if entry.sessions is None else [entry.matched, entry.sessions],
-                "rate_source": entry.rate_source}  # fmt: skip
+                "rate_source": entry.rate_source, "meter": self._meter_text(),
+                "spent": None if self.spent is None else {
+                    "run": self.spent.run, "sessions": self.spent.sessions,
+                    "amount": format(self.spent.amount.normalize(), "f"), "how": self.spent.how,
+                    "left": format(self.left.amount.normalize(), "f")}}  # fmt: skip
 
 
 def _per_session(entry: ArmQuota, unit: str) -> Decimal:
@@ -258,20 +408,25 @@ def _per_session(entry: ArmQuota, unit: str) -> Decimal:
 
 
 def size(arm: str, budget: Budget, table: Mapping[str, ArmQuota], *,
-         max_sessions: int | None) -> Sizing:  # fmt: skip
+         max_sessions: int | None, spent: Spent | None = None) -> Sizing:  # fmt: skip
     """The cap `budget` buys for `arm` tonight, at most `max_sessions` (its backends.toml
-    max_sessions; None: none). QuotaError for an arm with no entry in `table`, a unit it has no
-    figure for, or a budget that buys no session."""
+    max_sessions; None: none); todo resumed-held-run-budgets: less what `spent` (the resumed
+    run's records) already spent. QuotaError for an arm with no entry in `table`, a unit it has
+    no figure for, or a budget that buys no session."""
     entry = table.get(arm)
     if entry is None:
         raise QuotaError(f"arm {arm} has no quota entry in {QUOTA_TOML.name}, so a budget "
                          f"cannot size it (arms with one: {', '.join(table)})")
     per = _per_session(entry, budget.unit)
-    by_budget = int((budget.amount / per).to_integral_value(rounding=ROUND_FLOOR))
+    left = _left(budget, spent)
+    by_budget = int((left / per).to_integral_value(rounding=ROUND_FLOOR))
     if by_budget < 1:
+        earlier = ("" if spent is None else
+                   f" ({_rounded(spent.amount, budget.unit)} spent earlier by {spent.sessions} "
+                   f"sessions of run {spent.run})")  # fmt: skip
         raise QuotaError(f"budget {budget} for arm {arm} buys 0 sessions at "
-                         f"{_shown(per, budget.unit)} per session")  # fmt: skip
+                         f"{_shown(per, budget.unit)} per session{earlier}")  # fmt: skip
     if max_sessions is not None and max_sessions < by_budget:
         return Sizing(arm, budget, entry, per, by_budget, max_sessions, BY_MAX_SESSIONS,
-                      max_sessions)  # fmt: skip
-    return Sizing(arm, budget, entry, per, by_budget, by_budget, BY_BUDGET, max_sessions)
+                      max_sessions, spent)  # fmt: skip
+    return Sizing(arm, budget, entry, per, by_budget, by_budget, BY_BUDGET, max_sessions, spent)
