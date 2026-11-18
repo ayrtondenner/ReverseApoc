@@ -200,7 +200,7 @@ Each check prints one `PASS: ...` or `FAIL: ...` line, with no time stamp; the l
 
 It may run only the attempt wrapper's five forms (`hooks.ATTEMPT_FORMS`). Each runs against the view, so its check compiles the view unit with the view's `config/cflags.txt`:
 
-- `uv run --frozen reverseapoc attempt check`, at most 25 runs per attempt;
+- `uv run --frozen reverseapoc attempt check`, at most 15 runs per attempt;
 - `uv run --frozen reverseapoc attempt check --sweep`: a diagnostic that is never a match. When no stage-1 cell is perfect and the best one reaches 90% with its relocation check ok, a second stage (D-15) tries up to 24 more cells under 10.6. Either stage's hit is reported as `sweep hit: needs flags <spec>`, which feeds the flag rules below;
 - `uv run --frozen reverseapoc attempt asm` and `uv run --frozen reverseapoc attempt asm <NAME>` (another row of the same EXE);
 - `uv run --frozen reverseapoc attempt context`.

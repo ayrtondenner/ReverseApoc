@@ -420,7 +420,7 @@ def test_attempt_check_passes_exit_codes_and_logs(repo: Path, monkeypatch, capsy
     assert (line["reloc_ok"], line["bytes_ok"], line["splice_ok"]) == (True, True, True)
     assert line["sweep_hit"] is None
     out = capsys.readouterr().out
-    assert "1/25" in out and "checks/0001.json" in out
+    assert "1/15" in out and "checks/0001.json" in out
 
     runner.answer = attempt.Ran(1, json.dumps(_check_doc(ok=False, percent=87.5)), "")
     _new_c("second")
@@ -895,14 +895,14 @@ def test_attempt_check_budget(repo: Path, monkeypatch, capsys):
     """D-07: at most 25 check runs per attempt; the 26th is refused before anything runs."""
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=10.0)), 1))
     _reserve(repo, attempt.CHECK_BUDGET - 1, log=True)
-    assert attempt.CHECK_BUDGET == 25
+    assert attempt.CHECK_BUDGET == 15
     assert _run(["attempt", "check"]) == 1  # the 25th still runs
-    assert _lines(repo)[-1]["n"] == 25
+    assert _lines(repo)[-1]["n"] == 15
     capsys.readouterr()
     assert _run(["attempt", "check", "--sweep"]) == 2  # a sweep is a check run too
     assert len(runner.calls) == 1
     assert "check budget" in capsys.readouterr().err
-    assert len(_lines(repo)) == 25
+    assert len(_lines(repo)) == 15
     assert not (repo / "checks" / "0026.c").exists()
 
 
@@ -1019,8 +1019,8 @@ def test_attempt_check_prints_elapsed_seconds_and_checks_left(repo: Path, monkey
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=50.0)), returncode=1))
     assert _run(["attempt", "check"]) == 1
     head = capsys.readouterr().out.splitlines()[0]
-    assert "check 7/25, 41 s" in head
-    assert "18 left" in head
+    assert "check 7/15, 41 s" in head
+    assert "8 left" in head
 
 
 @pytest.mark.parametrize("notes", [None, "other.md", "../notes.md"])
@@ -1834,7 +1834,7 @@ def test_readlint_tool_error(readable: Path, monkeypatch, capsys):
     assert _run(["attempt", "check"]) == 2
     out = capsys.readouterr().out
     head = out.splitlines()[0]
-    assert "attempt check 1/25" in head and "(24 left)" in head and "exit 2 TOOL ERROR" in head
+    assert "attempt check 1/15" in head and "(14 left)" in head and "exit 2 TOOL ERROR" in head
     assert "  readlint: TOOL ERROR:" in out and "#ifdef" in out
     (line,) = _lines(readable.parent)
     assert (line["n"], line["exit"]) == (1, 2)
@@ -2016,14 +2016,14 @@ def test_note_cap_is_400():
 
 
 def test_refused_checks_leave_the_budget_whole(repo: Path, monkeypatch, capsys):
-    """D-01: thirty refused checks use none of the 25: the next real check is 1/25."""
+    """D-01: thirty refused checks use none of the 15: the next real check is 1/15."""
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     for _ in range(30):
         assert _run(["attempt", "check"], ready=False) == 2
     capsys.readouterr()
     assert _run(["attempt", "check"]) == 0
     head = capsys.readouterr().out.splitlines()[0]
-    assert head.startswith("attempt check 1/25") and "(24 left)" in head
+    assert head.startswith("attempt check 1/15") and "(14 left)" in head
     assert [line["n"] for line in _lines(repo)] == [1]
 
 

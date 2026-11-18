@@ -64,7 +64,7 @@ ESCALATE_AFTER_PASSES = 2  # Phase 7 D-09: two capped Opus passes, then Fable
 MAX_TURNS = 40  # D-07
 MAX_BUDGET_USD = 5  # D-06 (Phase 7 D-07: per Opus session), a runaway guard
 FABLE_BUDGET_USD = 12.5  # Phase 7 D-25: per Fable session
-MAX_CHECK_RUNS = 25  # D-07's /goal clause
+MAX_CHECK_RUNS = 15  # D-07's /goal clause (owner ruling 2026-11-18: 25 lowered to 15)
 # The watcom-decomp skill's "When to give up" stops after exit `0`, in the skill's order and
 # words; tests/test_skill.py pins the equality (261109-gzx).
 STOP_RULES = (

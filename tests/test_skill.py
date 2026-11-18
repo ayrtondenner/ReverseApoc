@@ -539,7 +539,7 @@ def test_skill_names_the_region_board():
 
 
 def test_skill_says_a_refused_check_costs_nothing():
-    """D-01: a check without a plan or a note is refused with exit 2 and uses none of the 25
+    """D-01: a check without a plan or a note is refused with exit 2 and uses none of the 15
     runs; the quick reference's budget row and the wrapper section both say so."""
     text = _text()
     budget = next(line for line in text.splitlines() if line.startswith("| Check budget"))

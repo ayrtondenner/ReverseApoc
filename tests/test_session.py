@@ -180,7 +180,7 @@ def test_goal_prompt_names_the_claim():
     assert "u_00010000" in prompt
     assert "uv run --frozen reverseapoc attempt check" in prompt
     assert "notes.md" in prompt
-    assert "all 25 check runs are used" in prompt
+    assert "all 15 check runs are used" in prompt
 
 
 def test_goal_prompt_names_the_view_unit():
@@ -202,7 +202,7 @@ def test_goal_prompt_stops_on_the_skill_rules():
     assert session.STOP_RULES == (
         "a sweep printed `sweep hit: needs flags`",
         "three different C shapes leave objdiff below 100",
-        "all 25 check runs are used",
+        "all 15 check runs are used",
         "about 25 of 30 minutes or 35 of 40 turns are gone",
         "needs flags (no -s), a jump table that cannot lead the unit or has a target outside the "
         "function, or another check running in this attempt",

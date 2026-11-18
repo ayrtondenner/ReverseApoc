@@ -17,8 +17,8 @@ You make one claimed function byte-identical to the original, proven by `attempt
 | Names | placeholders stay: `func_XXXXXXXX`, `D_XXXXXXXX` and your own function's name. A name idea goes in notes.md. |
 | The only commands | the eight wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Read and search files with your harness's own file tools wherever it lets them read, never with a command; anywhere else, or with no file tools, read through the wrapper: `attempt context`, `attempt asm`, `attempt asm <NAME>` and `attempt check` print what you need. |
 | Check exit codes | under "The attempt wrapper" below. |
-| Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. A check whose C repeats an earlier exit `0` or `1` check of this attempt, comments and blanks aside, gets that check's verdict at once and uses none: its first line reads `repeat of NNNN`, and it removes your check-note.json, so write a new note for the next real check. |
-| Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/25, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
+| Check budget | 15 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. A check whose C repeats an earlier exit `0` or `1` check of this attempt, comments and blanks aside, gets that check's verdict at once and uses none: its first line reads `repeat of NNNN`, and it removes your check-note.json, so write a new note for the next real check. |
+| Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/15, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
 | Full evidence | `<attempt dir>/checks/NNNN.json` (check's JSON) and `checks/NNNN.c` (the exact C that run checked), one pair per run, plus a line in `checks.jsonl`. Each check prints both full paths. |
 | Flags of your check | the unit's rule in the view's `config/cflags.txt` (HEAD's copy): its own line if it has one, else the `*` default `wcc386@10.6 -4r -s -fpi`. |
 | Linker names | function `func_000A3980` links as `func_000A3980_`; data `D_0012EFAC` as `_D_0012EFAC`. A symbols.csv name is used verbatim. |
@@ -136,7 +136,7 @@ Other pack sections, when present:
 - **Struct shapes** lists the fields other functions of the original code read through the same pointer: offset, width, how it is read, and how many functions read it. Declare your struct from it in your own unit; the field names are yours. A field marked "sign unknown" was only read by plain moves, so the bytes decide its signedness.
 - **Control-flow outline** (rows of 256 B and up) gives a count line (blocks, branches, loops, switches, calls, returns), one line per basic block with its exit, and the loops as back edges. Read it before writing C. Write the skeleton first, with one `if`/loop/`switch` per outline item in the same order, then fill in the statements. After each check, compare the summary's `shape:` line (ours against the original: code length, blocks, branches) before reading byte differences. A block or branch count that differs means the control flow is wrong, so fix that before tuning registers or the stack.
 
-**The plan and the note.** A check needs two files beside notes.md. Without them `attempt check`, plain or `--sweep`, is refused with exit `2` and uses none of the 25 checks. The refusal names what is missing or wrong, e.g. `write plan.json beside notes.md first`: write that file, then run the check again.
+**The plan and the note.** A check needs two files beside notes.md. Without them `attempt check`, plain or `--sweep`, is refused with exit `2` and uses none of the 15 runs. The refusal names what is missing or wrong, e.g. `write plan.json beside notes.md first`: write that file, then run the check again.
 
 1. Before the first check, write `plan.json` from the listing and run `attempt plan` until it accepts it. One JSON object with exactly:
    - `frame`: the prologue and the frame size, in words;
@@ -178,12 +178,12 @@ The sweep's two stages:
 A sweep after a near miss, as it prints (stage 2 cell 42 hit):
 
 ```
-attempt check --sweep 16/25, 388 s (9 left) ufo2p/u_00089980 func_0008AAF0: exit 0 SWEEP RAN (a diagnostic: never a match)
+attempt check --sweep 12/15, 388 s (3 left) ufo2p/u_00089980 func_0008AAF0: exit 0 SWEEP RAN (a diagnostic: never a match)
   a sweep is a diagnostic: it never lands and never edits config/cflags.txt
   best cell 01  wcc386@10.6 -4r -s -fpi  objdiff 98.9%  reloc ok  differing 6  first_va 0x0008AB14  size 180
   stage 2 best cell 42  wcc386@10.6 -4r -s -fpi -zp4  objdiff 100%  reloc ok  differing 0  first_va none  size 180
   sweep hit: needs flags wcc386@10.6 -4r -s -fpi -zp4 (the owner decides; cflags.txt is owner-only)
-saved <attempt dir>/checks/0016.json (full JSON) and <attempt dir>/checks/0016.c (the C checked)
+saved <attempt dir>/checks/0012.json (full JSON) and <attempt dir>/checks/0012.c (the C checked)
 notes: <attempt dir>/notes.md
 ```
 
@@ -219,7 +219,7 @@ Stop only when one of these holds:
 - `attempt check` exited `0`: stop editing, because the driver gates the view unit as you leave it;
 - a sweep printed `sweep hit: needs flags`: write the hit in notes.md and stop, because the driver starts no new session on the function for the rest of the night;
 - three different C shapes leave objdiff below 100;
-- all 25 check runs are used;
+- all 15 check runs are used;
 - about 25 of 30 minutes or 35 of 40 turns are gone;
 - needs flags (no -s), a jump table that cannot lead the unit or has a target outside the function, or another check running in this attempt, each as its section above says.
 

@@ -13,7 +13,7 @@ The unit already matches: its C compiles to the original bytes. You make it read
 |---|---|
 | What you may write | your view unit (`REVERSEAPOC_UNIT_FILE`), this session's notes.md, and `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`) beside it in `<attempt dir>/proposals.jsonl`. `attempt check` prints the notes.md path after `notes:`. The hooks deny every other write. |
 | The only Bash | the five wrapper commands under "The attempt wrapper". Look around with Read, Grep and Glob. |
-| Budgets | 40 turns (`--max-turns`), 25 checks per attempt, 30 minutes. Each check prints its elapsed seconds and the checks left (`check 3/25, 88 s (22 left)`); budget by those against the clock. |
+| Budgets | 40 turns (`--max-turns`), 15 checks per attempt, 30 minutes. Each check prints its elapsed seconds and the checks left (`check 3/15, 88 s (12 left)`); budget by those against the clock. |
 | The verdict | `attempt check` exits `0` only when every function still matches and readlint is clean. A pending rename does not fail it. |
 | What lands | the final text of your view unit, not your best check (see "When to stop"). |
 | Evidence of each run | `<attempt dir>/checks/NNNN.c` (the exact C checked) and `checks/NNNN.json`. |
@@ -192,7 +192,7 @@ Run every `attempt check` with the Bash tool's `timeout` set to 600000, in the f
 `attempt check` exits `0` when every compiled function is still at objdiff 100% with relocations and bytes ok, every splice is identical and readlint is clean; `1` when either half fails; `2` on a tool error. The output for the unit above, with both proposals written:
 
 ```
-attempt check 3/25, 88 s (22 left) ufo2p/u_00012340 func_00012340: exit 1 FAILED: see the check and readlint lines (both must pass)
+attempt check 3/15, 88 s (12 left) ufo2p/u_00012340 func_00012340: exit 1 FAILED: see the check and readlint lines (both must pass)
   check: OK (every compiled function objdiff 100% with relocations and bytes ok, every splice identical)
   func_00012340  0x00012340  objdiff 100%  reloc ok  bytes ok
   splice UFO2P.EXE ok

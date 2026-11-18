@@ -104,7 +104,7 @@ from .unitdefs import DATA_KIND, FUNC_KIND
 
 FUNC_ENV = "REVERSEAPOC_FUNC"
 DIR_ENV = "REVERSEAPOC_ATTEMPT_DIR"
-CHECK_BUDGET = 25  # D-07: "or stop after 25 check runs", enforced here
+CHECK_BUDGET = 15  # D-07, owner ruling 2026-11-18 (stats check curves: 25 lowered to 15)
 CHECK_TIMEOUT = 580  # seconds; under the Bash tool's 600 s cap, so the run is still logged
 RM_TIMEOUT = 15  # seconds for `docker rm -f` after a timeout: 580 + 15 < 600 (fix round 2 N2)
 CHECKS_DIR = "checks"
