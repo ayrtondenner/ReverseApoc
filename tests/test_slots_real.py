@@ -256,6 +256,22 @@ TIES = {
                             Marked("d", 4, 0xC4, array=True)),  # fmt: skip
     "pr_line_d_c4_h_i_h": (*_arrays(4, 0xC5), Marked("b", 2, 0x208), Marked("c", 4, 0x209),
                            Marked("d", 2, 0x20A)),  # fmt: skip
+    # The neighbourhoods of pr_arr_two_two_small and pr_arr_two_two_block (todo
+    # slot-model-array-ties, 2026-11-18): one change from either, and each leaves.
+    "pr_nb_c2x2_h3": (*_arrays(2, 0xD0, 0xD1), *_shorts("cde", 0x210)),
+    "pr_nb_c2x2_h4": (*_arrays(2, 0xD2, 0xD3), *_shorts("cdef", 0x213)),
+    "pr_nb_c2x2_h5": (*_arrays(2, 0xD4, 0xD5), *_shorts("cdefg", 0x217)),
+    "pr_nb_c2_h_c2_h": (Marked("a", 2, 0xDA, array=True), Marked("b", 2, 0x220),
+                        Marked("c", 2, 0xDB, array=True), Marked("d", 2, 0x221)),  # fmt: skip
+    "pr_nb_c2_h2_c2": (Marked("a", 2, 0xDC, array=True), *_shorts("bc", 0x222),
+                       Marked("d", 2, 0xDD, array=True)),  # fmt: skip
+    "pr_nb_h_c2x2_h": (Marked("a", 2, 0x224), Marked("b", 2, 0xDE, array=True),
+                       Marked("c", 2, 0xDF, array=True), Marked("d", 2, 0x225)),  # fmt: skip
+    "pr_nb_c4x2_blk_i3": (*_arrays(4, 0xE0, 0xE1), *_ints("cde", 0x226, 1)),
+    "pr_nb_c4x2_blk_i4": (*_arrays(4, 0xE2, 0xE3), *_ints("cdef", 0x229, 1)),
+    "pr_nb_c4x2_blk_i2_blk": (*_arrays(4, 0xE6, 0xE7), *_ints("cd", 0x22F, 1),
+                              Marked("e", 4, 0x231, 2)),  # fmt: skip
+    "pr_nb_c4x2_blk_i2_use_rev": (*_arrays(4, 0xE8, 0xE9), *_ints("cd", 0x232, 1)),
 }
 # Frames the model refuses though they keep declaration order: the compiler's line runs through
 # no count, so the refusal is wider than it, on the safe side.
@@ -270,6 +286,11 @@ REFUSED_HOLDING = {
                          Marked("c", 4, 0xC9, array=True),
                          Marked("d", 4, 0xCA, array=True)),  # fmt: skip
     "pr_line_d_c4x3_h": (*_arrays(4, 0xCB, 0xCC, 0xCD), Marked("d", 2, 0x20E)),
+    # pr_arr_two_two_small as `unsigned char[2]` and with its use reversed, and
+    # pr_arr_two_two_block as `short[2]`: the changes that keep them where they are.
+    "pr_nb_uc2x2_h2": (*_arrays(2, 0xD6, 0xD7), *_shorts("cd", 0x21C)),
+    "pr_nb_c2x2_h2_use_rev": (*_arrays(2, 0xD8, 0xD9), *_shorts("cd", 0x21E)),
+    "pr_nb_s2x2_blk_i2": (*_arrays(4, 0xE4, 0xE5), *_ints("cd", 0x22D, 1)),
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -295,6 +316,16 @@ ARRAY_TIES = {
     "pr_line_d_c4x2_c2_i": {"a": 4, "b": 8, "c": 0xC, "d": 0},
     "pr_line_d_c4_h_c4x2": {"a": 4, "b": 0xC, "c": 8, "d": 0},
     "pr_line_d_c4_h_i_h": {"a": 4, "b": 8, "c": 0, "d": 0xC},
+    "pr_nb_c2x2_h3": {"a": 4, "b": 0x10, "c": 0xC, "d": 8, "e": 0},
+    "pr_nb_c2x2_h4": {"a": 4, "b": 0x14, "c": 0x10, "d": 0xC, "e": 8, "f": 0},
+    "pr_nb_c2x2_h5": {"a": 4, "b": 0x18, "c": 0x14, "d": 0x10, "e": 0xC, "f": 8, "g": 0},
+    "pr_nb_c2_h_c2_h": {"a": 0xC, "b": 4, "c": 8, "d": 0},
+    "pr_nb_c2_h2_c2": {"a": 8, "b": 4, "c": 0xC, "d": 0},
+    "pr_nb_h_c2x2_h": {"a": 4, "b": 0xC, "c": 8, "d": 0},
+    "pr_nb_c4x2_blk_i3": {"a": 8, "b": 4, "c": 0, "d": 0x10, "e": 0xC},
+    "pr_nb_c4x2_blk_i4": {"a": 8, "b": 4, "c": 0, "d": 0x14, "e": 0x10, "f": 0xC},
+    "pr_nb_c4x2_blk_i2_blk": {"a": 8, "b": 4, "c": 0x10, "d": 0xC, "e": 0},
+    "pr_nb_c4x2_blk_i2_use_rev": {"a": 8, "b": 4, "c": 0, "d": 0xC},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {
@@ -469,6 +500,18 @@ def test_a_frame_the_model_refuses_may_still_hold(modules, cell, name):
 def test_array_ties_sit_where_measured(modules, cell, name):
     """Three or more arrays of one size leave M2, and these offsets say how."""
     assert _offsets(modules[cell], name, cell, TIES[name]) == ARRAY_TIES[name]
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_use_order_alone_moves_two_arrays_beside_a_block(modules, cell):
+    """pr_arr_two_two_block holds and its twin with the use reversed leaves: one shape, two
+    layouts, so no rule by shape can admit it, and the model keeps refusing it."""
+    shape = REFUSED_HOLDING["pr_arr_two_two_block"]
+    twin = TIES["pr_nb_c4x2_blk_i2_use_rev"]
+    assert _declared(shape) == _declared(twin)
+    held = _offsets(modules[cell], "pr_arr_two_two_block", cell, shape)
+    left = _offsets(modules[cell], "pr_nb_c4x2_blk_i2_use_rev", cell, twin)
+    assert held == _by_declaration(shape) != left
 
 
 @pytest.mark.parametrize("cell", CELLS)

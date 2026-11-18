@@ -1285,7 +1285,7 @@ def _run_search(args: argparse.Namespace) -> int:
     exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
                                 config_root=args.config)  # fmt: skip
     row = batch.row_at(exe, start)
-    result = search.run_search(exe, row, text, rules, watcom_dir=args.watcom_dir)
+    result = search.archived_search(exe, row, text, rules, watcom_dir=args.watcom_dir)
     print(f"search: {result.compiles} compiles, {result.bodies} distinct bodies, "
           f"exact {result.exact}, score {result.score}, stack score {result.stack_score}, "
           f"axes {','.join(result.axes) or '-'}, best {result.best}")  # fmt: skip

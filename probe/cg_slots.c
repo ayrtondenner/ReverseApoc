@@ -1181,6 +1181,251 @@ void pr_arr_two_two_block(int x)
     }
 }
 
+/*
+ * The neighbourhoods of pr_arr_two_two_small and pr_arr_two_two_block (todo slot-model-array-ties,
+ * 2026-11-18): each frame is one change from one of the two, to show whether either sits on a
+ * line the model could draw.
+ */
+
+/* Two char[2] then three shorts. */
+void pr_nb_c2x2_h3(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+    short d;
+    short e;
+
+    a[0] = 0xd0;
+    b[0] = 0xd1;
+    c = 0x210;
+    d = 0x211;
+    e = 0x212;
+    pr_take(a, b, &c, &d, &e);
+}
+
+/* Two char[2] then four shorts. */
+void pr_nb_c2x2_h4(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+    short d;
+    short e;
+    short f;
+
+    a[0] = 0xd2;
+    b[0] = 0xd3;
+    c = 0x213;
+    d = 0x214;
+    e = 0x215;
+    f = 0x216;
+    pr_take(a, b, &c, &d, &e, &f);
+}
+
+/* Two char[2] then five shorts. */
+void pr_nb_c2x2_h5(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+
+    a[0] = 0xd4;
+    b[0] = 0xd5;
+    c = 0x217;
+    d = 0x218;
+    e = 0x219;
+    f = 0x21a;
+    g = 0x21b;
+    pr_take(a, b, &c, &d, &e, &f, &g);
+}
+
+/* pr_arr_two_two_small as unsigned char[2]. */
+void pr_nb_uc2x2_h2(void)
+{
+    unsigned char a[2];
+    unsigned char b[2];
+    short c;
+    short d;
+
+    a[0] = 0xd6;
+    b[0] = 0xd7;
+    c = 0x21c;
+    d = 0x21d;
+    pr_take(a, b, &c, &d);
+}
+
+/* pr_arr_two_two_small with its use reversed. */
+void pr_nb_c2x2_h2_use_rev(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+    short d;
+
+    d = 0x21f;
+    c = 0x21e;
+    b[0] = 0xd9;
+    a[0] = 0xd8;
+    pr_take(&d, &c, b, a);
+}
+
+/* The arrays and the shorts interleaved: c2 h c2 h. */
+void pr_nb_c2_h_c2_h(void)
+{
+    char a[2];
+    short b;
+    char c[2];
+    short d;
+
+    a[0] = 0xda;
+    b = 0x220;
+    c[0] = 0xdb;
+    d = 0x221;
+    pr_take(a, &b, c, &d);
+}
+
+/* The second array last: c2 h h c2. */
+void pr_nb_c2_h2_c2(void)
+{
+    char a[2];
+    short b;
+    short c;
+    char d[2];
+
+    a[0] = 0xdc;
+    b = 0x222;
+    c = 0x223;
+    d[0] = 0xdd;
+    pr_take(a, &b, &c, d);
+}
+
+/* A short first: h c2 c2 h. */
+void pr_nb_h_c2x2_h(void)
+{
+    short a;
+    char b[2];
+    char c[2];
+    short d;
+
+    a = 0x224;
+    b[0] = 0xde;
+    c[0] = 0xdf;
+    d = 0x225;
+    pr_take(&a, b, c, &d);
+}
+
+/* Two char[4] beside a later block of three ints. */
+void pr_nb_c4x2_blk_i3(int x)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0xe0;
+    b[0] = 0xe1;
+    pr_take(a, b);
+    if (x) {
+        int c;
+        int d;
+        int e;
+
+        c = 0x226;
+        d = 0x227;
+        e = 0x228;
+        pr_take(&c, &d, &e);
+    }
+}
+
+/* Two char[4] beside a later block of four ints. */
+void pr_nb_c4x2_blk_i4(int x)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0xe2;
+    b[0] = 0xe3;
+    pr_take(a, b);
+    if (x) {
+        int c;
+        int d;
+        int e;
+        int f;
+
+        c = 0x229;
+        d = 0x22a;
+        e = 0x22b;
+        f = 0x22c;
+        pr_take(&c, &d, &e, &f);
+    }
+}
+
+/* pr_arr_two_two_block as short[2]. */
+void pr_nb_s2x2_blk_i2(int x)
+{
+    short a[2];
+    short b[2];
+
+    a[0] = 0xe4;
+    b[0] = 0xe5;
+    pr_take(a, b);
+    if (x) {
+        int c;
+        int d;
+
+        c = 0x22d;
+        d = 0x22e;
+        pr_take(&c, &d);
+    }
+}
+
+/* pr_arr_two_two_block with a third block of one int. */
+void pr_nb_c4x2_blk_i2_blk(int x)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0xe6;
+    b[0] = 0xe7;
+    pr_take(a, b);
+    if (x) {
+        int c;
+        int d;
+
+        c = 0x22f;
+        d = 0x230;
+        pr_take(&c, &d);
+    }
+    if (x > 1) {
+        int e;
+
+        e = 0x231;
+        pr_take(&e);
+    }
+}
+
+/* pr_arr_two_two_block with its use reversed. */
+void pr_nb_c4x2_blk_i2_use_rev(int x)
+{
+    char a[4];
+    char b[4];
+
+    if (x) {
+        int c;
+        int d;
+
+        d = 0x233;
+        c = 0x232;
+        pr_take(&d, &c);
+    }
+    b[0] = 0xe9;
+    a[0] = 0xe8;
+    pr_take(b, a);
+}
+
 /* One char[4] beside a later block: one array keeps M4. */
 void pr_arr_one_block(int x)
 {

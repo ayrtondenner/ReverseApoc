@@ -1,4 +1,4 @@
-"""`reverseapoc search`: refusals, the four axes, the waves, the slot map and the D-12 queue route.
+"""`reverseapoc search`: refusals, the five axes, the waves, the slot map and the D-12 queue route.
 
 No compiler runs here: batch.compile_batch, function_body, body_key and judge are stubbed, and a
 stubbed verdict is decided by the text of the variant and the cell it was compiled under. The C
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import reverseapoc
-from reverseapoc import batch, cli, flags, omf2elf, relocs
+from reverseapoc import archive, batch, classify, cli, flags, omf2elf, relocs
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main
 from reverseapoc.functions import FunctionRow
@@ -88,6 +88,16 @@ class Stubs:
         monkeypatch.setattr(batch, "body_key", lambda obj: self.key(*_source(obj)))
         monkeypatch.setattr(batch, "judge", self._judge)
         monkeypatch.setattr(batch, "function_slots", self._function_slots)
+        monkeypatch.setattr(archive, "ROOT", out / "archive")
+        monkeypatch.setattr(archive, "DRIVER", out / "driver")
+        monkeypatch.setattr(classify, "with_class", self._with_class)
+
+    @staticmethod
+    def _with_class(record, _exe, _start, _compiled, **_kwargs):
+        """classify reads the object's bytes, which the stubbed compile never writes."""
+        if not record["compiled"] or record["exact"]:
+            return dict(record)
+        return {**record, "class": "mixed"}
 
     def _function_slots(self, _exe, obj: Path, _start: int) -> batch.SlotMap:
         self.slot_objects.append(obj)
@@ -466,8 +476,10 @@ def test_moves_add_no_banned_text():
         assert batch.refusal(move.text) is None
 
 
-def test_axes_run_type_then_statement_then_scope_then_declaration():
-    assert reverseapoc.search.AXES == ("type", "statement", "scope", "declaration")
+def test_axes_run_type_then_rewrite_then_statement_then_scope_then_declaration():
+    """The rewrite axis follows the type axis (docs/research/notes-ideas-llm-decomp-research.md
+    #8), before the declaration shuffles can spend the budget."""
+    assert reverseapoc.search.AXES == ("type", "rewrite", "statement", "scope", "declaration")
 
 
 def _body(*lines: str) -> str:
@@ -974,6 +986,41 @@ def test_reordered_initializers_that_are_exact_are_kept(monkeypatch, stubs):
     assert "statement" in result.axes
 
 
+REWRITTEN = "    b = 1 + a;\n"  # TEXT's `b = a + 1;` with its operands swapped
+BRANCHES = """int func_00010000(int a)
+{
+    int b;
+
+    if (a) {
+        b = 1;
+    } else {
+        b = 2;
+    }
+    return b;
+}
+"""
+TERNARY = "    b = a ? 1 : 2;\n"
+
+
+def test_a_better_rewrite_becomes_the_base_and_names_its_axis(stubs):
+    stubs.decide = _scored({REWRITTEN: verdict(60.0, 60.0)})
+    result = _run()
+    assert REWRITTEN in _best(result)
+    assert result.axes == ("rewrite",)
+
+
+def test_a_ternary_rewrite_is_dropped_unless_exact(stubs):
+    """D-26: `?:` converts both values to one type first, so only byte identity speaks for it."""
+    stubs.decide = _scored({TERNARY: verdict(99.0, 99.0)})
+    result = _run(BRANCHES)
+    assert TERNARY not in _best(result)
+    assert any(TERNARY in job.src.read_text(encoding="ascii") for job in stubs.jobs)
+    stubs.decide = _scored({TERNARY: verdict(exact=True)})
+    result = _run(BRANCHES)
+    assert TERNARY in _best(result)
+    assert result.axes == ("rewrite", "statement")
+
+
 def test_a_better_variant_becomes_the_base_and_its_axis_repeats(stubs):
     stubs.decide = _scored({"    short b;": verdict(60.0, 60.0)})
     result = _run()
@@ -1024,6 +1071,124 @@ def test_same_input_gives_the_same_result(stubs):
     assert first.axes == second.axes
     assert first.records == second.records
     assert first.compiles == second.compiles
+
+
+# ---- seeds and the archive (todo candidate-archive) ---------------------------------------------
+
+SEED = TEXT.replace("    int b;\n", "    unsigned b;\n")  # a candidate an earlier session tried
+
+
+def _first_wave(stubs) -> list[str]:
+    return [job.src.read_text(encoding="ascii") for job in stubs.waves[0]]
+
+
+def _seeded(seeds, text: str = TEXT):
+    return reverseapoc.search.run_search(_exe(), ROW, text, (COMMITTED,), watcom_dir=Path("w"),
+                                         seeds=seeds)  # fmt: skip
+
+
+def test_a_seed_is_compiled_in_the_first_wave_and_can_win(stubs):
+    stubs.decide = _scored({"    unsigned b;": verdict(70.0, 70.0)})
+    result = _seeded([SEED])
+    assert SEED in _first_wave(stubs) and TEXT in _first_wave(stubs)
+    assert "    unsigned b;" in _best(result)
+    assert result.axes[0] == "archive"
+
+
+def test_a_seed_that_ties_the_base_leaves_the_base(stubs):
+    result = _seeded([SEED])
+    assert _best(result) == TEXT
+    assert result.axes == ()
+
+
+@pytest.mark.parametrize(
+    "seed",
+    ["int other(void)\n{\n    return 0;\n}\n", SEED.replace("made-up", "made-up \xe9"),
+     SEED.replace("#include", "#pragma aux f\n#include"),
+     TEXT.replace("    return *p;", "    return  *p; /* the same tokens */")],
+)  # fmt: skip
+def test_a_seed_that_cannot_stand_for_the_base_is_not_compiled(stubs, seed):
+    """No definition of the function, not ASCII, refused by the check, or the base's own C."""
+    _seeded([seed])
+    assert _first_wave(stubs) == [TEXT, TEXT]  # the base, under both cells
+
+
+def test_kept_are_the_base_the_seeds_each_new_base_and_the_winner(stubs):
+    stubs.decide = _scored({"    short b;": verdict(60.0, 60.0),
+                            "    unsigned b;": verdict(55.0, 1.0)})  # fmt: skip
+    result = _seeded([SEED])
+    kept = {one.text: one for one in result.kept}
+    assert set(kept) >= {TEXT, SEED, _best(result)}
+    assert (kept[_best(result)].record["score"], kept[_best(result)].record["stack_score"]) == (
+        60.0, 60.0)  # fmt: skip
+    archive.record("ufo2p", START, [archive.Entry(archive.source_key(SEED), False, 1.0, None,
+                                                  None, "check r/a/0001", SEED)])  # fmt: skip
+    best = _best(reverseapoc.search.archived_search(_exe(), ROW, TEXT, (COMMITTED,),
+                                                    watcom_dir=Path("w")))  # fmt: skip
+    winner = {entry.source: entry for entry in archive.read("ufo2p", START)}[best]
+    assert (winner.score, winner.stack_score, winner.klass, winner.origin) == (
+        60.0, 60.0, "mixed", "search")  # fmt: skip
+    assert winner.key == archive.source_key(best)
+
+
+def test_a_statement_variant_that_does_not_stand_is_never_kept(stubs):
+    stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0)})
+    assert not any(SWAPPED in one.text for one in _run().kept)
+
+
+def test_the_verb_seeds_from_the_archive_and_records_its_run(tmp_path, monkeypatch, stubs):
+    archive.ROOT.mkdir(parents=True)
+    tried = archive.Entry(archive.source_key(SEED), False, 80.0, None, None, "check r/a/0001", SEED)
+    archive.record("ufo2p", START, [tried])
+    stubs.decide = _scored({"    unsigned b;": verdict(70.0, 70.0)})
+    assert _cli(tmp_path, monkeypatch) == 1
+    assert "    unsigned b;" in _best_of_output()
+    recorded = {entry.source: entry for entry in archive.read("ufo2p", START)}
+    assert (recorded[SEED].origin, recorded[SEED].klass) == ("search", "mixed")
+    assert recorded[TEXT].score == 50.0
+
+
+def _best_of_output() -> str:
+    best = reverseapoc.search.OUT / "ufo2p" / f"{START:08x}" / "best.c"
+    return best.read_text(encoding="ascii")
+
+
+def test_the_base_takes_no_seed_place(tmp_path, monkeypatch, stubs):
+    """Review finding: an archived copy of the base is no seed, and the next of its class is."""
+    other = TEXT.replace("    short c;\n", "    unsigned short c;\n")
+    archive.record("ufo2p", START, [
+        archive.Entry(archive.source_key(TEXT), False, 90.0, 90.0, "mixed", "search", TEXT),
+        archive.Entry(archive.source_key(other), False, 80.0, 80.0, "mixed", "search", other)])
+    _cli(tmp_path, monkeypatch)
+    assert other in _first_wave(stubs)
+
+
+def test_only_the_archived_search_classes_its_candidates(monkeypatch, stubs):
+    """The curve's run_search spends nothing on the archive's classes (review finding)."""
+    calls = []
+    monkeypatch.setattr(classify, "with_class", lambda record, *_a: calls.append(1) or record)
+    result = _run()
+    assert calls == [] and result.kept
+    reverseapoc.search.archived_search(_exe(), ROW, TEXT, (COMMITTED,), watcom_dir=Path("w"))
+    assert calls
+
+
+def test_the_rewrite_axis_spends_at_most_its_share_of_the_budget(monkeypatch, stubs):
+    many = TEXT.replace("    return *p;", "\n".join(f"    b = b + {n};" for n in range(400))
+                        + "\n    return *p;")  # fmt: skip
+    monkeypatch.setattr(reverseapoc.search, "AXES", ("rewrite",))
+    result = _run(many)
+    base = len(stubs.waves[0])
+    assert base < result.compiles <= base + reverseapoc.search.REWRITE_SHARE
+    assert reverseapoc.search.REWRITE_SHARE < reverseapoc.search.BUDGET
+
+
+def test_a_plain_run_search_reads_no_archive(stubs):
+    """The curve (.planning/converter-curve/measure_curve.py) calls run_search: no archive."""
+    archive.record("ufo2p", START, [archive.Entry(archive.source_key(SEED), False, 80.0, None,
+                                                  None, "search", SEED)])  # fmt: skip
+    _run()
+    assert SEED not in _first_wave(stubs)
 
 
 def test_result_carries_the_slot_map_of_the_winners_best_cell(stubs):
