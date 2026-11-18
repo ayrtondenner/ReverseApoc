@@ -672,3 +672,35 @@ def test_a_descendant_dies_when_the_session_exits_on_posix(tmp_path):
     finally:
         if child is not None:
             _kill_pid(child)
+
+
+# ---- 2026-11-18: a signed-in prompt is argv, so it must fit the Windows command line ---------
+# A Copilot night failed with WinError 206 once the skill grew; CreateProcess caps the whole
+# command line at 32,767 characters, and the harness's other arguments (paths, --deny-tool
+# lists, -c tables) take up to ARGV_OVERHEAD of them.
+WINDOWS_COMMAND_LINE = 32767
+ARGV_OVERHEAD = 2500  # measured 2026-11-18: Copilot 1,870, Codex 661, agy 464
+
+
+def _longest_goal() -> str:
+    run = "r" * 40
+    function, unit = "func_000A3980", "u_000a3980_" + "x" * 40
+    path = f"build/driver/{run}/ufo2p/{function}/attempt-99/view/src/ufo2p/{unit}.c"
+    return goal_prompt(function, unit, "ufo2p", unit_path=path)
+
+
+@pytest.mark.parametrize("make", [session.codex_prompt, session.agy_prompt,
+                                  session.copilot_prompt])  # fmt: skip
+@pytest.mark.parametrize("skill", ["watcom-decomp", "watcom-readability"])
+def test_each_signed_in_prompt_fits_the_windows_command_line(make, skill):
+    text = (REPO_ROOT / ".claude" / "skills" / skill / "SKILL.md").read_text(encoding="utf-8")
+    quoted = subprocess.list2cmdline([make(_longest_goal(), text)])
+    assert len(quoted) + ARGV_OVERHEAD < WINDOWS_COMMAND_LINE, len(quoted)
+
+
+def test_a_signed_in_prompt_leaves_out_claude_only_blocks():
+    skill = ("---\nname: x\n---\nkeep one\n" + session.CLAUDE_ONLY_START + "\nonly claude\n"
+             + session.CLAUDE_ONLY_END + "\nkeep two\n")  # fmt: skip
+    prompt = session.codex_prompt("/goal do it", skill)
+    assert "keep one" in prompt and "keep two" in prompt
+    assert "only claude" not in prompt and session.CLAUDE_ONLY_START not in prompt

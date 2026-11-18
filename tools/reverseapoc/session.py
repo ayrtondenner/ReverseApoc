@@ -259,15 +259,39 @@ def build_copilot_argv(prompt: str, *, copilot: str, model: str, writes: Sequenc
             "--usage-output-file", str(usage_file)]  # fmt: skip
 
 
+# 2026-11-18: a Codex, agy or Copilot prompt is one argv item, and Windows caps a command line at
+# 32,767 characters (a Copilot night failed with WinError 206 once the skill grew). Blocks of the
+# skill between these lines (examples and evidence JSON the wrapper's summary already prints)
+# stay in the Claude sessions' skill and are left out of those prompts.
+CLAUDE_ONLY_START = "<!-- claude-only"
+CLAUDE_ONLY_END = "<!-- /claude-only -->"
+
+
+def _without_claude_only(lines: list[str]) -> list[str]:
+    kept: list[str] = []
+    inside = False
+    for line in lines:
+        if line.startswith(CLAUDE_ONLY_START):
+            inside = True
+            continue
+        if line.startswith(CLAUDE_ONLY_END):
+            inside = False
+            continue
+        if not inside:
+            kept.append(line)
+    return kept
+
+
 def _skill_body(skill_text: str) -> str:
-    """A SKILL.md without its `---` front matter (the name and description lines)."""
+    """A SKILL.md without its `---` front matter (the name and description lines) and without
+    its CLAUDE_ONLY_START .. CLAUDE_ONLY_END blocks."""
     lines = skill_text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != _FRONT_MATTER:
-        return skill_text
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() == _FRONT_MATTER:
-            return "".join(lines[index + 1 :]).lstrip("\n")
-    return skill_text
+    if lines and lines[0].strip() == _FRONT_MATTER:
+        for index, line in enumerate(lines[1:], start=1):
+            if line.strip() == _FRONT_MATTER:
+                lines = lines[index + 1 :]
+                break
+    return "".join(_without_claude_only(lines)).lstrip("\n")
 
 
 # 07.2 review WR-10 (wording 261112-fdv): a Codex or agy session has no Read, Grep or Glob tool,

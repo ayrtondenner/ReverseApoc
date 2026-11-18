@@ -174,6 +174,7 @@ The sweep's two stages:
 - Stage 2 runs only after a near miss: no stage-1 cell is perfect, and the best one is at or above 90% with its relocation check ok. It varies that best cell, always under 10.6, in up to 24 cells numbered on from 31 or 61: each single `-o` letter (`-od`, `-of+`, `-or`, `-oi`, `-om`, `-ol`, `-on`, `-op`) or KKND's `-of+ -omiler` in place of its `-o` set; each letter added to its `-o` set, when it has one; and `-zp1`/`-zp2`/`-zp4`/`-zp8`, `-zm`, `-fp3`/`-fp5` appended. Spec forms: `wcc386@10.6 -4r -oi -s -fpi`, `wcc386@10.6 -4r -s -fpi -zp4`.
 - Either stage's hit comes through the same `sweep_hit` and the same `sweep hit: needs flags` line. Read the stage from the output, never from the flags.
 
+<!-- claude-only: left out of the Codex, agy and Copilot prompts, which must fit one command line -->
 A sweep after a near miss, as it prints (stage 2 cell 42 hit):
 
 ```
@@ -193,6 +194,7 @@ check's JSON, in `checks/NNNN.json`:
 - `splice[]`: per EXE, `ok` and `first_difference`.
 
 A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the stage-1 cell it varied, its own `cells`, and its `best` cell numbers). Each cell reports, for the claimed function under its `compiler` and `flags`, `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields that differ), `first_va` (its first differing byte, null when none) and `size` (your function's bytes under that cell). A cell at 100% with `reloc_ok` and `differing` 0 under other flags than the unit's rule is logged as `sweep_hit`: stage 1's first hit, else stage 2's. A sweep hit is never a match until a plain `attempt check` under the new rule passes, and only the owner adds that rule.
+<!-- /claude-only -->
 
 ### From a mismatch to the instruction
 
