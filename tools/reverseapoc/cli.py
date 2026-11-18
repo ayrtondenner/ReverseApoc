@@ -93,7 +93,7 @@ from .ghidra import (
     export_functions,
     read_ghidra_export,
 )
-from .ingest import IngestError, ingest
+from .ingest import IngestError, ingest, ingest_cd
 from .iso9660 import ISOError
 from .land import LandError, write_landed
 from .le import LE, LEError, format_summary
@@ -160,6 +160,10 @@ from .watcom import (
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
+    if args.cd is not None:
+        cd = ingest_cd(args.cd, orig_dir=args.orig, manifest=args.manifest)
+        print(cd.format())
+        return 0 if cd.ok else 1
     result = ingest(orig_dir=args.orig, manifest=args.manifest, dotenv_path=args.env_file)
     print(result.format())
     return 0 if result.report.ok else 1
@@ -2891,6 +2895,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     orig_and_manifest(p)
     p.add_argument("--env-file", type=Path, default=None, help="default: <repo>/.env")
+    p.add_argument("--cd", type=Path, default=None, metavar="IMAGE",
+                   help="read the 1997 disc image instead (ISO9660 .iso or MODE1/2352 .bin) and "
+                   "extract its [[cd_builds]] executables into <orig>/cd/, verified")  # fmt: skip
     p.set_defaults(func=_cmd_ingest)
 
     p = sub.add_parser("check-orig", help="verify orig/ against config/targets.toml")
