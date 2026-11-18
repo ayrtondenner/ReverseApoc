@@ -8,7 +8,30 @@
 #include "common.h"
 
 INCLUDE_ASM(func_0003A900);
-INCLUDE_ASM(func_0003AED0);
+struct unk_002E {
+    /* 0x00 */ u8 pad_00[0x0C];
+    /* 0x0C */ s32 field_0C;
+    /* 0x10 */ u8 pad_10[0x1E];
+};
+extern struct unk_002E D_002B6EDC[];
+extern struct unk_002E D_002B6F66[];
+extern int D_002B6D44;
+
+void func_0003AED0(int a)
+{
+    struct unk_002E *p;
+    int zero;
+
+    zero ^= zero;
+    p = D_002B6EDC;
+    D_002B6D44 = zero;
+    if (p < D_002B6F66) {
+        do {
+            p++;
+            p[-1].field_0C = 0;
+        } while (p < D_002B6F66);
+    }
+}
 INCLUDE_ASM(func_0003AF00);
 INCLUDE_ASM(func_0003B070);
 
