@@ -18,15 +18,24 @@ def test_mcp_servers_are_the_known_set():
 
 
 def test_mcp_secrets_are_env_references():
-    """Every env value is a ${NAME} reference to the user's environment, never a literal secret
-    (CLAUDE.md: no secrets in tracked files)."""
-    values = [value for server in SERVERS.values() for value in server.get("env", {}).values()]
-    assert values, "at least one server reads a secret"
-    for value in values:
-        assert re.fullmatch(r"\$\{[A-Z_]+\}", value), value
+    """Every credential-named env value (a session, token or key) is a ${NAME} reference to the
+    user's environment, never a literal secret (CLAUDE.md: no secrets in tracked files)."""
+    secrets = {name: value for server in SERVERS.values()
+               for name, value in server.get("env", {}).items()
+               if re.search(r"SESSION|TOKEN|KEY", name)}  # fmt: skip
+    assert len(secrets) == 3, secrets
+    for name, value in secrets.items():
+        assert value == "${" + name + "}", name
+
+
+def test_overleaf_cache_stays_outside_the_checkout():
+    """overleaf-mcp-plus clones each project into OVERLEAF_TEMP_DIR, by default ./overleaf_cache
+    under its working directory, which is the checkout; a stray there stops a drive (first use,
+    2026-11-18). It goes under the user's home instead, and the env holds nothing else."""
     assert SERVERS["overleaf"]["env"] == {
         "OVERLEAF_SESSION": "${OVERLEAF_SESSION}",
         "OVERLEAF_GIT_TOKEN": "${OVERLEAF_GIT_TOKEN}",
+        "OVERLEAF_TEMP_DIR": "~/.overleaf-mcp/cache",
     }
 
 

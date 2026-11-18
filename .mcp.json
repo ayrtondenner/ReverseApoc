@@ -12,7 +12,8 @@
       "args": ["--from", "overleaf-mcp-plus[compile]==0.3.2", "overleaf-mcp"],
       "env": {
         "OVERLEAF_SESSION": "${OVERLEAF_SESSION}",
-        "OVERLEAF_GIT_TOKEN": "${OVERLEAF_GIT_TOKEN}"
+        "OVERLEAF_GIT_TOKEN": "${OVERLEAF_GIT_TOKEN}",
+        "OVERLEAF_TEMP_DIR": "~/.overleaf-mcp/cache"
       }
     },
     "overleaf-web": {
