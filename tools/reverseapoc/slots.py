@@ -44,6 +44,13 @@ apart: in a frame of two sizes, 4-byte locals keep M2 beside one local of 1 or 2
 the function's own block, with at most two arrays, unless the small local is declared last and
 it, or any local after the first, is an array (_one_small_local). Every other frame of two
 sizes stays refused, and some of those hold.
+Two frames of one size hold off every line: `c2 c2 h h` (pr_arr_two_two_small) and `c4 c4 | i i`
+(pr_arr_two_two_block). The pr_nb_ frames record their neighbourhoods, one change each, in both
+cells: two `char[2]` then 3 to 5 shorts leave, as one short does (pr_arr_two_one_small), and so do
+`c2 h c2 h`, `c2 h h c2` and `h c2 c2 h`, so only a rule by count of exactly two could admit the
+first. Beside a later block of 1, 3 or 4 ints, or two ints and a third block, the arrays leave,
+and `c4 c4 | i i` with its use reversed leaves too (pr_nb_c4x2_blk_i2_use_rev): one shape, two
+layouts, so no rule by shape can admit the second. Both stay refused.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
