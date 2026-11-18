@@ -84,6 +84,15 @@ def test_each_class_keeps_only_its_best(roots):
     assert [one.klass for one in kept].count("register") == 1
 
 
+def test_entries_rank_as_search_ranks_them_a_check_by_its_score():
+    """search's rank: exact, the stack score, the raw score. A check has no stack score, so its
+    score stands in for it (review finding: the archive must seed what search would pick)."""
+    raw = entry(_c("return 1;"), 90.0, stack=60.0)
+    stack = entry(_c("return 2;"), 85.0, stack=95.0)
+    check = entry(_c("return 3;"), 92.0, None, stack=None, origin="check r/attempt-1/0001")
+    assert archive.ranked([raw, check, stack]) == [stack, check, raw]
+
+
 def test_an_exact_entry_ranks_first():
     exact = entry(_c("return 1;"), 10.0, None, exact=True)
     assert archive.ranked([entry(score=99.0), exact])[0] == exact

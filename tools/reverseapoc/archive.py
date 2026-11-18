@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import attempt, batch, check
+from .check import EXIT_TOOL
 from .fileio import write_atomic
 from .targets import REPO_ROOT
 
@@ -42,8 +43,6 @@ DRIVER = REPO_ROOT.joinpath(*attempt.DRIVER_PARTS)  # build/driver/<run>/<exe>/<
 HOLD_RUN_MARKER = attempt.HOLD_RUN_MARKER  # D-17: a hold run's work never reaches another arm
 KEEP = 4  # the entries kept per class
 SEEDS = 3  # the archived candidates a search compiles beside its base
-_EXIT_TOOL = 2  # attempt check's exit for a tool error: its percent means nothing
-_CHECK_SOURCE = re.compile(r"checks/\d{4}\.c")  # attempt.py's checks/NNNN.c
 _LITERAL = r"\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'"
 _TOKEN = re.compile(rf"{_LITERAL}|->|\+\+|--|<<=|>>=|<<|>>|<=|>=|==|!=|&&|\|\||##|\.\.\."
                     r"|[-+*/%&|^]=|\w+|\S")  # fmt: skip
@@ -94,12 +93,13 @@ def path(stem: str, start: int) -> Path:
 
 
 def _rank(entry: Entry) -> tuple[bool, float, float]:
-    stack = -1.0 if entry.stack_score is None else entry.stack_score
-    return entry.exact, entry.score, stack
+    stack = entry.score if entry.stack_score is None else entry.stack_score
+    return entry.exact, stack, entry.score
 
 
 def ranked(entries: Iterable[Entry]) -> list[Entry]:
-    """`entries` best first: exact, then the score, then the stack score."""
+    """`entries` best first, as search ranks its variants: exact, then the stack score, then the
+    raw score. A check reports no stack score, so its score stands in for one."""
     return sorted(entries, key=_rank, reverse=True)
 
 
@@ -165,23 +165,25 @@ def record(stem: str, start: int, entries: Iterable[Entry]) -> None:
     write_atomic(path(stem, start), lines.encode("utf-8"))
 
 
+def _scored_check(line: dict[str, Any] | None) -> bool:
+    """A plain, scored check: no sweep (its percent is under other flags), no tool error, a
+    percent, and a source of attempt.py's form (attempt._SAVED_SOURCE, as attempt._plain_runs
+    reads it)."""
+    if line is None or line.get("sweep") is not False or line.get("exit") == EXIT_TOOL:
+        return False
+    percent, source = line.get("best_percent"), line.get("source")
+    if not isinstance(percent, int | float) or isinstance(percent, bool):
+        return False
+    return isinstance(source, str) and attempt._SAVED_SOURCE.fullmatch(source) is not None
+
+
 def _check_lines(log: Path) -> Iterator[dict[str, Any]]:
-    """The plain, scored checks of one checks.jsonl: no sweep (its percent is under other
-    flags), no tool error, a percent, and a source of attempt.py's form. A line that is not JSON
-    is skipped, as driver.read_checks skips it."""
+    """The plain, scored checks of one checks.jsonl. A line that is not JSON is skipped, as
+    driver.read_checks skips it."""
     for raw in log.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            line = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(line, dict) or line.get("sweep") is not False:
-            continue
-        percent, source = line.get("best_percent"), line.get("source")
-        if line.get("exit") == _EXIT_TOOL or isinstance(percent, bool):
-            continue
-        if isinstance(percent, int | float) and isinstance(source, str):
-            if _CHECK_SOURCE.fullmatch(source):
-                yield line
+        line = attempt._parse(raw)
+        if _scored_check(line):
+            yield line
 
 
 def _source(file: Path) -> str | None:

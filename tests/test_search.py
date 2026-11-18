@@ -1117,17 +1117,23 @@ def test_kept_are_the_base_the_seeds_each_new_base_and_the_winner(stubs):
     stubs.decide = _scored({"    short b;": verdict(60.0, 60.0),
                             "    unsigned b;": verdict(55.0, 1.0)})  # fmt: skip
     result = _seeded([SEED])
-    kept = {entry.source: entry for entry in result.kept}
+    kept = {one.text: one for one in result.kept}
     assert set(kept) >= {TEXT, SEED, _best(result)}
-    winner = kept[_best(result)]
+    assert (kept[_best(result)].record["score"], kept[_best(result)].record["stack_score"]) == (
+        60.0, 60.0)  # fmt: skip
+    archive.record("ufo2p", START, [archive.Entry(archive.source_key(SEED), False, 1.0, None,
+                                                  None, "check r/a/0001", SEED)])  # fmt: skip
+    best = _best(reverseapoc.search.archived_search(_exe(), ROW, TEXT, (COMMITTED,),
+                                                    watcom_dir=Path("w")))  # fmt: skip
+    winner = {entry.source: entry for entry in archive.read("ufo2p", START)}[best]
     assert (winner.score, winner.stack_score, winner.klass, winner.origin) == (
         60.0, 60.0, "mixed", "search")  # fmt: skip
-    assert winner.key == archive.source_key(_best(result))
+    assert winner.key == archive.source_key(best)
 
 
 def test_a_statement_variant_that_does_not_stand_is_never_kept(stubs):
     stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0)})
-    assert not any(SWAPPED in entry.source for entry in _run().kept)
+    assert not any(SWAPPED in one.text for one in _run().kept)
 
 
 def test_the_verb_seeds_from_the_archive_and_records_its_run(tmp_path, monkeypatch, stubs):
@@ -1145,6 +1151,36 @@ def test_the_verb_seeds_from_the_archive_and_records_its_run(tmp_path, monkeypat
 def _best_of_output() -> str:
     best = reverseapoc.search.OUT / "ufo2p" / f"{START:08x}" / "best.c"
     return best.read_text(encoding="ascii")
+
+
+def test_the_base_takes_no_seed_place(tmp_path, monkeypatch, stubs):
+    """Review finding: an archived copy of the base is no seed, and the next of its class is."""
+    other = TEXT.replace("    short c;\n", "    unsigned short c;\n")
+    archive.record("ufo2p", START, [
+        archive.Entry(archive.source_key(TEXT), False, 90.0, 90.0, "mixed", "search", TEXT),
+        archive.Entry(archive.source_key(other), False, 80.0, 80.0, "mixed", "search", other)])
+    _cli(tmp_path, monkeypatch)
+    assert other in _first_wave(stubs)
+
+
+def test_only_the_archived_search_classes_its_candidates(monkeypatch, stubs):
+    """The curve's run_search spends nothing on the archive's classes (review finding)."""
+    calls = []
+    monkeypatch.setattr(classify, "with_class", lambda record, *_a: calls.append(1) or record)
+    result = _run()
+    assert calls == [] and result.kept
+    reverseapoc.search.archived_search(_exe(), ROW, TEXT, (COMMITTED,), watcom_dir=Path("w"))
+    assert calls
+
+
+def test_the_rewrite_axis_spends_at_most_its_share_of_the_budget(monkeypatch, stubs):
+    many = TEXT.replace("    return *p;", "\n".join(f"    b = b + {n};" for n in range(400))
+                        + "\n    return *p;")  # fmt: skip
+    monkeypatch.setattr(reverseapoc.search, "AXES", ("rewrite",))
+    result = _run(many)
+    base = len(stubs.waves[0])
+    assert base < result.compiles <= base + reverseapoc.search.REWRITE_SHARE
+    assert reverseapoc.search.REWRITE_SHARE < reverseapoc.search.BUDGET
 
 
 def test_a_plain_run_search_reads_no_archive(stubs):

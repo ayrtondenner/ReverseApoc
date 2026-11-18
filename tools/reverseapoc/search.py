@@ -55,6 +55,9 @@ from .functions import FunctionRow
 
 SEED = 20261103
 BUDGET = 600  # compile jobs, every cell counted
+# The compile jobs one walk of the rewrite axis may spend: a long body gives a rewrite at nearly
+# every operator, which would leave the statement, scope and declaration axes nothing.
+REWRITE_SHARE = BUDGET // 3
 WAVE = 64  # variants per compile_batch call
 WORKERS = 12
 SEARCH_CELLS = ("-4r -oneatx -s -fpi",)
@@ -123,6 +126,15 @@ def _rank(record: dict[str, Any]) -> tuple[bool, float, float]:
 
 
 @dataclass(frozen=True)
+class Kept:
+    """A variant the search kept, by its best cell: what the archive records of it."""
+
+    text: str
+    record: dict[str, Any]
+    compiled: batch.Compiled
+
+
+@dataclass(frozen=True)
 class SearchResult:
     best: Path  # best.c: the winner's text, which every record names
     axes: tuple[str, ...]
@@ -132,8 +144,8 @@ class SearchResult:
     slots: batch.SlotMap  # the winner's best cell against the row
     scalars: tuple[int, ...]  # the winner's mismatched slots that hold scalars
     # What archived_search records: the base, the seeds, each variant that became the base and
-    # the winner, each measured by its best cell (todo candidate-archive).
-    kept: tuple[archive.Entry, ...] = ()
+    # the winner, each by its best cell (todo candidate-archive).
+    kept: tuple[Kept, ...] = ()
 
     @property
     def exact(self) -> bool:
@@ -884,18 +896,17 @@ def _negated(text: str, code: str) -> str:
     two simple operands, and anything else is wrapped in `!(...)`. A `<` is never flipped to `>=`,
     which a NaN would tell apart."""
     tokens = _tokens(code)
-    body = text.strip()
-    if tokens and tokens[0].text == "!":
-        inner = body[1:].strip()
+    if tokens and tokens[0].text == "!" and len(tokens) > 1:
         if _whole(tokens, 1):
-            return inner
+            return text[tokens[1].start : tokens[-1].end]
         if tokens[1].text == "(" and _closing(code, tokens[1].start, "(", ")") == tokens[-1].start:
-            return inner[1:-1].strip()
+            return text[tokens[1].end : tokens[-1].start].strip()
     middle = next((n for n, token in enumerate(tokens) if token.text in _FLIPPED), None)
     if middle is not None and _operand_end(tokens, 0) == middle and _whole(tokens, middle + 1):
-        token = tokens[middle]
-        return f"{text[: token.start].strip()} {_FLIPPED[token.text]} {text[token.end :].strip()}"
-    return f"!({body})"
+        left = text[tokens[0].start : tokens[middle - 1].end]
+        right = text[tokens[middle + 1].start : tokens[-1].end]
+        return f"{left} {_FLIPPED[tokens[middle].text]} {right}"
+    return f"!({text.strip()})"
 
 
 def _if_else(code: Sequence[str], n: int) -> tuple[int, int, int, int] | None:
@@ -1005,10 +1016,18 @@ def _for_to_while(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator
     body = range(n + 1, end)
     if _governed(code, n) or any(_CONTINUE.search(code[m]) for m in body):
         return
+    if _declared_in(code, n + 1, end) & set(_WORD.findall(code[n][opening:close])):
+        return  # the step would read a local of the body, not the name its header reads
     inner = next((_indent(lines[m]) for m in body if code[m].strip()), _indent(lines[n]) + "    ")
     before = [f"{_indent(lines[n])}{init};"] if init else []
     after = [f"{inner}{step};"] if step else []
     yield [*lines[:n], *before, head, *lines[n + 1 : end], *after, *lines[end:]]
+
+
+def _declared_in(code: Sequence[str], first: int, last: int) -> set[str]:
+    """The names the lines from `first` up to `last` declare."""
+    found = (_declaration(code[m]) for m in range(first, last))
+    return {_name(one) for one in found if one is not None}
 
 
 def _statement(line: str, code: str) -> str:
@@ -1044,15 +1063,18 @@ def _while_to_for(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator
     if any(_CONTINUE.search(code[m]) for m in body):
         return
     step = body[-1]
+    if _declared_in(code, n + 1, end) & set(_WORD.findall(code[step])):
+        return  # out of the body, the step would lose a local of it, or read an outer one
     pair = (_statement(lines[init], code[init]), _statement(lines[step], code[step]))
     yield [*lines[:init], *lines[init + 1 : n], f"{head}{pair[0]}; {condition}; {pair[1]}{tail}",
            *lines[n + 1 : step], *lines[step + 1 :]]  # fmt: skip
 
 
 def _guarded_do(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
-    """`while (c) { b }` as `if (c) { do { b } while (c); }`: c runs as often either way."""
+    """`while (c) { b }` as `if (c) { do { b } while (c); }`: c runs as often either way. Under a
+    braceless if the new if would take the else after it."""
     found = _loop(code, n, "while")
-    if found is None:
+    if found is None or _governed(code, n):
         return
     opening, close, end = found
     condition = lines[n][opening + 1 : close].strip()
@@ -1163,18 +1185,20 @@ def rewrite_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
     guarded do-while, and an if/else of one assignment as a ternary and back. Every rewrite keeps
     the meaning of the C but the ternaries, which are a statement move too (D-26). The rewrites
     read whole lines and simple operands only, so an expression split across lines is left
-    alone."""
+    alone. The branch and loop rewrites of the whole body come first, which Echo's rules aim at
+    and REWRITE_SHARE may not leave room past."""
     lines = text.split("\n")
     code = _code(text).split("\n")
-    integers = _integer_names(code, span)
-    for n in range(span[0] + 1, span[1]):
-        if not code[n].strip() or _declaration(code[n]) is not None:
-            continue
-        for moved in _expression_rewrites(lines[n], code[n], integers):
-            yield Candidate("\n".join([*lines[:n], moved, *lines[n + 1 :]]), REWRITE)
+    rows = [n for n in range(span[0] + 1, span[1])
+            if code[n].strip() and _declaration(code[n]) is None]  # fmt: skip
+    for n in rows:
         for rule, axes in _BLOCK_REWRITES:
             for moved_lines in rule(lines, code, n):
                 yield Candidate("\n".join(moved_lines), axes)
+    integers = _integer_names(code, span)
+    for n in rows:
+        for moved in _expression_rewrites(lines[n], code[n], integers):
+            yield Candidate("\n".join([*lines[:n], moved, *lines[n + 1 :]]), REWRITE)
 
 
 # ---- the waves ----
@@ -1299,8 +1323,9 @@ def _walk(run: _Run, seen: set[str], best: _Scored, axis: str) -> _Scored:
     """Walk `axis` from `best`: a variant that stands and beats it becomes the base, and the axis
     starts again from there. It ends on exact, at the budget or when the moves run out."""
     moves = _axis_moves(run, axis, best)
+    limit = min(BUDGET, run.compiles + REWRITE_SHARE) if axis == "rewrite" else BUDGET
     while not best.rank[0]:
-        wave = _take(moves, seen, min(WAVE, (BUDGET - run.compiles) // len(run.cells)))
+        wave = _take(moves, seen, min(WAVE, (limit - run.compiles) // len(run.cells)))
         if not wave:
             break
         standing = [scored for scored in _wave(run, wave) if scored.stands]
@@ -1342,24 +1367,27 @@ def _result(run: _Run, best: _Scored) -> SearchResult:
     kept = {scored.candidate.text: scored for scored in (*run.kept, best)}
     return SearchResult(path, axes, records, run.compiles, len(run.verdicts), slot_map,
                         _scalars(text, run.name, slot_map),
-                        tuple(_archived(run, scored) for scored in kept.values()))  # fmt: skip
+                        tuple(_kept(scored) for scored in kept.values()))  # fmt: skip
 
 
-def _class(run: _Run, record: dict[str, Any], compiled: batch.Compiled) -> str | None:
-    """classify's class of one cell, or None: exact, not compiled, or not readable."""
+def _kept(scored: _Scored) -> Kept:
+    best = _best_cell(scored.records)
+    return Kept(scored.candidate.text, scored.records[best], scored.compiled[best])
+
+
+def _class(exe: ExeInputs, start: int, kept: Kept) -> str | None:
+    """classify's class of a kept cell, or None: exact, not compiled, or not readable."""
     try:
-        return classify.with_class(record, run.exe, run.row.start, compiled).get("class")
+        return classify.with_class(kept.record, exe, start, kept.compiled).get("class")
     except _UNREADABLE:
         return None
 
 
-def _archived(run: _Run, scored: _Scored) -> archive.Entry:
-    """`scored` as an archive entry, measured by its best cell."""
-    best = _best_cell(scored.records)
-    record, text = scored.records[best], scored.candidate.text
-    return archive.Entry(archive.source_key(text), record["exact"], record["score"],
-                         record["stack_score"], _class(run, record, scored.compiled[best]),
-                         "search", text)  # fmt: skip
+def _archived(exe: ExeInputs, start: int, kept: Kept) -> archive.Entry:
+    record = kept.record
+    return archive.Entry(archive.source_key(kept.text), record["exact"], record["score"],
+                         record["stack_score"], _class(exe, start, kept), "search",
+                         kept.text)  # fmt: skip
 
 
 def _seed_text(source: str, name: str) -> str | None:
@@ -1430,9 +1458,13 @@ def archived_search(
     candidate of each class, an agent's checks included), and what it kept recorded there.
     `reverseapoc search` runs this; the curve runs run_search, which reads no archive."""
     name = exe.symbols.c_name(row.start)
-    usable = [entry for entry in archive.load(exe.stem, row.start, name)
-              if _seed_text(entry.source, name) is not None]  # fmt: skip
-    seeds = [entry.source for entry in archive.seeds(usable)]
+    base = archive.source_key(split_declarators(text, function_span(text, name)))
+    usable = {}
+    for entry in archive.load(exe.stem, row.start, name):
+        seed = _seed_text(entry.source, name)
+        if seed is not None and archive.source_key(seed) != base:
+            usable[entry] = seed  # the base's own C takes no seed's place
+    seeds = [usable[entry] for entry in archive.seeds(list(usable))]
     result = run_search(exe, row, text, rules, watcom_dir=watcom_dir, seeds=seeds)
-    archive.record(exe.stem, row.start, result.kept)
+    archive.record(exe.stem, row.start, [_archived(exe, row.start, one) for one in result.kept])
     return result

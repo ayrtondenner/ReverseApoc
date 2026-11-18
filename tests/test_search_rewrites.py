@@ -244,6 +244,40 @@ def test_a_loop_holding_a_continue_keeps_its_step_in_its_header():
     assert not any("while (a < b)" in moved for moved in _texts(_fn(*loop)))
 
 
+def test_a_step_is_not_moved_where_a_local_of_the_body_would_take_its_name():
+    """Review finding: the body's own `k` would capture the step's."""
+    loop = ["    for (a = 0; a < b; a += k) {", "        int k;", "", "        k = 2;",
+            "        g(k);", "    }", "    return a;"]  # fmt: skip
+    assert not any("while (a < b)" in moved for moved in _texts(_fn("    int k;", *loop)))
+    unrolled = ["    x = 0;", "    while (a < b) {", "        int t;", "", "        t = g(a);",
+                "        x = x + t;", "    }", "    return x;"]  # fmt: skip
+    assert not any("for (x = 0" in moved for moved in _texts(_fn("    int x;", *unrolled)))
+
+
+def test_a_governed_while_gets_no_guard():
+    """Review finding: an `if` added under a braceless `if` would take the `else` after it."""
+    lines = ["    if (b)", *WHILE[:3], "    else", "        a = 2;", "    return a;"]
+    assert not any("do {" in moved for moved in _texts(_fn(*lines)))
+
+
+@pytest.mark.parametrize(
+    ("condition", "inverted"),
+    [("!(a && b) /* note */", "a && b"), ("/* c */ !a", "a"), ("a == b /* c */", "a != b")],
+)  # fmt: skip
+def test_a_comment_in_a_condition_leaves_its_inversion_whole(condition, inverted):
+    lines = [f"    if ({condition}) {{", *IF_ELSE[1:]]
+    swapped = [f"    if ({inverted}) {{", "        x = 2;", "    } else {", "        x = 1;",
+               "    }", "    return x;"]  # fmt: skip
+    assert _fn("    int x;", *swapped) in _texts(_fn("    int x;", *lines))
+
+
+def test_block_rewrites_come_before_expression_rewrites():
+    """Echo's rules aim at block order and loop shape first; a budget may end the axis early."""
+    axes = [move.text for move in _moves(_fn("    int x;", "    x = a + b;", *IF_ELSE))]
+    first_swap = next(n for n, text in enumerate(axes) if "x = b + a;" in text)
+    assert any("!(a)" in text for text in axes[:first_swap])
+
+
 def test_a_governed_for_is_not_split():
     loop = ["    if (b)", "        for (a = 0; a < b; a++) {", "            g(a);", "        }",
             "    return a;"]  # fmt: skip
