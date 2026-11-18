@@ -63,6 +63,19 @@ def fresh_lifter(monkeypatch, tmp_path):
         cache.clear()
 
 
+def test_build_refuses_a_stack_convention_name_as_the_lifter_does():
+    """Lifter.callee never trusts a row whose C name starts with _ (cdecl, stack arguments):
+    the table says so instead of a register-convention guess."""
+
+    class Underscore(StubSymbols):
+        def c_name(self, va: int, *, data: bool = False) -> str:
+            return "_made_up" if va == VA and not data else super().c_name(va, data=data)
+
+    exe = dataclasses.replace(stub_exe(POPS_8), symbols=Underscore())
+    (entry,) = signatures.build(exe).values()
+    assert entry.refused == "call: stack-convention or odd callee name"
+
+
 def test_build_infers_every_game_row():
     exe = stub_exe(TWO_ARGS, POPS_8, TWO_POPS, NOTHING, kinds=("game", "thunk", "game", "runtime"))
     table = signatures.build(exe)
@@ -92,46 +105,67 @@ def test_write_then_load_round_trips(tmp_path: Path):
     path = signatures.table_path(tmp_path, exe.stem)
     assert path == tmp_path / "build" / "signatures" / "stub.json"
     built = signatures.build(exe)
-    signatures.write(path, exe.rows, built)
-    loaded = signatures.load(path, exe.rows, exe.stem)
+    signatures.write(path, exe, built)
+    loaded = signatures.load(path, exe)
     assert loaded.entries == built and loaded.note == ""
 
 
 def test_load_of_a_missing_table_says_how_to_make_one(tmp_path: Path):
-    loaded = signatures.load(tmp_path / "none.json", (), "ufo2p")
+    loaded = signatures.load(signatures.table_path(tmp_path, "stub"), stub_exe(NOTHING))
     assert loaded.entries == {}
-    assert "no signature table" in loaded.note and "reverseapoc signatures ufo2p" in loaded.note
+    assert loaded.note == ("no signature table at build/signatures/stub.json on this machine "
+                           "(`uv run reverseapoc signatures stub` writes it)")  # no host path
 
 
-def test_load_of_a_table_for_other_rows_is_stale(tmp_path: Path):
+class RenamedSymbols(StubSymbols):
+    def c_name(self, va: int, *, data: bool = False) -> str:
+        return "made_up_name" if va == VA and not data else super().c_name(va, data=data)
+
+
+def _moved(exe: StubExe) -> StubExe:
+    longer = dataclasses.replace(exe.rows[0], end=exe.rows[0].end + 1)
+    return dataclasses.replace(exe, rows=(longer,))
+
+
+def _renamed(exe: StubExe) -> StubExe:
+    return dataclasses.replace(exe, symbols=RenamedSymbols())
+
+
+@pytest.mark.parametrize("change", [_moved, _renamed, None], ids=["rows", "names", "lift.py"])
+def test_load_of_a_table_for_other_inputs_is_stale(tmp_path: Path, monkeypatch, change):
+    """The table is the lifter's verdict on these rows under these names (Lifter.callee
+    refuses by name): a change of either, or of lift.py, makes it stale."""
     exe = stub_exe(TWO_ARGS)
-    path = tmp_path / "t.json"
-    signatures.write(path, exe.rows, signatures.build(exe))
-    moved = (dataclasses.replace(exe.rows[0], end=exe.rows[0].end + 1),)
-    loaded = signatures.load(path, moved, exe.stem)
+    path = signatures.table_path(tmp_path, exe.stem)
+    signatures.write(path, exe, signatures.build(exe))
+    assert signatures.load(path, exe).note == ""
+    if change is None:
+        monkeypatch.setattr(signatures, "_lifter_digest", lambda: "made-up other lift.py")
+    loaded = signatures.load(path, exe if change is None else change(exe))
     assert loaded.entries == {} and "stale" in loaded.note
+    assert "build/signatures/stub.json" in loaded.note
 
 
 @pytest.mark.parametrize(
     "text",
-    ["{", "[]", '{"format": 99}', json.dumps({"format": 1, "rows_sha256": "x", "signatures": []})],
+    ["{", "[]", '{"format": 99}', json.dumps({"format": 1, "key": "x", "signatures": []})],
 )
 def test_load_refuses_a_malformed_table(tmp_path: Path, text: str):
     path = tmp_path / "t.json"
     path.write_text(text, encoding="utf-8")
     with pytest.raises(SignatureError, match="t.json"):
-        signatures.load(path, (), "stub")
+        signatures.load(path, stub_exe(NOTHING))
 
 
 def test_load_refuses_a_malformed_entry(tmp_path: Path):
     exe = stub_exe(TWO_ARGS)
     path = tmp_path / "t.json"
-    signatures.write(path, exe.rows, signatures.build(exe))
+    signatures.write(path, exe, signatures.build(exe))
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["signatures"][f"{VA:08X}"] = {"nregs": "two", "nstack": 0, "returns": True}
     path.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(SignatureError, match=f"{VA:08X}"):
-        signatures.load(path, exe.rows, exe.stem)
+        signatures.load(path, exe)
 
 
 def test_signatures_verb_writes_the_table(tmp_path: Path, monkeypatch, capsys):
@@ -142,4 +176,4 @@ def test_signatures_verb_writes_the_table(tmp_path: Path, monkeypatch, capsys):
     out = capsys.readouterr().out
     path = signatures.table_path(tmp_path, "stub")
     assert out.strip() == f"wrote {path} (1 inferred, 1 refused)"
-    assert signatures.load(path, exe.rows, "stub").entries == signatures.build(exe)
+    assert signatures.load(path, exe).entries == signatures.build(exe)

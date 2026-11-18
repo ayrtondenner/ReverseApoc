@@ -779,7 +779,7 @@ class _Prototypes:
 # ---- the owner's hints (todo owner-hint-file) ----
 
 HINTS_DIR = "hints"  # config/hints/<exe>.toml
-_HINT_KEY = re.compile(r"0x[0-9A-Fa-f]{8}")
+_HINT_KEY = re.compile(r"0x[0-9A-F]{8}")  # upper case: TOML keys differ by case
 
 
 def hints_path(config: Path, stem: str) -> Path:
@@ -788,7 +788,8 @@ def hints_path(config: Path, stem: str) -> Path:
 
 def read_hints(path: Path, starts: Container[int]) -> dict[int, str]:
     """The owner's hints at `path` by row start: TOML whose every key is a row start written
-    `0x` and eight hex digits, each value a non-blank string the pack shows verbatim. No file
+    `0x` and eight upper-case hex digits (TOML would keep 0x..1a and 0x..1A as two keys of one
+    row), each value a non-blank string the pack shows verbatim. No file
     is no hint; a key that is no start in `starts`, or any other shape, is ContextPackError
     naming the file and the key (a typo would silently drop the owner's hint)."""
     path = Path(path)
@@ -801,7 +802,8 @@ def read_hints(path: Path, starts: Container[int]) -> dict[int, str]:
     hints = {}
     for key, value in doc.items():
         if not _HINT_KEY.fullmatch(key):
-            raise ContextPackError(f"{path}: key {key!r} is not a row start as 0x and 8 hex digits")
+            raise ContextPackError(f"{path}: key {key!r} is not a row start as 0x and 8 "
+                                   "upper-case hex digits")  # fmt: skip
         if not isinstance(value, str) or not value.strip():
             raise ContextPackError(f"{path}: hint {key} must be a non-blank string")
         if int(key, 16) not in starts:
@@ -817,20 +819,19 @@ def _signature_lines(
     status: Mapping[int, str],
     prototypes: _Prototypes,
 ) -> tuple[str, ...]:
-    """One line per callee: a matched callee's own C prototype, else the table's entry. When
-    the table is missing or stale its note comes first, and the others are `not known`."""
+    """One line per callee with no C prototype of its own (a matched one's is in Callees): the
+    table's entry, or `not in the table`. A missing or stale table is its note, one line; no
+    such callee is no line at all."""
     if table is None:
         return ()
-    lines = [table.note] if table.note else []
-    for va in vas:
-        neighbour = _neighbour(va, symbols, status, prototypes)
+    neighbours = [(va, _neighbour(va, symbols, status, prototypes)) for va in vas]
+    wanted = [(va, n) for va, n in neighbours if not n.prototype]
+    if not wanted or table.note:
+        return (table.note,) if wanted else ()
+    lines = []
+    for va, neighbour in wanted:
         entry = table.entries.get(va)
-        if neighbour.prototype:
-            text = f"{one_line(neighbour.prototype)}; from its unit"
-        elif entry is not None:
-            text = entry.prototype(neighbour.name)
-        else:
-            text = "not known" if table.note else "not in the table"
+        text = entry.prototype(neighbour.name) if entry is not None else "not in the table"
         lines.append(f"- {neighbour.name} ({neighbour.kind}, {neighbour.status}): {text}")
     return tuple(lines)
 
@@ -840,9 +841,10 @@ def _outline(row: FunctionRow, flat: bytes | bytearray, fixups: Sequence[Fixup],
     """The control-flow outline of a row of structure.MIN_SIZE bytes and up, else None."""
     if not structure.wanted(row.end - row.start):
         return None
-    items, by_field = _row_items(row, flat, asm.FixupIndex(fixups).overlapping(row.start, row.end))
+    index = asm.FixupIndex(fixups)
+    items, by_field = _row_items(row, flat, index.overlapping(row.start, row.end))
     insns = [item for item in items if isinstance(item, Insn)]
-    cases = asm.case_targets(row, flat=flat, fixups=fixups, rows=rows)
+    cases = asm.case_targets(row, flat=flat, fixups=index.fixups, rows=rows)  # sorted: cheap
     return structure.outline(insns, row.start, row.end, cases=cases,
                              target=lambda insn: asm.branch_target(insn, by_field))  # fmt: skip
 

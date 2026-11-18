@@ -66,7 +66,9 @@ class _Block:
 
 def instructions(code: bytes, va: int, sites: Container[int]) -> list[Insn]:
     """The instructions of `code` loaded at `va`. A relocated field (`sites`, by field address)
-    at an instruction start is inline data and skipped, as is a byte capstone cannot decode."""
+    at an instruction start is inline data and skipped, as is a byte capstone cannot decode.
+    asm.walk does the same over LE Fixup objects; check's two sides have only field addresses
+    (relocs' RelocResult.ours and .theirs, each field one off32 wide), hence this form."""
     end = va + len(code)
     pos = va
     found: list[Insn] = []

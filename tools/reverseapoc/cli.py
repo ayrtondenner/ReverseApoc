@@ -1633,7 +1633,7 @@ def _cmd_signatures(args: argparse.Namespace) -> int:
     data = attempt.exe_inputs(args.exe, orig=args.orig, manifest=args.manifest, config=args.config)
     table = signatures.build(data)
     path = signatures.table_path(attempt.ROOTS.repo, data.stem)
-    signatures.write(path, data.rows, table)
+    signatures.write(path, data, table)
     refused = sum(1 for entry in table.values() if entry.refused)
     print(f"wrote {path} ({len(table) - refused} inferred, {refused} refused)")
     return 0

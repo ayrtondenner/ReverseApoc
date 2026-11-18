@@ -1747,7 +1747,7 @@ def make_pack(
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
     starts = {other.start for other in data.rows if other.kind in CLAIMABLE_KINDS}
     hints = contextpack.read_hints(contextpack.hints_path(config, data.stem), starts)
-    table = signatures.load(signatures.table_path(roots.repo, data.stem), data.rows, data.stem)
+    table = signatures.load(signatures.table_path(roots.repo, data.stem), data)
     listing_dir = Path(asm_root) / data.stem
     inputs = contextpack.gather(
         row, rows=data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,

@@ -3070,12 +3070,12 @@ def test_attempt_context_packs_the_owner_hint_and_signatures(tree: attempt.Roots
     assert _run(["attempt", "context"]) == 0, capsys.readouterr().err
     pack = capsys.readouterr().out
     assert _section(pack, "Owner hints").strip() == f"```text\n{OWNER_HINT}\n```"
-    signatures_body = _section(pack, "Callee signatures")
-    assert "no signature table at" in signatures_body
-    assert "- func_00010020 (game, unmatched): not known" in signatures_body
+    assert _section(pack, "Callee signatures").strip() == (
+        "no signature table at build/signatures/ufo2p.json on this machine "
+        "(`uv run reverseapoc signatures ufo2p` writes it)")  # fmt: skip
     table = signatures.table_path(tree.repo, "ufo2p")
     data = attempt.exe_inputs("ufo2p", orig=tree.orig, manifest=tree.manifest, config=tree.config)
-    signatures.write(table, data.rows, {FUNC_C: signatures.Entry(0, 0, False)})
+    signatures.write(table, data, {FUNC_C: signatures.Entry(0, 0, False)})
     assert _run(["attempt", "context"]) == 0
     signatures_body = _section(capsys.readouterr().out, "Callee signatures").strip()
     assert signatures_body == ("- func_00010020 (game, unmatched): void func_00010020(void); "
@@ -3092,9 +3092,10 @@ def test_context_cache_misses_on_a_new_hint_or_table(tree: attempt.Roots, monkey
     after = _attempt(capsys, "context")
     assert after[0] == 0 and len(loads) == 2
     assert OWNER_HINT in _section(after[1], "Owner hints")
-    rows = read_functions_csv(tree.config / "ufo2p" / "functions.csv")
-    signatures.write(signatures.table_path(tree.repo, "ufo2p"), rows, {})
-    assert _attempt(capsys, "context")[0] == 0 and len(loads) == 3
+    data = attempt.exe_inputs("ufo2p", orig=tree.orig, manifest=tree.manifest, config=tree.config)
+    assert len(loads) == 3  # the spy counts that load too
+    signatures.write(signatures.table_path(tree.repo, "ufo2p"), data, {})
+    assert _attempt(capsys, "context")[0] == 0 and len(loads) == 4
 
 
 def _shape(length: int, blocks: int, branches: int) -> dict:

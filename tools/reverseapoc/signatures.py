@@ -7,9 +7,10 @@ own C prototype, from its unit, wins over the table.
 
 Building the table lifts every row of the EXE (minutes, and the census on first use), so it is
 generated once per EXE by `reverseapoc signatures EXE` into the gitignored
-build/signatures/<exe>.json and only read afterwards: a live session never builds it. The
-table depends only on the binary and the functions.csv rows, so it carries a digest of the
-rows; a table built for other rows is stale and the pack says so instead of using it.
+build/signatures/<exe>.json and only read afterwards: a live session never builds it. Beside
+the binary (fixed by the manifest), the table depends on the functions.csv rows, their C names
+(the lifter refuses a stack-convention name) and lift.py itself, so it carries a key over all
+three; a table built under another key is stale and the pack says so instead of using it.
 
 Calling convention: Watcom 10.6 -4r passes the first four arguments in eax, edx, ebx and ecx
 and the rest on the stack, which the callee pops (`ret N`); the result comes back in eax.
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ from .functions import KIND_GAME, KIND_THUNK, FunctionRow
 
 FORMAT = 1
 TABLE_PARTS = ("build", "signatures")  # under the repository root: gitignored
-_KEYS = ("format", "rows_sha256", "signatures")
+_KEYS = ("format", "key", "signatures")
 _INFERRED_KEYS = ("nregs", "nstack", "returns")
 _SLOT = 4  # bytes of one stack argument
 _ADDRESS_DIGITS = 8
@@ -83,54 +84,83 @@ def table_path(repo: Path, stem: str) -> Path:
     return Path(repo).joinpath(*TABLE_PARTS) / f"{stem}.json"
 
 
-def rows_digest(rows: Sequence[FunctionRow]) -> str:
-    """sha256 over every row's start, end and kind, in address order."""
-    spans = sorted((row.start, row.end, row.kind) for row in rows)
-    return hashlib.sha256(json.dumps(spans).encode("ascii")).hexdigest()
+def _shown(stem: str) -> str:
+    """The table's path as a pack shows it: relative to the repository, never a host path."""
+    return "/".join([*TABLE_PARTS, f"{stem}.json"])
+
+
+def _lifter_digest() -> str:
+    return hashlib.sha256(Path(lift.__file__).read_bytes()).hexdigest()
+
+
+def table_key(exe: lift.ExeInputs) -> str:
+    """sha256 over lift.py and every row's start, end, kind and C name, in address order."""
+    rows = sorted((row.start, row.end, row.kind, exe.symbols.c_name(row.start))
+                  for row in exe.rows)  # fmt: skip
+    text = json.dumps([_lifter_digest(), rows])
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _refusal(exe: lift.ExeInputs, row: FunctionRow) -> str:
+    """Lifter.callee's refusal of a callee by name (a stack-convention or odd name), or ''."""
+    name = exe.symbols.c_name(row.start)
+    if name.startswith("_") or not name.replace("_", "a").isidentifier():
+        return "call: stack-convention or odd callee name"
+    return ""
 
 
 def build(exe: lift.ExeInputs) -> dict[int, Entry]:
-    """The signature of every game and thunk row of `exe`, in address order. The census is read
-    or built first, so `returns` already has its callers' verdict."""
+    """The signature of every game and thunk row of `exe`, in address order, as a caller's
+    Lifter sees it: a name Lifter.callee refuses is refused here too, and a signature already
+    worked out for a callee is reused (one shared map, so the table agrees with itself). The
+    census is read or built first, so `returns` already has its callers' verdict."""
     lift.result_used(exe)
     sigs: dict[int, lift.Sig | None] = {}
     table = {}
     for row in sorted(exe.rows, key=lambda r: r.start):
         if row.kind not in _LIFTED:
             continue
-        try:
-            sig = lift.Lifter(exe, row, sigs).signature()
-        except lift.Unliftable as exc:
-            table[row.start] = Entry(refused=str(exc))
+        refused = _refusal(exe, row)
+        if refused:
+            table[row.start] = Entry(refused=refused)
             continue
+        sig = sigs.get(row.start)
+        if sig is None:  # not reached yet, or unknown to its callers: ask for the reason
+            try:
+                sig = lift.Lifter(exe, row, sigs).signature()
+            except lift.Unliftable as exc:
+                table[row.start] = Entry(refused=str(exc))
+                continue
+            sigs[row.start] = sig
         table[row.start] = Entry(sig.nregs, sig.nstack, sig.returns)
     return table
 
 
-def write(path: Path, rows: Sequence[FunctionRow], table: Mapping[int, Entry]) -> None:
-    doc = {"format": FORMAT, "rows_sha256": rows_digest(rows),
+def write(path: Path, exe: lift.ExeInputs, table: Mapping[int, Entry]) -> None:
+    doc = {"format": FORMAT, "key": table_key(exe),
            "signatures": {f"{va:0{_ADDRESS_DIGITS}X}": entry.to_json()
                           for va, entry in sorted(table.items())}}  # fmt: skip
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     write_atomic(Path(path), (json.dumps(doc, indent=1) + "\n").encode("utf-8"))
 
 
-def load(path: Path, rows: Sequence[FunctionRow], stem: str) -> Table:
-    """The table at `path` for these rows. No file, or one built for other rows, gives no
-    entries and a note saying so; a malformed file is SignatureError naming it."""
+def load(path: Path, exe: lift.ExeInputs) -> Table:
+    """The table at `path` for `exe`. No file, or one built under another key (table_key),
+    gives no entries and a note saying so; a malformed file is SignatureError naming it."""
     path = Path(path)
+    shown = _shown(exe.stem)
     if not path.is_file():
-        return Table({}, f"no signature table at {path.as_posix()} on this machine "
-                         f"(`uv run reverseapoc signatures {stem}` writes it)")  # fmt: skip
+        return Table({}, f"no signature table at {shown} on this machine "
+                         f"(`uv run reverseapoc signatures {exe.stem}` writes it)")  # fmt: skip
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
         entries = _entries(doc)
     except (ValueError, TypeError) as exc:
         raise SignatureError(f"{path}: {exc}") from exc
-    if doc["rows_sha256"] != rows_digest(rows):
-        return Table({}, f"the signature table at {path.as_posix()} is stale: it was built for "
-                         f"other functions.csv rows (`uv run reverseapoc signatures {stem}` "
-                         "rebuilds it)")  # fmt: skip
+    if doc["key"] != table_key(exe):
+        return Table({}, f"the signature table at {shown} is stale: it was built for other "
+                         "functions.csv rows, names or lift.py (`uv run reverseapoc signatures "
+                         f"{exe.stem}` rebuilds it)")  # fmt: skip
     return Table(entries)
 
 
@@ -139,8 +169,8 @@ def _entries(doc: object) -> dict[int, Entry]:
         raise ValueError(f"not a signature table (one JSON object with {', '.join(_KEYS)})")
     if doc["format"] != FORMAT:
         raise ValueError(f"format {doc['format']!r}, not {FORMAT}")
-    if not isinstance(doc["rows_sha256"], str) or not isinstance(doc["signatures"], dict):
-        raise ValueError("rows_sha256 must be a string and signatures an object")
+    if not isinstance(doc["key"], str) or not isinstance(doc["signatures"], dict):
+        raise ValueError("key must be a string and signatures an object")
     return {_address(key): _entry(key, value) for key, value in doc["signatures"].items()}
 
 

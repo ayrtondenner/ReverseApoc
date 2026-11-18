@@ -765,6 +765,13 @@ def test_read_hints_refuses_a_bad_entry(tmp_path: Path, text: str, match: str):
         contextpack.read_hints(_hints(tmp_path, text), {FUNC_B, FUNC_C})
 
 
+def test_read_hints_refuses_lower_case_hex(tmp_path: Path):
+    """TOML keeps 0x0001001a and 0x0001001A as two keys of one row: one hint would be lost."""
+    path = _hints(tmp_path, '0x0001001a = "x"\n0x0001001A = "y"\n')
+    with pytest.raises(ContextPackError, match="0x0001001a"):
+        contextpack.read_hints(path, {0x1001A})
+
+
 @pytest.mark.parametrize("stem", ["ufo2p", "tacp"])
 def test_committed_hint_files_hold_no_hint(stem: str):
     """The owner writes hints; the repository ships each file as a commented example only."""
@@ -782,12 +789,12 @@ def test_gather_carries_the_hint_and_the_callee_signatures(tmp_path: Path):
     assert inputs["callee_signatures"] == ("- func_00010020 (game, unmatched): int "
                                            "func_00010020(int); lifter: args in eax, the result "
                                            "in eax",)  # fmt: skip
-    matched = _gather(0, tmp_path, {FUNC_B: "matched"}, signatures=table)
-    assert matched["callee_signatures"] == ("- func_00010010 (game, matched): int "
-                                            "func_00010010(void); from its unit",)  # fmt: skip
+    # a matched callee's prototype is in Callees already: no second copy, and no section
+    assert _gather(0, tmp_path, {FUNC_B: "matched"}, signatures=table)["callee_signatures"] == ()
     missing = _gather(1, tmp_path, {}, signatures=Table({}, "made-up: no table here"))
-    assert missing["callee_signatures"] == ("made-up: no table here",
-                                            "- func_00010020 (game, unmatched): not known")
+    assert missing["callee_signatures"] == ("made-up: no table here",)  # one line, not N
+    leaf = _gather(2, tmp_path, {}, signatures=Table({}, "made-up: no table here"))
+    assert leaf["callee_signatures"] == ()  # no callee: no note either
     absent = _gather(0, tmp_path, {}, signatures=Table({}))
     assert absent["callee_signatures"] == ("- func_00010010 (game, unmatched): not in the "
                                            "table",)  # fmt: skip
