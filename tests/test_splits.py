@@ -20,8 +20,8 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import ORIG_DIR, REPO_ROOT, build_le_image, fixup_record, requires_capstone
-from reverseapoc import asmclass, cli, locate, mechanics
-from reverseapoc.functions import KIND_GAME, FunctionRow, UnitRow
+from reverseapoc import asmclass, cli, locate, mechanics, status
+from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, FunctionRow, UnitRow
 from reverseapoc.le import LE, SRC_OFF32
 from reverseapoc.mechanics import AsmRow
 
@@ -313,3 +313,201 @@ def test_real_split_pairs():
     assert found[REAL_CONFLICT].conflict is True
     assert (found[REAL_RERULED].a_verdict, found[REAL_RERULED].conflict) == ("c", False)
     assert untagged == []  # every listed A is exactly an asm-list no-terminator row
+
+
+# ---- interior branches: a branch into the middle of another row (suspected bad splits) ----
+#
+# Its own synthetic image (code at 0x10000, rows of ROW bytes):
+#   P    +0x000  call Q+8 (a suspect: split Q), call R (a row start), jmp P+0x10 (its own
+#                row), ret
+#   Q    +0x040  (a gap before it, so P and Q do not touch) xor, xor, ret
+#   A    +0x080  je B+4 (a suspect: A and B touch, merge them), ret
+#   B    +0x0A0  xor, xor, ret
+#   C    +0x0C0  xor, ret
+#   D    +0x0E0  xor, jmp B+4 (a suspect: merge B..D; it shares B with A..B, so one fix
+#                merges A..D), ret
+#   X    +0x120  je Q+4, then "abcdef" and a zero (a text-run row: data read as code, skipped)
+#   R    +0x160  call X+6 (into a text-run row: skipped), call RT+2 (a runtime row: ignored), ret
+#   S    +0x180  jmp Q+0x10 and nothing else (a tail-jump stub: its target is an entry, split Q)
+#   M    +0x1C0  xor, jmp Q+1 (inside Q's first xor: no instruction starts there, skipped)
+#   G    +0x200  xor, jne H+4 (a suspect: merge G..H, or review it when MID is matched), ret
+#   MID  +0x220  ret
+#   H    +0x240  xor, xor, ret
+#   L    +0x260  jmp H+4 as its first instruction, then xor and ret (no stub: merge H..L, which
+#                shares H with G..H, so one fix merges G..L)
+#   RT   +0x280  a runtime row: xor, ret
+
+_OFFSETS = (0x000, 0x040, 0x080, 0x0A0, 0x0C0, 0x0E0, 0x120, 0x160, 0x180, 0x1C0, 0x200, 0x220,
+            0x240, 0x260, 0x280)  # fmt: skip
+_P, _Q, _A, _B, _C, _D, _X, _R, _S, _M, _G, _MID, _H, _L, _RT = (CODE + off for off in _OFFSETS)
+_TEXT = b"abcdef\x00"  # printable ASCII ended by a zero (asmclass TEXT_RUN is 6)
+_JMP_OWN = 0x10  # P's jump into itself
+_STUB_TO = 0x10  # S's jump into Q: one of Q's nops
+_MID_XOR = 1  # M's jump: the second byte of Q's first xor
+_JNE = b"\x0f\x85"  # jne rel32
+_X2 = len(_XOR_EAX_EAX)
+_AFTER_JE = len(_JE) + _REL32  # X+6: the first text byte, an instruction start
+
+
+def _interior_exe(stem: str = "ufo2p"):
+    call_q = _rel(_CALL, _P, _Q + 8)
+    call_r = _rel(_CALL, _P + len(call_q), _R)
+    own_at = _P + 2 * len(call_q)
+    patches = {
+        _P: _padded(call_q + call_r + _rel(_JMP, own_at, _P + _JMP_OWN) + _RET),
+        _Q: _padded(_XOR_EAX_EAX * 2 + _RET),
+        _A: _padded(_rel(_JE, _A, _B + 4) + _RET),
+        _B: _padded(_XOR_EAX_EAX * 2 + _RET),
+        _C: _padded(_XOR_EAX_EAX + _RET),
+        _D: _padded(_XOR_EAX_EAX + _rel(_JMP, _D + _X2, _B + 4) + _RET),
+        _X: _padded(_rel(_JE, _X, _Q + 4) + _TEXT),
+        _R: _padded(_rel(_CALL, _R, _X + _AFTER_JE) + _rel(_CALL, _R + 5, _RT + _X2) + _RET),
+        _S: _padded(_rel(_JMP, _S, _Q + _STUB_TO)),
+        _M: _padded(_XOR_EAX_EAX + _rel(_JMP, _M + _X2, _Q + _MID_XOR) + _RET),
+        _G: _padded(_XOR_EAX_EAX + _rel(_JNE, _G + _X2, _H + 4) + _RET),
+        _MID: _padded(_RET),
+        _H: _padded(_XOR_EAX_EAX * 2 + _RET),
+        _L: _padded(_rel(_JMP, _L, _H + 4) + _XOR_EAX_EAX + _RET),
+        _RT: _padded(_XOR_EAX_EAX + _RET),
+    }  # fmt: skip
+    le = LE(build_le_image(fixups=[b"", b"", b""], patches=patches).data)
+    flat = bytes(le.load_flat(relocate=False))
+    rows = tuple(_row(start, OTHER_UNIT if start == _Q else UNIT) for start in sorted(patches)
+                 if start != _RT)  # fmt: skip
+    rows += (FunctionRow(_RT, _RT + ROW, "rt_one", KIND_RUNTIME, "rt_unit", "runtime"),)
+    units = (UnitRow(UNIT, CODE, _RT, "first"),)
+    return SimpleNamespace(stem=stem, le=le, flat=flat, fixups=tuple(le.fixups()), rows=rows,
+                           units=units)  # fmt: skip
+
+
+def _interior(**kwargs):
+    return _splits().interior_branches(_interior_exe(), **kwargs)
+
+
+def test_interior_branch_suspects():
+    requires_capstone()
+    report = _interior(statuses={_Q: "matched"})
+    found = [(s.source, s.site, s.branch, s.target, s.offset, s.touching, s.fix)
+             for s in report.suspects]  # fmt: skip
+    assert found == [
+        (_P, 0, "call", _Q, 8, False, "split"),
+        (_A, 0, "jcc", _B, 4, True, "merge"),
+        (_D, _X2, "jmp", _B, 4, False, "merge"),
+        (_S, 0, "jmp", _Q, _STUB_TO, False, "split"),
+        (_G, _X2, "jcc", _H, 4, False, "merge"),
+        (_L, 0, "jmp", _H, 4, True, "merge"),
+    ]
+    first = report.suspects[0]
+    assert (first.exe, first.source_unit, first.target_unit) == ("ufo2p", UNIT, OTHER_UNIT)
+    assert (first.source_status, first.target_status) == ("-", "matched")
+    assert report.skipped == 3  # X's je and R's call (text-run rows), M's jmp (no insn start)
+
+
+def test_interior_branch_fixes():
+    requires_capstone()
+    fixes = [(f.action, f.rows, f.at) for f in _interior().fixes]
+    assert fixes == [
+        ("split", (_Q,), _Q + 8),
+        ("split", (_Q,), _Q + _STUB_TO),
+        ("merge", (_A, _B, _C, _D), None),  # A..B and B..D share B: one merge
+        ("merge", (_G, _MID, _H, _L), None),  # G..H and H..L share H: one merge
+    ]
+
+
+def test_interior_fix_on_a_matched_row_is_review():
+    requires_capstone()
+    statuses = {_MID: "matched", _Q: "partial"}
+    fixes = [(f.action, f.rows, f.at) for f in _interior(statuses=statuses).fixes]
+    assert fixes[-1] == ("review", (_G, _MID, _H, _L), None)  # MID's boundaries are proven
+    assert [f[0] for f in fixes[:3]] == ["split", "split", "merge"]  # partial proves nothing
+    report = _interior(statuses={_Q: "matched"})
+    assert [(f.action, f.at) for f in report.fixes[:2]] == [("review", _Q + 8),
+                                                            ("review", _Q + _STUB_TO)]
+
+
+def _interior_run(capsys, config, *extra: str) -> tuple[int, str]:
+    code = cli.main(["mechanics", "interior", "--config", str(config), *extra])
+    return code, capsys.readouterr().out
+
+
+INTERIOR_KEYS = ["exe", "source", "source_unit", "site", "branch", "target", "target_unit",
+                 "offset", "touching", "source_status", "target_status", "fix"]  # fmt: skip
+
+
+def _interior_injected(monkeypatch):
+    exes = {"ufo2p": _interior_exe(), "tacp": _interior_exe("tacp")}
+    monkeypatch.setattr(locate, "load_inputs", lambda _c, _o, _m, exe: exes[exe])
+
+
+def test_cli_interior_json_and_text(tmp_path, monkeypatch, capsys):
+    requires_capstone()
+    _interior_injected(monkeypatch)
+    code, out = _interior_run(capsys, tmp_path, "--json")
+    assert code == 0
+    doc = json.loads(out)
+    assert set(doc) == {"suspects", "fixes", "counts"}
+    assert all(list(s) == INTERIOR_KEYS for s in doc["suspects"])
+    first = doc["suspects"][0]
+    assert (first["source"], first["site"], first["target"], first["offset"]) == (
+        f"0x{_P:08X}", "0x0", f"0x{_Q:08X}", "0x8")  # fmt: skip
+    assert doc["fixes"][0] == {"exe": "ufo2p", "action": "split", "rows": [f"0x{_Q:08X}"],
+                               "at": f"0x{_Q + 8:08X}"}  # fmt: skip
+    assert doc["fixes"][2]["at"] is None
+    assert doc["counts"]["tacp"] == {"suspects": 6, "call": 1, "jmp": 3, "jcc": 2, "skipped": 3,
+                                     "split": 2, "merge": 2, "review": 0}  # fmt: skip
+    code, text = _interior_run(capsys, tmp_path, "--exe", "ufo2p")
+    lines = [line for line in text.splitlines() if line.strip()]
+    assert code == 0 and len(lines) == 6 + 4 + 1  # suspects, fixes, one counts line
+    assert lines[0].startswith(f"ufo2p 0x{_P:08X}+0x0 call -> 0x{_Q:08X}+0x8 ")
+    assert lines[6] == f"ufo2p fix: split 0x{_Q:08X} at 0x{_Q + 8:08X}"
+    assert lines[9] == (f"ufo2p fix: merge 0x{_G:08X} 0x{_MID:08X} 0x{_H:08X} 0x{_L:08X} "
+                        "(4 rows)")  # fmt: skip
+    assert not _HEX_RUN.search(text) and not _OPERAND.search(text)
+    assert list(tmp_path.iterdir()) == []  # writes nothing
+
+
+def test_cli_interior_reads_status_csv(tmp_path, monkeypatch, capsys):
+    requires_capstone()
+    _interior_injected(monkeypatch)
+    row = status.StatusRow(_MID, f"func_{_MID:08X}", UNIT, status.MATCHED, 100.0, 1,
+                           "0" * 64, "2026-11-18")  # fmt: skip
+    status.write_status(status.status_path(tmp_path, "ufo2p"), [row])
+    code, out = _interior_run(capsys, tmp_path, "--json")
+    doc = json.loads(out)
+    assert code == 0
+    assert doc["counts"]["ufo2p"]["review"] == 1 and doc["counts"]["tacp"]["review"] == 0
+    review = [fix for fix in doc["fixes"] if fix["action"] == "review"]
+    assert review == [{"exe": "ufo2p", "action": "review",
+                       "rows": [f"0x{_G:08X}", f"0x{_MID:08X}", f"0x{_H:08X}", f"0x{_L:08X}"],
+                       "at": None}]
+
+
+REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix), checked by hand 2026-11-18
+    ("ufo2p", 0x00024470, 0x764): (0x00024C03, 0xAB, "merge"),  # switch cases cut out
+    ("ufo2p", 0x000946B0, 0xF2C): (0x0002E100, 0x210, "split"),  # after a ret and filler
+    ("tacp", 0x000AF170, 0x0): (0x000B12E0, 0x100, "split"),  # a tail-jump stub
+}
+REAL_FIXES = {
+    ("ufo2p", "merge", (0x00024470, 0x00024BD9, 0x00024BE7, 0x00024BF5, 0x00024C03), None),
+    ("ufo2p", "split", (0x0002E100,), 0x0002E310),
+    ("tacp", "split", (0x000B12E0,), 0x000B13E0),
+}
+
+
+def test_real_interior_branches():
+    requires_capstone()
+    missing = [n for n in REAL_EXES.values() if not (ORIG_DIR / n).is_file()]
+    if missing:
+        pytest.skip(f"orig/{missing[0]} not present (run uv run reverseapoc ingest or set "
+                    "REVERSEAPOC_ORIG)")  # fmt: skip
+    config = REPO_ROOT / "config"
+    found, fixes = {}, set()
+    for exe in mechanics.EXES:
+        inputs = locate.load_inputs(config, ORIG_DIR, config / "targets.toml", exe)
+        report = _splits().interior_branches(inputs)
+        found |= {(exe, s.source, s.site): (s.target, s.offset, s.fix) for s in report.suspects}
+        fixes |= {(exe, f.action, f.rows, f.at) for f in report.fixes}
+        assert report.skipped > 0  # text read as code is there to skip
+    for key, expected in REAL_INTERIOR.items():
+        assert found[key] == expected, key
+    assert REAL_FIXES <= fixes

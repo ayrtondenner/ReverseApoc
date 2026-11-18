@@ -52,11 +52,13 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import asm, asmclass, mechanics
+from . import asm, asmclass, locate, mechanics
+from .callgraph import WALKED_KINDS
 from .functions import KIND_GAME, KIND_RUNTIME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, SRC_PTR1632
 from .mechanics import AsmRow
-from .x86 import Insn, is_filler
+from .status import MATCHED
+from .x86 import Insn, is_alignment_filler, is_filler
 
 if TYPE_CHECKING:
     from .check import ExeInputs
@@ -355,3 +357,249 @@ def pair_json(pair: SplitPair) -> dict[str, Any]:
 
 def splits_json(pairs: Sequence[SplitPair], exes: Sequence[str]) -> dict[str, Any]:
     return {"pairs": [pair_json(pair) for pair in pairs], "counts": counts(pairs, exes)}
+
+
+# ---- interior branches: suspected bad splits (`mechanics interior`) ----
+#
+# A game row whose call or jump lands strictly inside another game or thunk row (not on its
+# start) points at a wrong boundary: no C source of one function branches into the middle of
+# another, so neither row can match as cut. Runtime and data-in-code rows are not targets, as in
+# callgraph's mid-row references (WALKED_KINDS): a Watcom library routine may have several
+# entries, and functions.csv does not cut runtime rows. callgraph reports mid-row pointer
+# fixups; this report reads the relative calls and jumps, which carry no fixup. Each such
+# branch proposes one fix:
+#
+# - `split`: a call, or a tail-jump stub (a row whose first real instruction is a jmp followed
+#   only by alignment filler, such as tacp's func_000AF170), lands on a function entry, so the
+#   target row holds a missed split;
+# - `merge`: any other jump lands on a label of the function it belongs to, so the source row,
+#   the target row and every row between them are one function. Merge spans that share a row
+#   are one merge.
+#
+# A fix that would cut or join a status.csv `matched` row is `review` instead: a matched row's
+# boundaries are proven by the gate, so the branch crosses two real functions (a shared tail,
+# say) and the owner looks at it; no change is proposed.
+#
+# Two kinds of branch are noise and only counted (`skipped`): one from or into a row that
+# carries a CONTENT_TAGS tag (data read as code: text decodes as jcc, since bytes 0x70 to 0x7F
+# are the letters p to DEL), and one whose destination is no instruction start of the decoded
+# target row (a real branch lands on an instruction). The fixes are proposals for the owner,
+# who rules functions.csv; nothing is written.
+
+BRANCHES = ("call", "jmp", "jcc")
+CALL, JMP, JCC = BRANCHES
+ACTIONS = ("split", "merge", "review")
+SPLIT, MERGE, REVIEW = ACTIONS
+_SKIPPED = "skipped"
+
+
+@dataclass(frozen=True)
+class Interior:
+    """One branch into the middle of another row: addresses, offsets, names and words only."""
+
+    exe: str
+    source: int  # the branching row's start
+    source_unit: str
+    site: int  # the branch instruction's offset into the source row
+    branch: str  # one of BRANCHES
+    target: int  # the target row's start
+    target_unit: str
+    offset: int  # the branch destination's offset into the target row (never 0)
+    touching: bool  # one row ends where the other starts
+    source_status: str  # status.csv's status of the row, else NONE
+    target_status: str
+    fix: str  # SPLIT or MERGE: what the branch alone proposes
+
+
+@dataclass(frozen=True)
+class Fix:
+    """One proposed functions.csv change: split `rows[0]` at `at`, or merge `rows` into one;
+    `review` when that split or merge would touch a matched row."""
+
+    exe: str
+    action: str  # one of ACTIONS
+    rows: tuple[int, ...]  # row starts, by address
+    at: int | None  # the split address; None for a merge
+
+
+@dataclass(frozen=True)
+class InteriorReport:
+    exe: str
+    suspects: tuple[Interior, ...]  # by source row, then site
+    fixes: tuple[Fix, ...]  # splits by address, then merges by first row
+    skipped: int  # noise: branches from or into content-tagged rows, or into no insn start
+
+
+def _branch_word(insn: Insn) -> str:
+    if insn.is_call:
+        return CALL
+    return JCC if insn.is_conditional else JMP
+
+
+def _merges(spans: Iterable[tuple[int, int]]) -> list[tuple[int, int]]:
+    """(first, last) row-start spans; spans that share a row are made one."""
+    out: list[tuple[int, int]] = []
+    for lo, hi in sorted(spans):
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def _fix(exe: str, action: str, rows: Sequence[int], at: int | None,
+         statuses: Mapping[int, str]) -> Fix:  # fmt: skip
+    proven = any(statuses.get(row) == MATCHED for row in rows)
+    return Fix(exe, REVIEW if proven else action, tuple(rows), at)
+
+
+def _fixes(exe: str, suspects: Sequence[Interior], starts: Sequence[int],
+           statuses: Mapping[int, str]) -> tuple[Fix, ...]:  # fmt: skip
+    cuts = sorted({(s.target, s.target + s.offset) for s in suspects if s.fix == SPLIT})
+    spans = [(min(s.source, s.target), max(s.source, s.target))
+             for s in suspects if s.fix == MERGE]  # fmt: skip
+    found = [_fix(exe, SPLIT, (row,), at, statuses) for row, at in cuts]
+    for lo, hi in _merges(spans):
+        rows = starts[bisect.bisect_left(starts, lo):bisect.bisect_right(starts, hi)]
+        found.append(_fix(exe, MERGE, rows, None, statuses))
+    return tuple(found)
+
+
+def _stub(items: Sequence[asm.Item]) -> Insn | None:
+    """The jmp of a tail-jump stub: the row's first real instruction is an unconditional jmp
+    and only alignment filler follows it."""
+    insns = _real_insns(items)
+    if not insns or not insns[0].is_jump or insns[0].is_conditional:
+        return None
+    rest = items[list(items).index(insns[0]) + 1 :]
+    filler = all(isinstance(item, Insn) and is_alignment_filler(item) for item in rest)
+    return insns[0] if filler else None
+
+
+def _interior(exe: str, row: FunctionRow, insn: Insn, stub: Insn | None, target: FunctionRow,
+              statuses: Mapping[int, str]) -> Interior:  # fmt: skip
+    return Interior(
+        exe=exe, source=row.start, source_unit=row.unit, site=insn.va - row.start,
+        branch=_branch_word(insn), target=target.start, target_unit=target.unit,
+        offset=insn.branch_target - target.start,
+        touching=row.end == target.start or target.end == row.start,
+        source_status=statuses.get(row.start, NONE),
+        target_status=statuses.get(target.start, NONE),
+        fix=SPLIT if insn.is_call or insn is stub else MERGE)  # fmt: skip
+
+
+class _Facts:
+    """The decoded rows and the per-row facts the report needs, each computed once and only
+    for the rows a branch reaches."""
+
+    def __init__(self, exe: ExeInputs) -> None:
+        self.decoded = _decode_all(exe)
+        self.rows = locate._Rows(exe.rows)
+        self._data: dict[int, bool] = {}
+        self._heads: dict[int, frozenset[int]] = {}
+
+    def target(self, row: FunctionRow, va: int) -> FunctionRow | None:
+        """The game or thunk row other than `row` that `va` lies strictly inside of."""
+        target = self.rows.containing(va)
+        if target is None or target.kind not in WALKED_KINDS or va == target.start:
+            return None
+        return None if target.start == row.start else target
+
+    def data(self, start: int) -> bool:
+        """The decoded row at `start` carries a CONTENT_TAGS tag."""
+        if start not in self._data:
+            self._data[start] = bool(_content(*self.decoded[start]))
+        return self._data[start]
+
+    def lands(self, start: int, va: int) -> bool:
+        """`va` is an instruction start of the decoded row at `start`."""
+        if start not in self._heads:
+            items = self.decoded[start][1].items
+            self._heads[start] = frozenset(i.va for i in items if isinstance(i, Insn))
+        return va in self._heads[start]
+
+    def noise(self, row: FunctionRow, target: FunctionRow, va: int) -> bool:
+        return self.data(row.start) or self.data(target.start) or not self.lands(target.start, va)
+
+
+def interior_branches(exe: ExeInputs, *,
+                      statuses: Mapping[int, str] | None = None) -> InteriorReport:  # fmt: skip
+    """Every call or jump of a game row that lands inside another row, not on its start, with
+    the proposed fixes. `statuses` maps a row start to its status.csv status: shown on each
+    suspect, and a fix touching a matched row is REVIEW."""
+    statuses = statuses or {}
+    facts = _Facts(exe)
+    suspects, skipped = [], 0
+    for row, dec in sorted(facts.decoded.values(), key=lambda entry: entry[0].start):
+        if row.kind != KIND_GAME:
+            continue
+        stub = _stub(dec.items)
+        for insn in _real_insns(dec.items):
+            target = None if insn.branch_target is None else facts.target(row, insn.branch_target)
+            if target is None:
+                continue
+            if facts.noise(row, target, insn.branch_target):
+                skipped += 1
+                continue
+            suspects.append(_interior(exe.stem, row, insn, stub, target, statuses))
+    fixes = _fixes(exe.stem, suspects, facts.rows.starts, statuses)
+    return InteriorReport(exe.stem, tuple(suspects), fixes, skipped)
+
+
+def interior_counts(report: InteriorReport) -> dict[str, int]:
+    """Suspects, then per branch word, the skipped branches, then fixes per action."""
+    per = Counter(s.branch for s in report.suspects)
+    fixes = Counter(f.action for f in report.fixes)
+    return {"suspects": len(report.suspects), **{b: per[b] for b in BRANCHES},
+            _SKIPPED: report.skipped, **{a: fixes[a] for a in ACTIONS}}  # fmt: skip
+
+
+def format_interior(suspect: Interior) -> str:
+    return (f"{suspect.exe} 0x{suspect.source:08X}+0x{suspect.site:X} {suspect.branch} -> "
+            f"0x{suspect.target:08X}+0x{suspect.offset:X} "
+            f"unit={suspect.source_unit}/{suspect.target_unit} "
+            f"touching={_yes(suspect.touching)} "
+            f"status={suspect.source_status}/{suspect.target_status} fix={suspect.fix}")
+
+
+def format_fix(fix: Fix) -> str:
+    """`split ROW at ADDR` or `merge ROWS (N rows)`; `review` in place of the verb when the
+    fix touches a matched row."""
+    if fix.at is not None:
+        return f"{fix.exe} fix: {fix.action} 0x{fix.rows[0]:08X} at 0x{fix.at:08X}"
+    rows = " ".join(f"0x{row:08X}" for row in fix.rows)
+    return f"{fix.exe} fix: {fix.action} {rows} ({len(fix.rows)} rows)"
+
+
+def format_interiors(reports: Sequence[InteriorReport]) -> str:
+    """One line per suspect, then one per proposed fix, then one counts line per EXE."""
+    lines = [format_interior(s) for report in reports for s in report.suspects]
+    lines += [format_fix(fix) for report in reports for fix in report.fixes]
+    for report in reports:
+        per = interior_counts(report)
+        lines.append(f"{report.exe}: " + ", ".join(f"{n} {k}" for k, n in per.items()))
+    return "\n".join(lines)
+
+
+def _interior_json(suspect: Interior) -> dict[str, Any]:
+    """The suspect's JSON object, in field order; row starts as 0x%08X, offsets as 0x%X."""
+    out: dict[str, Any] = {}
+    for field in fields(suspect):
+        value = getattr(suspect, field.name)
+        if field.name in ("source", "target"):
+            value = f"0x{value:08X}"
+        elif field.name in ("site", "offset"):
+            value = f"0x{value:X}"
+        out[field.name] = value
+    return out
+
+
+def _fix_json(fix: Fix) -> dict[str, Any]:
+    return {"exe": fix.exe, "action": fix.action, "rows": [f"0x{row:08X}" for row in fix.rows],
+            "at": None if fix.at is None else f"0x{fix.at:08X}"}  # fmt: skip
+
+
+def interiors_json(reports: Sequence[InteriorReport]) -> dict[str, Any]:
+    return {"suspects": [_interior_json(s) for report in reports for s in report.suspects],
+            "fixes": [_fix_json(fix) for report in reports for fix in report.fixes],
+            "counts": {report.exe: interior_counts(report) for report in reports}}  # fmt: skip
