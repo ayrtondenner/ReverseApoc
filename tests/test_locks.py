@@ -135,3 +135,35 @@ def test_is_held_follows_a_holding_child_process(tmp_path):
         if child.poll() is None:
             child.kill()
             child.wait(timeout=60)
+
+
+def test_is_held_is_false_below_a_file(tmp_path):
+    """An ancestor that is a file (a `build` file) holds no lock below it; the probe walks every
+    ancestor of the hook's cwd, so this must not raise."""
+    from reverseapoc.locks import is_held
+
+    (tmp_path / "build").write_bytes(b"")
+    assert not is_held(tmp_path / "build" / "driver" / "drive.lock")
+
+
+def test_a_momentary_probe_does_not_refuse_the_lock(tmp_path, monkeypatch):
+    """Review: is_held takes the lock for an instant, so a drive starting in that instant must
+    not see it held. One busy try is retried after a short wait, for both callers."""
+    from reverseapoc import locks
+
+    path = tmp_path / "drive.lock"
+    path.write_bytes(b"")
+    real, busy = locks._try, [True]
+
+    def once_busy(fh):
+        if busy:
+            busy.pop()
+            return False
+        return real(fh)
+
+    monkeypatch.setattr(locks, "_try", once_busy)
+    lock = locks.ProcessLock(path)
+    assert lock.try_acquire()
+    lock.release()
+    busy.append(True)
+    assert not locks.is_held(path)

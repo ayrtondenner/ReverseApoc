@@ -27,11 +27,14 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   subcommands, read and print commands, assignments). Every other shell call gets no opinion.
   The drive write guard (todo drive-write-guard): while a live process holds a checkout's
   build/driver/drive.lock (locks.is_held; a stale lock file blocks nothing), a session without
-  the driver's claim may not edit under that checkout, worktrees included, nor run a shell
-  command that writes there (a redirection, a writer such as rm or Set-Content) or runs from it
-  pytest, ruff, ninja, docker, the CLI, uv other than `uv run --no-project`, or git other than
-  reads and `--no-optional-locks` status/diff; cd and `git -C` move where a command runs, so
-  the scratchpad-clone route the denial names stays open.
+  the driver's claim may not edit under that checkout, worktrees included. A shell call may
+  not redirect into it, pass a git global option but -C, --no-optional-locks, --no-pager and
+  -P, or run an encoded or unparseable nested command; and a call that runs in or names the
+  checkout anywhere runs only listed read shapes (default deny: reads, find and sed in their
+  reading shapes, git reads and `--no-optional-locks` status/diff, writers aimed outside it,
+  `uv run --no-project python <script outside it>`); nested shells and eval are judged as
+  calls of their own. cd and `git -C` move where a command runs, so the scratchpad-clone route
+  the denial names stays open.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
@@ -942,11 +945,17 @@ def _simple_commands(tool: str, command: str) -> list[list[tuple[str, bool]]]:
     """The command's simple commands, each a list of (raw token, is an operator), split at
     every separator (a redirection stays in its command). A Bash command shlex cannot split
     blocks (exit 2)."""
+    return [segment for segment, _separator in _separated(tool, command)]
+
+
+def _separated(tool: str, command: str) -> list[tuple[list[tuple[str, bool]], str]]:
+    """`_simple_commands`, each with the separator operator after it as the splitter gave it
+    (a run such as `);` or `&&\\n` stays one operator; '' after the last)."""
     tokens = _bash_tokens(command) if tool == "Bash" else _powershell_tokens(command)
     commands, segment = [], []
-    for text, op in [*tokens, (";", True)]:
+    for text, op in [*tokens, ("", True)]:
         if op and not _redirection(text):
-            commands.append(segment)
+            commands.append((segment, text))
             segment = []
             continue
         segment.append((text, op))
@@ -1267,6 +1276,12 @@ def _git_offender(rest: Sequence[str]) -> str:
     sub, args = rest[0], rest[1:]
     if sub in _GIT_FREE:
         return _first(args, _git_refused)
+    return _git_listing_offender(sub, args)
+
+
+def _git_listing_offender(sub: str, args: Sequence[str]) -> str:
+    """The git subcommands both git rules (A6 g and the drive guard) list beside their own:
+    grep, a branch listing and `git <worktree|stash> list`; '' or the offending word."""
     if sub == "grep":
         return _first(args, _git_grep_refused)
     if sub == "branch":
@@ -1445,30 +1460,60 @@ def _worktree_command(payload: Mapping) -> Decision:
 
 # --- the drive write guard (todo drive-write-guard) ------------------------------------------
 
-# Programs that write under the directory they run in (caches, the venv, the container's bind
-# mount) or run the tests or the CLI there; `python -m` of these modules counts the same.
-_DRIVE_PROGRAMS = frozenset({
-    "pytest", "py.test", "ruff", "ninja", "docker", "docker-compose", "reverseapoc",
-    "reverseapoc-attempt", "uvx", "npx", "npm", "pip", "pip3", "make",
+# Security review: under a live drive, a shell call that runs in or names its checkout runs only
+# listed read shapes (default deny). Commands that read, list or print and write nothing, as
+# _command_name gives them (Bash and PowerShell names and aliases):
+_DRIVE_READS = frozenset({
+    "cat", "head", "tail", "ls", "dir", "grep", "wc", "diff", "cmp", "echo", "printf", "test",
+    "[", "true", "false", "pwd", "sleep", "basename", "dirname", "realpath", "readlink", "stat",
+    "du", "df", "which", "cut", "tr", "ps", "tasklist", "type",
+    "get-content", "gc", "select-object", "select", "select-string", "sls", "get-childitem", "gci",
+    "get-item", "gi", "test-path", "get-location", "gl", "resolve-path", "rvpa", "split-path",
+    "join-path", "get-filehash", "get-date", "get-process", "gps", "get-ciminstance", "gcim",
+    "where-object", "where", "?", "measure-object", "measure", "sort-object", "format-table",
+    "ft", "format-list", "fl", "out-string", "write-output", "write-host", "compare-object",
+    "convertfrom-json", "convertto-json", "start-sleep",
 })  # fmt: skip
-_DRIVE_MODULES = frozenset({"pytest", "reverseapoc", "ruff", "pip"})
-_PYTHONS = frozenset({"python", "python3", "py"})
-_UV_NO_PROJECT = "--no-project"  # `uv run --no-project` neither syncs nor builds the checkout
-# Commands that remove, create or change the files they name, beside _WRITERS.
+_DRIVE_CHECKS = {"find": _find_offender, "sed": _sed_offender}  # reads only in these shapes
+# Commands that remove, create or change the files they name, beside _WRITERS: listed only when
+# none of their operands may lie under the checkout.
 _REMOVERS = frozenset({
     "rm", "rmdir", "mkdir", "md", "del", "erase", "rd", "ri", "remove-item", "rename-item", "rni",
     "ren", "unlink", "clear-content", "clc", "chmod", "truncate", "patch",
 })  # fmt: skip
-_SED_IN_PLACE = ("-i", "--in-place")
-# Words that run the command after them (with their own options and env's assignments).
-_WRAPPERS = frozenset({"!", "env", "command", "exec", "time", "nohup", "xargs", "start-process",
-                       "start", "saps"})  # fmt: skip
-_NESTED_SHELLS = {"bash": "Bash", "sh": "Bash", "pwsh": "PowerShell", "powershell": "PowerShell"}
-_COMMAND_FLAGS = frozenset({"-c", "-command"})
+# Words that only steer the commands after them; a loop's head words are data, not a program.
+_BASH_KEYWORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while", "until",
+                            "esac", "!", "{", "}"})  # fmt: skip
+_BASH_LOOPS = frozenset({"for", "case", "select"})
+_POWERSHELL_KEYWORDS = frozenset({"if", "else", "elseif", "while", "do", "until", "for",
+                                  "foreach", "switch", "try", "catch", "finally",
+                                  "foreach-object", "%"})  # fmt: skip
+# A PowerShell variable or property read ($p, $_.CommandLine, $env:X), and a method call, which
+# a call that touches the checkout may not make ($_.Delete(), [IO.File]::WriteAllText(...)).
+_POWERSHELL_VALUE = re.compile(r"\$(?:env:)?\w+(?:\.\w+)*")
+_POWERSHELL_CALL = re.compile(r"(?:\.|::)\s*[A-Za-z_]\w*\s*\(")
+# Shells and evaluators whose command text is judged as a call of its own (security review 4).
+_NESTED_SHELLS = {"bash": "Bash", "sh": "Bash", "eval": "Bash", "pwsh": "PowerShell",
+                  "powershell": "PowerShell", "iex": "PowerShell",
+                  "invoke-expression": "PowerShell", "cmd": "PowerShell"}  # fmt: skip
+_EVALUATORS = frozenset({"eval", "iex", "invoke-expression"})  # their operands are the text
+_BASH_VALUE_OPTIONS = frozenset({"-o", "+o", "-O", "+O"})  # these take the next word
+_POWERSHELL_COMMAND = "command"  # -Command and each prefix of it (-c, -Comm)
+_POWERSHELL_COMMAND_ALIASES = frozenset({"cwa"})  # -CommandWithArgs
+_POWERSHELL_ENCODED = "encodedcommand"  # -EncodedCommand, its prefixes (-e) and -ec
+_POWERSHELL_ENCODED_ALIASES = frozenset({"ec"})
+_POWERSHELL_FILE = "file"  # -File and its prefixes: a script
+_CMD_COMMAND_FLAGS = frozenset({"/c", "/k", "/r"})
 _MOVES = frozenset({"cd", "pushd", "chdir", "set-location", "sl", "push-location"})
 _RETURNS = frozenset({"popd", "pop-location"})  # back to a directory the hook does not track
 _NULL_DEVICES = frozenset({"/dev/null", "nul", "$null"})
 _UNPLACED = re.compile(r"[$`%]|^~")  # a variable, escape or home: the hook cannot place the path
+# The one program shape: `uv run --no-project python <flags> <script>`, the script outside every
+# live checkout (CLAUDE.md, Drives: scratchpad scripts that read).
+_UV_NO_PROJECT = "--no-project"  # `uv run --no-project` neither syncs nor builds the checkout
+_UV_READ_OPTIONS = frozenset({_UV_NO_PROJECT, "--quiet", "-q"})
+_PYTHONS = frozenset({"python", "python3", "py"})
+_PYTHON_READ_FLAGS = frozenset({"-I", "-B", "-E", "-s", "-S", "-u", "-O", "-OO", "-q"})
 # git subcommands that never write; the refreshing ones update the index unless told not to.
 _GIT_READS = frozenset({
     "blame", "cat-file", "check-ignore", "for-each-ref", "log", "ls-files", "ls-tree",
@@ -1476,7 +1521,12 @@ _GIT_READS = frozenset({
 })  # fmt: skip
 _GIT_REFRESHES = frozenset({"status", "diff", "describe"})
 _GIT_NO_LOCKS = "--no-optional-locks"
-_GIT_GLOBALS = frozenset({_GIT_NO_LOCKS, "--no-pager", "-P"})
+_GIT_GLOBALS = frozenset({_GIT_NO_LOCKS, "--no-pager", "-P"})  # with -C, all a call may pass
+# The clone out of the checkout: value-free options only, then the source and the destination.
+_GIT_CLONE_OPTIONS = frozenset({"--no-hardlinks", "--local", "-l", "--no-checkout", "-n",
+                                "--quiet", "-q"})  # fmt: skip
+_CLONE_OPERANDS = 2
+_AND = "&&"  # the one separator after which a cd has surely moved the next command
 
 
 def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
@@ -1504,7 +1554,7 @@ def _drive_denial(root: str, what: str) -> Decision:
                  "restores such writes and stops the night). Reads stay open (git with "
                  f"{_GIT_NO_LOCKS}); for a change, clone outside the checkout (git clone "
                  "--no-hardlinks <checkout> <scratchpad>/<name>) and edit, test and commit in "
-                 "the clone")  # fmt: skip
+                 "the clone, as `cd <clone> && <command>`")  # fmt: skip
 
 
 def _drive_edit(tool: str, raw: str, paths: Sequence[str], env: Mapping[str, str]) -> Decision:
@@ -1518,9 +1568,9 @@ def _drive_edit(tool: str, raw: str, paths: Sequence[str], env: Mapping[str, str
 
 def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
     """A Bash or PowerShell call is refused while a live drive holds the lock of the checkout
-    its cwd or the session's project lies in, when it writes under that checkout or runs a
-    refused program from it (_drive_offender). Any other call, and every call with no live
-    drive, gets no opinion, decided before the command is parsed."""
+    its cwd or the session's project lies in, when _drive_offender names an offender. Any other
+    call, and every call with no live drive, gets no opinion, decided before the command is
+    parsed."""
     if _claim(env) is not None:
         return NO_OPINION
     here = candidates(_cwd(payload))  # _worktree_command refused a payload without a cwd
@@ -1537,18 +1587,71 @@ def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
     return _drive_denial(live[0], f"the {tool} command's {offender!r}") if offender else NO_OPINION
 
 
+@dataclass(frozen=True)
+class _Run:
+    """One simple command of a shell call, as the drive guard judges it."""
+
+    word: str  # its program word as written: the offender a denial names
+    here: str | None  # the directory it runs in (None: unknown, judged as inside)
+    words: tuple[str, ...]  # the operands, option values and assignment values it names
+    read: bool  # whether it has a listed read shape
+
+
 def _drive_offender(tool: str, command: str, here: str | None, live: tuple[str, ...]) -> str:
-    """The first word of `command`, or of a substitution in it, that writes under a live
-    drive's checkout or runs a refused program there; ''. `here` is the directory the shell
-    starts in (None: unknown, judged as inside); each cd moves it for the later commands."""
+    """The word that refuses `command` under a live drive, or '': a redirection into the
+    checkout, a git global option or an unreadable nested command anywhere; and, when the call
+    runs in or names the checkout (any command of it, a substitution's included), any command
+    without a listed read shape, or a PowerShell method call. `here` is the directory the shell
+    starts in (None: unknown, judged as inside); each cd moves it for the commands after it."""
     text = command.translate(_POWERSHELL_QUOTES) if tool == "PowerShell" else command
+    runs: list[_Run] = []
     for part in (text, *_substitutions(tool, text)):
-        moved = here
-        for segment in _simple_commands(tool, part):
-            moved, found = _drive_segment(tool, segment, moved, live)
-            if found:
-                return found
+        found = _collect_runs(tool, part, here, live, runs)
+        if found:
+            return found
+    if not any(_touches(run, live) for run in runs):
+        return ""
+    call = _POWERSHELL_CALL.search(text) if tool == "PowerShell" else None
+    if call is not None:
+        return call.group()
+    return next((run.word for run in runs if not run.read), "")
+
+
+def _collect_runs(tool: str, part: str, here: str | None, live: tuple[str, ...],
+                  runs: list[_Run]) -> str:  # fmt: skip
+    """Append the runs of `part`'s simple commands to `runs`; the offender refused anywhere, or
+    ''. A cd moves the commands after it only across `&&` (after `;`, `||` or a pipe they may
+    run where it failed or left them), and a Bash subshell's moves end with it."""
+    subshells: list[str | None] = []
+    for segment, separator in _separated(tool, part):
+        before = here
+        here, run, found = _drive_segment(tool, segment, here, live)
+        if found:
+            return found
+        if run is not None:
+            runs.append(run)
+        if here != before and separator.strip() != _AND:
+            here = None
+        if tool == "Bash":
+            here = _subshell_moves(separator, here, subshells)
     return ""
+
+
+def _subshell_moves(separator: str, here: str | None, subshells: list[str | None]) -> str | None:
+    """Where a Bash shell is after `separator`'s parentheses: each `(` keeps the directory to go
+    back to, each `)` returns there (None when unbalanced)."""
+    for char in separator:
+        if char == "(":
+            subshells.append(here)
+        elif char == ")":
+            here = subshells.pop() if subshells else None
+    return here
+
+
+def _touches(run: _Run, live: tuple[str, ...]) -> bool:
+    """Whether a run is in, or names a path that may lie under, a live drive's checkout."""
+    return _guarded_dir(run.here, live) or any(_guarded(word, run.here, live)
+                                               for word in run.words if word)  # fmt: skip
 
 
 def _redirected(tool: str, segment: Sequence[tuple[str, bool]]) -> tuple[list[str], list[str]]:
@@ -1571,65 +1674,76 @@ def _redirected(tool: str, segment: Sequence[tuple[str, bool]]) -> tuple[list[st
     return words, written
 
 
-def _past_options(words: Sequence[str], index: int) -> int:
-    """The index of the first word from `index` that is no option and no assignment."""
-    while index < len(words) and (words[index].startswith("-") or "=" in words[index]):
-        index += 1
-    return index
-
-
-def _program_words(tool: str, words: Sequence[str]) -> Sequence[str]:
-    """`words` from the program that runs: Bash assignments and wrappers (env, Start-Process)
-    with their options skipped."""
+def _assigned(tool: str, words: Sequence[str]) -> tuple[tuple[str, ...], Sequence[str]]:
+    """Bash's leading NAME=value words split off: (their values, the words after them)."""
+    if tool != "Bash":
+        return (), words
     index = 0
-    if tool == "Bash":
-        while index < len(words) and _BASH_ASSIGNMENT.match(words[index]):
-            index += 1
-    while index < len(words) and _command_name(words[index]) in _WRAPPERS:
-        index = _past_options(words, index + 1)
+    while index < len(words) and _BASH_ASSIGNMENT.match(words[index]):
+        index += 1
+    return tuple(word.split("=", 1)[1] for word in words[:index]), words[index:]
+
+
+def _past_keywords(tool: str, words: Sequence[str]) -> Sequence[str]:
+    keywords = _BASH_KEYWORDS if tool == "Bash" else _POWERSHELL_KEYWORDS
+    index = 0
+    while index < len(words) and words[index].casefold() in keywords:
+        index += 1
     return words[index:]
 
 
 def _drive_segment(
     tool: str, segment: Sequence[tuple[str, bool]], here: str | None, live: tuple[str, ...]
-) -> tuple[str | None, str]:
-    """(where the shell is after one simple command, its offending word or '')."""
+) -> tuple[str | None, _Run | None, str]:
+    """(where the shell is after one simple command, its run or None, the offender refused
+    anywhere or '')."""
     words, written = _redirected(tool, segment)
     found = _first(written, lambda word: _guarded(word, here, live))
     if found:
-        return here, found
-    words = _program_words(tool, words)
+        return here, None, found
+    values, words = _assigned(tool, words)
+    words = _past_keywords(tool, words)
     if not words:
-        return here, ""
-    name, rest = _command_name(words[0]), words[1:]
+        return here, (_Run("", here, values, True) if values else None), ""
+    head, rest = words[0], words[1:]
+    name = _command_name(head)
     if name in _MOVES:
-        return _moved(rest, here), ""
+        return _moved(rest, here), None, ""
     if name in _RETURNS:
-        return None, ""
-    return here, _program_offender(name, rest, here, live)
-
-
-def _program_offender(name: str, rest: Sequence[str], here: str | None,
-                      live: tuple[str, ...]) -> str:  # fmt: skip
-    if name in _NESTED_SHELLS:
-        return _nested_offender(name, rest, here, live)
+        return None, None, ""
     if name == "git":
-        return _git_drive_offender(rest, here, live)
-    if _writes(name, rest):
-        return _first(list(_operands(rest)), lambda word: _guarded(word, here, live))
-    if not _guarded_dir(here, live):
-        return ""
-    refused = name in _DRIVE_PROGRAMS or (name in _PYTHONS and _runs_module(rest))
-    return name if refused or (name == "uv" and _uv_refused(rest)) else ""
+        run, found = _git_run(head, rest, here, values, live)
+        return here, run, found
+    if name in _NESTED_SHELLS:
+        readable, found = _nested(head, name, rest, here, live)
+        named = values if readable else (*values, *_operands(rest))
+        return here, _Run(head, here, tuple(named), readable), found
+    loop = tool == "Bash" and name in _BASH_LOOPS  # `for f in <words>`: data, not a program
+    read = loop or _read_shape(tool, words, here, live)
+    return here, _Run(head, here, (*values, *(rest if loop else _operands(rest))), read), ""
 
 
-def _writes(name: str, rest: Sequence[str]) -> bool:
-    in_place = name == "sed" and any(word.startswith(_SED_IN_PLACE) for word in rest)
-    return name in _WRITERS or name in _REMOVERS or in_place
+def _read_shape(tool: str, words: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
+    """Whether a command (its program word first) has a listed read shape: a listed read, find
+    or sed in their reading shapes, a writer none of whose operands may lie under the checkout,
+    the uv script shape, or a PowerShell variable read or assignment of a read."""
+    name, rest = _command_name(words[0]), words[1:]
+    if name in _DRIVE_READS:
+        return True
+    if name in _DRIVE_CHECKS:
+        return not _DRIVE_CHECKS[name](rest)
+    if name in _WRITERS or name in _REMOVERS:
+        return not any(_guarded(word, here, live) for word in _operands(rest) if word)
+    if name == "uv":
+        return _uv_read(rest, here, live)
+    if tool == "PowerShell" and _POWERSHELL_VALUE.fullmatch(name):
+        value = rest[1:] if rest[:1] == ["="] else ()
+        return not value or _read_shape(tool, value, here, live)
+    return False
 
 
 def _operands(rest: Sequence[str]) -> Iterator[str]:
-    """A writer's operands: every word but an option, and the value of an `--opt=value`."""
+    """A command's operands: every word but an option, and the value of an `--opt=value`."""
     for word in rest:
         if not word.startswith("-"):
             yield word
@@ -1637,57 +1751,128 @@ def _operands(rest: Sequence[str]) -> Iterator[str]:
             yield word.split("=", 1)[1]
 
 
-def _runs_module(words: Sequence[str]) -> bool:
-    return any(flag == "-m" and module.split(".")[0] in _DRIVE_MODULES
-               for flag, module in itertools.pairwise(words))  # fmt: skip
+def _uv_read(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
+    """`uv run --no-project [-q] python [<flags>] <script> ...` with the script outside every
+    live checkout: the scratchpad script the coordinator may run during a drive."""
+    if rest[:1] != ["run"]:
+        return False
+    options = list(itertools.takewhile(lambda word: word.startswith("-"), rest[1:]))
+    if _UV_NO_PROJECT not in options or not set(options) <= _UV_READ_OPTIONS:
+        return False
+    program = rest[1 + len(options) :]
+    if not program or _command_name(program[0]) not in _PYTHONS:
+        return False
+    flags = list(itertools.takewhile(lambda word: word.startswith("-"), program[1:]))
+    script = program[1 + len(flags) :][:1]
+    return (set(flags) <= _PYTHON_READ_FLAGS and bool(script)
+            and not _guarded(script[0], here, live))  # fmt: skip
 
 
-def _uv_refused(rest: Sequence[str]) -> bool:
-    """Every uv call but `uv run --no-project ...` syncs or builds the checkout, and that one
-    still may not run a refused program."""
-    options = itertools.takewhile(lambda word: word.startswith("-"), rest[1:])
-    if rest[:1] != ["run"] or _UV_NO_PROJECT not in options:
-        return True
-    programs = (word for word in rest[1:] if not word.startswith("-"))
-    return any(_command_name(word) in _DRIVE_PROGRAMS for word in programs) or _runs_module(rest)
-
-
-def _nested_offender(name: str, rest: Sequence[str], here: str | None,
-                     live: tuple[str, ...]) -> str:  # fmt: skip
-    """`bash -c '<command>'` and `powershell -Command <command>` are judged as that command."""
-    flag = next((i for i, word in enumerate(rest) if word.casefold() in _COMMAND_FLAGS), None)
-    if flag is None:
-        return ""
-    return _drive_offender(_NESTED_SHELLS[name], " ".join(rest[flag + 1 :]), here, live)
-
-
-def _git_drive_offender(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> str:
-    """git in a live drive's checkout runs only a subcommand that never writes there: a read, a
-    listing, or status, diff and describe with --no-optional-locks (plain `git status` takes
-    the index lock); `-C <dir>` moves it."""
-    index, no_locks, unknown = 0, False, ""
+def _git_run(word: str, rest: Sequence[str], here: str | None, values: tuple[str, ...],
+             live: tuple[str, ...]) -> tuple[_Run | None, str]:  # fmt: skip
+    """git's run, its words judged where `-C` moves it; any global option but -C,
+    --no-optional-locks, --no-pager and -P (--git-dir, --work-tree, -c) is refused wherever
+    the shell runs (security review 2). It reads when its subcommand never writes there: a
+    read, a listing, status, diff and describe with --no-optional-locks (plain `git status`
+    takes the index lock), or the clone the denial names (_git_clone_out)."""
+    index, no_locks = 0, False
     while index < len(rest) and rest[index].startswith("-"):
-        word = rest[index]
+        option = rest[index]
         index += 1
-        if word == "-C" and index < len(rest):
+        if option == "-C" and index < len(rest):
             here, index = _moved(rest[index : index + 1], here), index + 1
-            continue
-        no_locks = no_locks or word == _GIT_NO_LOCKS
-        unknown = unknown or ("" if word in _GIT_GLOBALS else word)
-    if not _guarded_dir(here, live):
-        return ""
-    if unknown or index == len(rest):
-        return unknown or "git"
-    sub, args = rest[index], rest[index + 1 :]
+        elif option in _GIT_GLOBALS:
+            no_locks = no_locks or option == _GIT_NO_LOCKS
+        else:
+            return None, option
+    command = rest[index:]
+    read = bool(command) and (not _git_read_offender(command, no_locks)
+                              or _git_clone_out(command, here, live))  # fmt: skip
+    return _Run(word, here, (*values, *_operands(command)), read), ""
+
+
+def _git_clone_out(command: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
+    """`git clone [--no-hardlinks ...] <source> <dest>` with `dest` outside every live
+    checkout: it only reads the source (the route _drive_denial names)."""
+    if command[0] != "clone":
+        return False
+    options = [word for word in command[1:] if word.startswith("-")]
+    operands = [word for word in command[1:] if not word.startswith("-")]
+    return (set(options) <= _GIT_CLONE_OPTIONS and len(operands) == _CLONE_OPERANDS
+            and not _guarded(operands[-1], here, live))  # fmt: skip
+
+
+def _git_read_offender(command: Sequence[str], no_locks: bool) -> str:
+    sub, args = command[0], command[1:]
     if sub in _GIT_READS or (sub in _GIT_REFRESHES and no_locks):
         return _first(args, _git_refused)
-    if sub == "grep":
-        return _first(args, _git_grep_refused)
-    if sub == "branch":
-        return _git_branch_offender(args)
-    if sub in _GIT_LISTINGS and args[:1] == ["list"]:
-        return _first(args[1:], _git_refused)
-    return sub
+    return _git_listing_offender(sub, args)
+
+
+def _nested(word: str, name: str, rest: Sequence[str], here: str | None,
+            live: tuple[str, ...]) -> tuple[bool, str]:  # fmt: skip
+    """A nested shell or evaluator (security review 4): (True, its offender) when it runs a
+    command text, judged as a call of its own; (True, `word`) when that text is encoded or
+    cannot be parsed, refused anywhere; (False, '') when it runs a script or reads stdin, which
+    has no read shape."""
+    text, encoded = _nested_text(name, rest)
+    if encoded:
+        return True, word
+    if text is None:
+        return False, ""
+    try:
+        return True, _drive_offender(_NESTED_SHELLS[name], text, here, live)
+    except HookError:
+        return True, word
+
+
+def _nested_text(name: str, rest: Sequence[str]) -> tuple[str | None, bool]:
+    """(the command text a nested shell runs, None for a script or stdin; whether it is
+    encoded). cmd's text is read with the PowerShell splitter, which knows its `&`, `|` and
+    `>`."""
+    if name in _EVALUATORS:
+        return " ".join(word for word in rest if not word.startswith("-")), False
+    if name == "cmd":
+        flag = next((i for i, word in enumerate(rest) if word.casefold() in _CMD_COMMAND_FLAGS),
+                    None)  # fmt: skip
+        return (None if flag is None else " ".join(rest[flag + 1 :])), False
+    if _NESTED_SHELLS[name] == "Bash":
+        return _bash_text(rest), False
+    return _powershell_text(rest)
+
+
+def _bash_text(rest: Sequence[str]) -> str | None:
+    """bash's command string: the first operand after options, when a short-option bundle holds
+    `c` (-c, -lc, -ec); None for a script or stdin."""
+    command, index = False, 0
+    while index < len(rest):
+        word = rest[index]
+        index += 1
+        if word in _BASH_VALUE_OPTIONS:
+            index += 1
+        elif word.startswith("-") and not word.startswith("--"):
+            command = command or "c" in word[1:]
+        elif not word.startswith(("--", "+")):
+            return word if command else None
+    return None
+
+
+def _powershell_text(rest: Sequence[str]) -> tuple[str | None, bool]:
+    """PowerShell's command text: everything after -Command or a prefix of it (-c, -Comm) or
+    -CommandWithArgs; encoded after -EncodedCommand, a prefix of it (-e) or -ec; None for -File
+    (or a prefix of it), a positional script or stdin."""
+    for index, word in enumerate(rest):
+        param = word[1:].casefold() if word.startswith("-") else ""
+        if not param:
+            continue
+        if _POWERSHELL_ENCODED.startswith(param) or param in _POWERSHELL_ENCODED_ALIASES:
+            return None, True
+        if (_POWERSHELL_COMMAND.startswith(param) or param.startswith(_POWERSHELL_COMMAND)
+                or param in _POWERSHELL_COMMAND_ALIASES):  # fmt: skip
+            return " ".join(rest[index + 1 :]), False
+        if _POWERSHELL_FILE.startswith(param):
+            return None, False
+    return None, False
 
 
 def _moved(rest: Sequence[str], here: str | None) -> str | None:

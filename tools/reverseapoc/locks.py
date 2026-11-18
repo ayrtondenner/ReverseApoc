@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import errno
 import sys
+import time
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -27,6 +28,10 @@ else:
     import fcntl
 
 DRIVE_LOCK = Path("build", "driver", "drive.lock")  # held by `reverseapoc drive` for its life
+# A busy try is retried this often, this far apart: is_held takes the lock for an instant, so
+# a probe must not make a drive starting in that instant (or another probe) see it held.
+_TRIES = 3
+_RETRY_S = 0.01
 
 
 class LockHeld(RuntimeError):
@@ -65,17 +70,28 @@ else:
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
+def _patient_try(fh) -> bool:
+    """`_try`, retried while busy up to _TRIES times _RETRY_S apart: only a holder that keeps
+    the lock (a drive, for its life) is seen as one."""
+    for attempt in range(_TRIES):
+        if attempt:
+            time.sleep(_RETRY_S)
+        if _try(fh):
+            return True
+    return False
+
+
 def is_held(path: Path) -> bool:
-    """Whether some live holder has the lock on `path` (todo drive-write-guard): one
-    non-blocking try, given straight back when it succeeds. A missing file, or one left behind
-    by a holder that exited, is not held. The file is opened for reading only, so the probe
-    never creates or writes it."""
+    """Whether some live holder has the lock on `path` (todo drive-write-guard): a non-blocking
+    try (_patient_try), given straight back when it succeeds. A missing file, or one left
+    behind by a holder that exited, is not held. The file is opened for reading only, so the
+    probe never creates or writes it."""
     try:
         fh = open(path, "rb")  # noqa: SIM115 - closed below, after the unlock
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):  # no file, or an ancestor is a file
         return False
     with fh:
-        if not _try(fh):
+        if not _patient_try(fh):
             return True
         _unlock(fh)
         return False
@@ -100,7 +116,7 @@ class ProcessLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fh = open(self.path, "a+b")  # noqa: SIM115 - kept open for the lock's whole life
         try:
-            got = _try(fh)
+            got = _patient_try(fh)
         except BaseException:
             fh.close()
             raise

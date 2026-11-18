@@ -2671,7 +2671,7 @@ ALLOWED_POWERSHELL = [
     "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'reverseapoc\\s+drive' }",
     "ls build 2>&1",
     "Get-ChildItem tools > $null",
-    "Set-Location {scratch}; uv run pytest",
+    "Set-Location {scratch} && uv run pytest",
 ]
 
 
@@ -2684,7 +2684,13 @@ def test_drive_guard_allows_powershell_reads(live_drive, scratch, command):
 
 @pytest.mark.parametrize("name,command", [("Bash", "uv run pytest -q"), ("Bash", "git status"),
                                           ("PowerShell", "Set-Content tools\\x.py y"),
-                                          ("Bash", "echo x > tools/x.py")])  # fmt: skip
+                                          ("Bash", "echo x > tools/x.py"),
+                                          ("Bash", "python -c \"open('x', 'w')\""),
+                                          ("Bash", "bash -lc 'uv run pytest'"),
+                                          ("Bash", "bash -c \"echo 'open\""),
+                                          ("Bash", "git --git-dir=x/.git commit -m x"),
+                                          ("PowerShell", "pwsh -EncodedCommand ZQBjAGgAbwA="),
+                                          ("PowerShell", "iex 'Remove-Item tools'")])  # fmt: skip
 @pytest.mark.parametrize("state", ["stale_drive", "repo"])
 def test_drive_guard_allows_shell_without_a_live_drive(state, name, command, request):
     repo = request.getfixturevalue(state)
@@ -2697,6 +2703,128 @@ def test_drive_guard_spares_the_drives_own_sessions(live_drive):
     env = {hooks.CLAIM_ENV: "ufo2p/func_00012345"}
     assert not guard(shell("Bash", f"{WRAPPER} check", live_drive), live_drive, env).deny
     assert not guard(_edit_payload(live_drive, "tools/x.py", live_drive), live_drive, env).deny
+
+
+# Security review fix 1: inside a live drive's checkout only listed read shapes run.
+DEFAULT_DENIED = [
+    ("Bash", "python -c \"open('x', 'w')\""),
+    ("Bash", "python tools/x.py"),
+    ("Bash", "python3.14 -m pytest"),
+    ("Bash", "node -e \"require('fs').writeFileSync('x', '')\""),
+    ("Bash", "perl -i -pe s/a/b/ tools/x.py"),
+    ("Bash", "ruby -e 'File.write(\"x\", \"\")'"),
+    ("Bash", "find . -name '*.pyc' -delete"),
+    ("Bash", "find . -exec rm {} ;"),
+    ("Bash", "tar -xf {scratch}/a.tar"),
+    ("Bash", "timeout 600 uv run pytest"),
+    ("Bash", "env -u FOO pytest"),
+    ("Bash", "xargs -n 1 rm < {scratch}/list"),
+    ("Bash", "sort -o tools/x.txt tools/y.txt"),
+    ("Bash", "eval 'uv run pytest'"),
+    ("Bash", "cat {scratch}/cmds | bash"),
+    ("PowerShell", "iex 'Remove-Item tools'"),
+    ("PowerShell", "Invoke-Expression \"uv run pytest\""),
+    ("PowerShell", "[IO.File]::WriteAllText('tools\\x.py', 'y')"),
+    ("PowerShell", "Get-ChildItem tools | ForEach-Object { $_.Delete() }"),
+    ("PowerShell", "Expand-Archive {scratch}\\a.zip -DestinationPath tools"),
+    ("PowerShell", ". .\\tools\\x.ps1"),
+]
+
+
+@pytest.mark.parametrize("name,command", DEFAULT_DENIED)
+def test_drive_guard_denies_by_default_in_the_checkout(live_drive, scratch, name, command):
+    text = command.replace("{scratch}", native(scratch) if name == "PowerShell"
+                           else scratch.as_posix())  # fmt: skip
+    decision = guard(shell(name, text, live_drive), live_drive)
+    assert decision.deny, text
+    assert "drive.lock" in decision.reason
+
+
+def test_drive_guard_denies_a_pipeline_from_the_checkout_into_an_unlisted_command(live_drive,
+                                                                                   scratch):
+    """From outside, a call that names the live checkout anywhere runs only read shapes."""
+    command = f"Get-ChildItem {native(live_drive / 'tools')} | ForEach-Object {{ $_.Delete() }}"
+    assert guard(shell("PowerShell", command, scratch), live_drive).deny
+
+
+# Security review fix 2: git's global options are refused wherever the shell runs.
+@pytest.mark.parametrize("command", [
+    "git --git-dir={repo}/.git --work-tree={repo} commit -m x",
+    "git --git-dir {repo}/.git commit -m x",
+    "git -c core.hooksPath=x status",
+    "GIT_DIR={repo}/.git git commit -m x",
+    "GIT_WORK_TREE={repo} git add .",
+])  # fmt: skip
+def test_drive_guard_judges_git_options_from_outside(live_drive, scratch, command):
+    text = command.replace("{repo}", live_drive.as_posix())
+    assert guard(shell("Bash", text, scratch), live_drive).deny, text
+
+
+# Security review fix 3: a refused program aimed at the checkout from outside is refused.
+@pytest.mark.parametrize("command", [
+    "uv run --project {repo} pytest",
+    "uv run --directory {repo} pytest",
+    "uv --directory={repo} sync",
+    "pytest {repo}/tests",
+    "ruff check {repo}",
+    "ninja -C {repo} verify",
+    "python -m pytest {repo}/tests",
+    "docker compose -f {repo}/docker-compose.yml run --rm test",
+    "uv run --no-project python -I {repo}/tools/x.py",
+])  # fmt: skip
+def test_drive_guard_judges_operands_from_outside(live_drive, scratch, command):
+    text = command.replace("{repo}", live_drive.as_posix())
+    assert guard(shell("Bash", text, scratch), live_drive).deny, text
+
+
+# Security review fix 4: nested shells are read the way the shell reads its options.
+@pytest.mark.parametrize("name,command", [
+    ("Bash", "bash -lc 'uv run pytest'"),
+    ("Bash", "sh -ec 'pytest -q'"),
+    ("Bash", "bash -o pipefail -c 'pytest -q'"),
+    ("Bash", "pwsh -Comm \"uv run pytest\""),
+    ("Bash", "pwsh -C \"uv run pytest\""),
+    ("Bash", "powershell -NoProfile -ExecutionPolicy Bypass -Command \"uv run pytest\""),
+    ("Bash", "pwsh -File tools/x.ps1"),
+    ("Bash", "cmd /c \"uv run pytest\""),
+    ("Bash", "cmd.exe /s /c pytest"),
+    ("PowerShell", "powershell.exe -c 'uv run pytest'"),
+    ("PowerShell", "cmd /c 'pytest && echo x'"),
+])  # fmt: skip
+def test_drive_guard_reads_nested_shells(live_drive, name, command):
+    assert guard(shell(name, command, live_drive), live_drive).deny, command
+
+
+@pytest.mark.parametrize("command", [
+    "pwsh -EncodedCommand ZQBjAGgAbwA=",
+    "powershell -e ZQBjAGgAbwA=",
+    "powershell -ec ZQBjAGgAbwA=",
+    "bash -c \"echo 'open\"",
+])  # fmt: skip
+def test_drive_guard_refuses_an_unreadable_nested_command_anywhere(live_drive, scratch, command):
+    """An encoded or unparseable nested command fails closed, naming the shell, from any cwd."""
+    decision = guard(shell("Bash", command, scratch), live_drive)
+    assert decision.deny, command
+    assert repr(command.split()[0]) in decision.reason
+
+
+@pytest.mark.parametrize("name,command", [
+    ("Bash", "bash -lc 'git --no-optional-locks log -1'"),
+    ("Bash", "cd {scratch} && bash -c 'uv run pytest'"),
+    ("Bash", "powershell -NoProfile -Command \"Get-Content tools\\x.py\""),
+    ("Bash", "until grep -q done build/log.txt; do sleep 5; done"),
+    ("Bash", "for f in tools/*.py; do head -1 \"$f\"; done"),
+    ("Bash", "find . -name '*.py' -newer tools/x.py"),
+    ("Bash", "sed -n 1,20p tools/x.py"),
+    ("PowerShell", "$p = Get-CimInstance Win32_Process; $p | Select-Object -First 1"),
+    ("PowerShell", "foreach ($f in Get-ChildItem tools) { $f.Name }"),
+    ("PowerShell", "Copy-Item {scratch}\\a {scratch}\\b"),
+])  # fmt: skip
+def test_drive_guard_still_allows_listed_reads(live_drive, scratch, name, command):
+    text = command.replace("{scratch}", native(scratch) if name == "PowerShell"
+                           else scratch.as_posix())  # fmt: skip
+    decision = guard(shell(name, text, live_drive), live_drive)
+    assert not decision.deny, (text, decision.reason)
 
 
 def test_drive_guard_finds_the_main_checkouts_drive_from_a_worktree(live_drive):
@@ -2730,3 +2858,35 @@ def test_drive_guard_entry_point_end_to_end(live_drive):
     assert _entry_decision(allowed, live_drive) == "none"
     read = tool("Read", live_drive, file_path=native(live_drive / "x"))
     assert _entry_decision(read, live_drive) == "none"
+
+
+# Review: a cd moves the later commands only when they run after it succeeded, in its shell.
+@pytest.mark.parametrize("name,command", [
+    ("Bash", "(cd {scratch}); uv run pytest"),
+    ("Bash", "cd {scratch}; uv run pytest"),
+    ("Bash", "cd {scratch} | true; pytest"),
+    ("Bash", "cd {scratch} || pytest"),
+    ("Bash", "(cd {scratch} && uv run pytest); uv run pytest"),
+    ("PowerShell", "Set-Location {scratch}; uv run pytest"),
+])  # fmt: skip
+def test_drive_guard_moves_only_after_a_cd_that_must_succeed(live_drive, scratch, name, command):
+    text = command.replace("{scratch}", native(scratch) if name == "PowerShell"
+                           else scratch.as_posix())  # fmt: skip
+    assert guard(shell(name, text, live_drive), live_drive).deny, text
+
+
+@pytest.mark.parametrize("command", [
+    "(cd {scratch} && uv run pytest)",
+    "cd {scratch} &&\nuv run pytest -q",
+    "git clone --no-hardlinks {repo} {scratch}/clone",
+])  # fmt: skip
+def test_drive_guard_keeps_the_clone_route(live_drive, scratch, command):
+    """The denial's own route works from the checkout: clone out, then cd there with &&."""
+    text = command.replace("{scratch}", scratch.as_posix()).replace("{repo}", live_drive.as_posix())
+    decision = guard(shell("Bash", text, live_drive), live_drive)
+    assert not decision.deny, (text, decision.reason)
+
+
+def test_drive_guard_refuses_a_clone_into_the_checkout(live_drive):
+    command = f"git clone --no-hardlinks {live_drive.as_posix()} tools/clone"
+    assert guard(shell("Bash", command, live_drive), live_drive).deny
