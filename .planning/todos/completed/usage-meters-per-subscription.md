@@ -1,6 +1,7 @@
 ---
 title: Read the subscription and credit meters without the owner's screenshots
 created: 2026-11-13
+area: budget
 source: owner, during night 20261112-cascade
 ---
 

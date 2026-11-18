@@ -1,6 +1,7 @@
 ---
 title: Near-miss lane - a drive queue of partial rows ranked by bytes left to match
 created: 2026-11-13
+area: picking
 source: owner Q&A on the low byte percent (main session, 2026-11-13)
 ---
 

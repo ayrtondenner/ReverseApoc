@@ -1,6 +1,8 @@
 ---
 title: Copilot Sonnet 5.5 writes scratch files; its prompt, quota figures and arm status
 created: 2026-11-17
+area: harness-copilot
+files: tools/reverseapoc/session.py, config/driver/quota.toml, config/driver/backends.toml
 source: runs 20261116-copilot2 to 20261116-fable-ab
 ---
 

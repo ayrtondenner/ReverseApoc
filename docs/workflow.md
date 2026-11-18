@@ -359,6 +359,41 @@ superpowers drives the work inside a phase:
 
 When both systems prescribe a step, GSD's phase files are the record. `.claude/rules/workflow.md` states this split; re-check with `/gsd-health` after updating either system.
 
+### Todo areas
+
+Each todo in `.planning/todos/{pending,completed}/` has an `area:` line in its frontmatter, and one
+that names its files has a one-line `files:` list. Both were added to every todo on 2026-11-18.
+GSD reads `area:` with `^area:\s*(.+)$` and falls back to `general` when it is missing. It uses the
+area for two things:
+- `/gsd-capture --list <area>` filters todos by area;
+- a todo whose area appears inside a phase's name or goal scores higher when todos are matched to
+  that phase. For example, `specs` matches Phase 8, "Clean-room specs".
+
+GSD parses `files:` only in the one-line form (`files: a.py, b.py`). It reads a YAML list as empty.
+The values are free-form. Reuse one of these before inventing a new one:
+
+| Area | Covers |
+|---|---|
+| `driver` | `reverseapoc drive`: audit, run records, preflight, containers, STOP handling |
+| `budget` | `--arm-budget`, quota and meters per subscription |
+| `harness-copilot` | Copilot CLI arms (Codex and agy faults also go under `driver`) |
+| `hooks` | guardrail hooks and the drive write guard |
+| `attempt-check` | `reverseapoc attempt` check output, budget and repeats |
+| `stats` | `reverseapoc stats`, errata, attempt curves, request collection |
+| `evaluation` | held benchmarks, matching nights that measure something, model comparisons |
+| `picking` | the tier queue, the near-miss lane, pick lists, the hand-off board |
+| `context-pack` | what a session is given: hints, signatures, structure, struct shapes |
+| `search` | the permutation search, the slot model, candidate archives |
+| `progress-page` | `tools/progress.py` and the published page |
+| `ci` | GitHub workflows and verification records |
+| `flags` | per-function flag rules and proposals |
+| `functions` | `functions.csv` boundaries and splits |
+| `twins` | UFO2P and TACP twin functions |
+| `cross-build` | the installed build against the CD v1.00 build |
+| `specs` | Phase 8 clean-room specs |
+| `paper` | the arXiv paper and its research |
+| `skills`, `tooling` | project skills; tool evaluations |
+
 ## Milestone 1 roadmap
 
 Copied from the approved plan. Phases 1-2 are implemented first; 3-8 are planned later with `/gsd-plan-phase N`. Phases 7 and 8 were added by the owner on 2026-10-21.

@@ -1,6 +1,8 @@
 ---
 title: Progress timeline names a day's driver "9 co-authors" on flags-landing days
 created: 2026-11-13
+area: progress-page
+files: tools/progress.py
 source: batch unit 2 report (progress-over-days chart)
 ---
 

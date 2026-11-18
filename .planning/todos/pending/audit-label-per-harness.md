@@ -1,6 +1,8 @@
 ---
 title: Stray messages say "(codex audit)" for every harness
 created: 2026-11-17
+area: driver
+files: tools/reverseapoc/driver.py
 source: 2026-11-16 run records (Copilot and agy strays labelled codex)
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: Differential emulation for behaviour specs (Phase 8)
 created: 2026-11-18
+area: specs
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #10; docs/research/notes-ideas-llm-decomp-research.md #6)
 ---
 

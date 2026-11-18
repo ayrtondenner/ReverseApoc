@@ -1,6 +1,8 @@
 ---
 title: A Docker container that cannot be removed stops the drive
 created: 2026-11-17
+area: driver
+files: tools/reverseapoc/driver.py
 source: run 20261116-fable-ab, 16:56 STOPPED tool (recurrence of night 20261107-030004)
 ---
 

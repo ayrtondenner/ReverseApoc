@@ -1,6 +1,8 @@
 ---
 title: A whole-program signature table before matching
 created: 2026-11-18
+area: context-pack
+files: tools/reverseapoc/contextpack.py, tools/reverseapoc/callgraph.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #9)
 ---
 

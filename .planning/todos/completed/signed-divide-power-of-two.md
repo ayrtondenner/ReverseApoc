@@ -1,6 +1,7 @@
 ---
 title: Lift signed divide by a power of two
 created: 2026-11-05
+area: search
 source: owner ruling at plan 07.1-06's checkpoint
 ---
 

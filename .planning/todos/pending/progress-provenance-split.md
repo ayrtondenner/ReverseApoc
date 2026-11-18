@@ -1,6 +1,8 @@
 ---
 title: Split matches by provenance on the progress page
 created: 2026-11-18
+area: progress-page
+files: tools/progress.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #12)
 ---
 

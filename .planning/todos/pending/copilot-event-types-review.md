@@ -1,6 +1,8 @@
 ---
 title: Judge Copilot CLI's remaining documented event types one by one
 created: 2026-11-17
+area: harness-copilot
+files: tools/reverseapoc/copilotjson.py
 source: 2026-11-16 drives (six Copilot audit stops in one day)
 ---
 

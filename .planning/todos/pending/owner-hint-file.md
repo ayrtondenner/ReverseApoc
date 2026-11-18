@@ -1,6 +1,8 @@
 ---
 title: A per-function hint file the owner writes, read into the context pack
 created: 2026-11-18
+area: context-pack
+files: tools/reverseapoc/contextpack.py, config/hints/
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #5)
 ---
 

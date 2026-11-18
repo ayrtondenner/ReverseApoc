@@ -1,6 +1,7 @@
 ---
 title: Budget-sized drives from a plain request, and a README path for outside contributors
 created: 2026-11-13
+area: budget
 source: owner, during run 20261113-cascade3
 depends_on: the usage-meter todo (measured quota per arm) and docs/model-routing.md "Quota per session"
 ---

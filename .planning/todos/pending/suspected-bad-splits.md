@@ -1,6 +1,8 @@
 ---
 title: Flag functions whose code branches into another row
 created: 2026-11-18
+area: functions
+files: tools/reverseapoc/splits.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #4)
 ---
 

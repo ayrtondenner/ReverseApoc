@@ -1,6 +1,7 @@
 ---
 title: Worktree main-path hook, residual bypasses (security review round 3)
 created: 2026-11-09
+area: hooks
 source: automated security review of quick task 261109-gzy (merged bf8a7f56), round 3
 ---
 

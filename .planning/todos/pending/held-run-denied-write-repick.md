@@ -1,6 +1,8 @@
 ---
 title: A held run re-picks a function whose session ended on a denied write
 created: 2026-11-17
+area: driver
+files: tools/reverseapoc/driver.py
 source: run 20261116-fable-ab (owner ruling 2026-11-16 on Copilot denied writes)
 ---
 

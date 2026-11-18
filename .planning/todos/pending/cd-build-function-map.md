@@ -1,6 +1,8 @@
 ---
 title: Map functions between the installed build and the CD v1.00 build
 created: 2026-11-18
+area: cross-build
+files: tools/reverseapoc/ingest.py, tools/reverseapoc/twins.py, config/targets.toml
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #6; docs/learnings.md (OpenApoc CRC entry))
 ---
 
@@ -13,3 +15,7 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 **Done when.** A committed map with coverage numbers; one OpenApoc offset translated as an example.
 
 **Effort / value.** M / high for OpenApoc. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #6; docs/learnings.md (OpenApoc CRC entry).
+
+## Unblocked (2026-11-18)
+
+The owner put the 1997 disc images in `C:\Users\Ayrton\Documents\x-com-apocalypse\`, outside the repo: two byte-identical ISOs plus a MODE1/2352 bin+cue. Inside each ISO, `XCOM3/UFOEXE/UFO2P.EXE` and `XCOM3/TACEXE/TACP.EXE` hash to the `[[cd_builds]]` SHA-1s in `config/targets.toml`. `UFO2P4.EXE` and `TACP4.EXE` hash to our `orig/` files.

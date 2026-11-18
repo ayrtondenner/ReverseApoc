@@ -1,6 +1,8 @@
 ---
 title: Structure first for functions of 256 B and up
 created: 2026-11-18
+area: context-pack
+files: tools/reverseapoc/contextpack.py, tools/reverseapoc/attempt.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #1)
 ---
 

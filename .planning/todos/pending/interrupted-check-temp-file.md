@@ -1,6 +1,8 @@
 ---
 title: An interrupted attempt check leaves checks/.000N.json.*.tmp and stops the night
 created: 2026-11-17
+area: driver
+files: tools/reverseapoc/driver.py, tools/reverseapoc/attempt.py
 source: run 20261116-fable-ab, 18:18 STOPPED guardrail (Copilot Sonnet, tacp func_000410C0)
 ---
 

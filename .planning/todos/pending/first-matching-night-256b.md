@@ -1,6 +1,8 @@
 ---
 title: First matching night at 256 B and up
 created: 2026-11-06
+area: evaluation
+files: .planning/phases/07-mechanics-first-decompilation/07-39-NIGHTS.md
 source: owner ruling 1 at Phase 7.1's close
 ---
 

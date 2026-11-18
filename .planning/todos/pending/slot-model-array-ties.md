@@ -1,6 +1,8 @@
 ---
 title: Slot model and search fixes from Phase 7.1's phase review
 created: 2026-11-06
+area: search
+files: tools/reverseapoc/slots.py, probe/cg_slots.c
 source: 07.1-REVIEW.md, the phase-end review; plan 07.1-06 writes no Python, so these stayed open
 updated: 2026-11-13 by the line D refit (quick batch, unit 7)
 ---

@@ -1,6 +1,8 @@
 ---
 title: A nightly gold and null control through the real check path
 created: 2026-11-18
+area: driver
+files: tools/reverseapoc/driver.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #2)
 ---
 

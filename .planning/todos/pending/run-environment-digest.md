@@ -1,6 +1,8 @@
 ---
 title: Record an environment digest in every run record
 created: 2026-11-18
+area: driver
+files: tools/reverseapoc/driver.py, tools/reverseapoc/stats.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #1)
 ---
 

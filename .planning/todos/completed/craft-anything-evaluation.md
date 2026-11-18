@@ -1,6 +1,7 @@
 ---
 title: Evaluate craft-anything for ReverseApoc
 created: 2026-11-13
+area: tooling
 source: owner, during run 20261113-cascade3
 ---
 

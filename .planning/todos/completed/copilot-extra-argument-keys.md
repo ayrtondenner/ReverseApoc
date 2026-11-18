@@ -1,6 +1,7 @@
 ---
 title: Copilot calls with junk extra argument keys stop the night
 created: 2026-11-14
+area: harness-copilot
 source: night 20261114-nearmiss7 (stopped after 74 sessions, 5 matched)
 ---
 

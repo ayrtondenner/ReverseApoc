@@ -1,6 +1,7 @@
 ---
 title: agy 1.5.7 edit_file step stops the night (agy audit)
 created: 2026-11-13
+area: driver
 source: night 20261113-cascade STOPPED guardrail at 22:54
 ---
 

@@ -1,6 +1,8 @@
 ---
 title: Write a near-miss pick list with the driver's own ranking
 created: 2026-11-17
+area: picking
+files: tools/reverseapoc/cli.py, tools/reverseapoc/driver.py
 source: run 20261116-fable-ab (picks built by a scratchpad script)
 ---
 

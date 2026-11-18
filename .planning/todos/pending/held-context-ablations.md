@@ -1,6 +1,8 @@
 ---
 title: Measure what the context pack's parts are worth on held picks
 created: 2026-11-18
+area: evaluation
+files: tools/reverseapoc/contextpack.py, docs/model-comparison.md
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #4; docs/research/notes-ideas-agentic-projects.md #10, #11)
 ---
 

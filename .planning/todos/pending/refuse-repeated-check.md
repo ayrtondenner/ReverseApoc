@@ -1,6 +1,8 @@
 ---
 title: Refuse an attempt check whose C repeats an earlier one
 created: 2026-11-18
+area: attempt-check
+files: tools/reverseapoc/attempt.py, tools/reverseapoc/stats.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #12; docs/research/notes-ideas-llm-decomp-research.md #3)
 ---
 

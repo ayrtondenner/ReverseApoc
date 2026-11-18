@@ -1,6 +1,8 @@
 ---
 title: Collect agents' tooling requests from their notes
 created: 2026-11-18
+area: stats
+files: tools/reverseapoc/requests.py, tools/reverseapoc/cli.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #9)
 ---
 

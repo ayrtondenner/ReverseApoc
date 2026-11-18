@@ -1,5 +1,6 @@
 ---
 created: 2026-11-10
+area: stats
 source: 07.2-10 SUMMARY (concern 1)
 ---
 

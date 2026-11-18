@@ -1,6 +1,8 @@
 ---
 title: Echo-style branch, loop and expression rewrites as a search axis
 created: 2026-11-18
+area: search
+files: tools/reverseapoc/search.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #8)
 ---
 

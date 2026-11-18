@@ -1,6 +1,8 @@
 ---
 title: Set the per-attempt check budget and session caps from our own records
 created: 2026-11-18
+area: stats
+files: tools/reverseapoc/stats.py, tools/reverseapoc/attempt.py, docs/model-routing.md
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #7; docs/research/notes-ideas-tooling-reproducibility.md #8; docs/research/notes-ideas-llm-decomp-research.md #3)
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: Progress shows three figures - strict bytes, functions and fuzzy - in badges, README and progress.json
 created: 2026-11-13
+area: progress-page
 source: owner Q&A on the low byte percent (main session, 2026-11-13)
 ---
 

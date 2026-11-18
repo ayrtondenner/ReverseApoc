@@ -1,6 +1,8 @@
 ---
 title: Show the whole aligned diff and the failure class in attempt check
 created: 2026-11-18
+area: attempt-check
+files: tools/reverseapoc/attempt.py, tools/reverseapoc/classify.py, tools/reverseapoc/hooks.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #1, #8; docs/research/notes-ideas-llm-decomp-research.md #2)
 ---
 

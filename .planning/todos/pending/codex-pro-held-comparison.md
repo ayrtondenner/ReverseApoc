@@ -1,6 +1,8 @@
 ---
 title: Held comparison of the Codex arms before upgrading to ChatGPT Pro
 created: 2026-11-13
+area: evaluation
+files: docs/model-comparison.md
 source: owner, during run 20261113-cascade3
 ---
 

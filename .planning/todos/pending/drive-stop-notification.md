@@ -1,6 +1,8 @@
 ---
 title: Notify the owner when a drive stops or ends
 created: 2026-11-18
+area: driver
+files: tools/reverseapoc/driver.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #13)
 ---
 

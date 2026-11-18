@@ -1,6 +1,8 @@
 ---
 title: An errata ledger that stats applies to re-run or corrected nights
 created: 2026-11-18
+area: stats
+files: tools/reverseapoc/stats.py, progress/errata.toml
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #7)
 ---
 

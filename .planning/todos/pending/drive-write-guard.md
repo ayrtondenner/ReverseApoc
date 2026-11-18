@@ -1,6 +1,8 @@
 ---
 title: Refuse writes and test runs under the checkout while a drive holds its lock
 created: 2026-11-17
+area: hooks
+files: tools/reverseapoc/hooks.py, tools/reverseapoc/locks.py
 source: run 20261116-copilot3 (the coordinator's own breach of the CLAUDE.md drive rule)
 ---
 

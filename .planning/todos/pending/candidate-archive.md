@@ -1,6 +1,8 @@
 ---
 title: A per-function archive of candidate sources
 created: 2026-11-18
+area: search
+files: tools/reverseapoc/search.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #9)
 ---
 

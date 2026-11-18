@@ -1,6 +1,8 @@
 ---
 title: Keep the transcript of a session that stops the night with a D-08 STOP
 created: 2026-11-15
+area: driver
+files: tools/reverseapoc/driver.py
 source: run 20261115-claude-push (STOPPED stop signal after 169 sessions, cause unknown)
 ---
 

@@ -1,6 +1,8 @@
 ---
 title: Wire the drive's meter seam to reverseapoc meters, once a meter reads live
 created: 2026-11-13
+area: budget
+files: tools/reverseapoc/driver.py, tools/reverseapoc/meters.py, tools/reverseapoc/quota.py, config/driver/quota.toml
 source: batch of 2026-11-13 (units 5 and 6), coordinator's merge note
 ---
 

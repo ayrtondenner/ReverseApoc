@@ -1,6 +1,8 @@
 ---
 title: Transfer matches between UFO2P and TACP twins without model tokens
 created: 2026-11-18
+area: twins
+files: tools/reverseapoc/twins.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #5; docs/research/notes-ideas-llm-decomp-research.md #5; docs/workflow.md (Select, line 44))
 ---
 

@@ -1,5 +1,6 @@
 ---
 created: 2026-11-10
+area: skills
 source: 07.2-09 SUMMARY (concerns)
 ---
 

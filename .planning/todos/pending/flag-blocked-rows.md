@@ -1,6 +1,8 @@
 ---
 title: Repair the flag-blocked rows that reach 100% only under another rule
 created: 2026-11-14
+area: flags
+files: config/cflags-proposals.toml
 source: near-miss lane review (main session, 2026-11-14)
 ---
 

@@ -1,6 +1,7 @@
 ---
 title: Progress-over-days chart with a daily log on the progress page
 created: 2026-11-13
+area: progress-page
 source: owner, during run 20261113-cascade3
 ---
 

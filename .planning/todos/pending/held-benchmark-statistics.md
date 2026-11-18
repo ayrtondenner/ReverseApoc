@@ -1,6 +1,8 @@
 ---
 title: A frozen held benchmark with repeats, intervals and paired tests
 created: 2026-11-18
+area: evaluation
+files: tools/reverseapoc/stats.py, tools/reverseapoc/cli.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #3; docs/research/notes-ideas-agentic-projects.md #6)
 ---
 

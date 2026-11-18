@@ -1,6 +1,8 @@
 ---
 title: Leakage controls: a contamination ledger and a recall probe
 created: 2026-11-18
+area: paper
+files: docs/research/leakage-controls.md
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #10)
 ---
 

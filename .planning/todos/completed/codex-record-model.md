@@ -1,6 +1,7 @@
 ---
 title: Codex attempt records carry no model
 created: 2026-11-13
+area: driver
 source: owner, counting the project's sessions (296 of 1,236 records had model null)
 ---
 

@@ -1,6 +1,8 @@
 ---
 title: Retire long-tail functions from agent queues onto a hand-off board
 created: 2026-11-18
+area: picking
+files: tools/reverseapoc/picker.py, config/handoff.csv, tools/progress.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-agentic-projects.md #3)
 ---
 

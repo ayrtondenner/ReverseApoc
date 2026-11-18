@@ -1,6 +1,8 @@
 ---
 title: GitHub Copilot as a drive harness (Copilot CLI arms)
 created: 2026-11-13
+area: harness-copilot
+files: config/driver/backends.toml
 source: owner, during night 20261113-cascade2
 ---
 

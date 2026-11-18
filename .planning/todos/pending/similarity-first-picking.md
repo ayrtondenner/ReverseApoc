@@ -1,6 +1,8 @@
 ---
 title: Order picks by similarity to matched functions, cross-EXE included
 created: 2026-11-18
+area: picking
+files: tools/reverseapoc/picker.py, tools/reverseapoc/contextpack.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #4; docs/research/notes-ideas-agentic-projects.md #2; docs/workflow.md (Select))
 ---
 

@@ -1,6 +1,8 @@
 ---
 title: A resumed held run gets fresh --arm-budget amounts
 created: 2026-11-17
+area: budget
+files: tools/reverseapoc/driver.py, tools/reverseapoc/quota.py
 source: run 20261116-fable-ab, launched five times
 ---
 

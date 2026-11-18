@@ -1,6 +1,8 @@
 ---
 title: Infer struct shapes once and share them across functions
 created: 2026-11-18
+area: context-pack
+files: tools/reverseapoc/contextpack.py
 source: literature mining of 2026-11-18 (docs/research/notes-ideas-llm-decomp-research.md #7)
 ---
 
