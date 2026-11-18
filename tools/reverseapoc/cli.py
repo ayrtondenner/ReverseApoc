@@ -2734,7 +2734,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     log = args.log if args.log is not None else repo / attempt.ATTEMPT_LOG
     config = args.config if args.config is not None else repo / "config"
     if args.compare is not None:
-        return _stats_compare(args, repo, log)
+        return _stats_compare(args, log)
     try:
         report = stats.collect(repo, log, config, runs=args.run)
     except stats.StatsError as exc:
@@ -2748,7 +2748,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
-def _stats_compare(args: argparse.Namespace, repo: Path, log: Path) -> int:
+def _stats_compare(args: argparse.Namespace, log: Path) -> int:
     """Todo held-benchmark-statistics: exit 0 done, 2 when the log cannot be read, a run has
     no matching attempt or --min-unattended is given too."""
     if args.min_unattended is not None:
@@ -2756,7 +2756,7 @@ def _stats_compare(args: argparse.Namespace, repo: Path, log: Path) -> int:
               file=sys.stderr)  # fmt: skip
         return EXIT_TOOL
     try:
-        doc = stats.compare(repo, log, *args.compare)
+        doc = stats.compare(log, *args.compare)
     except stats.StatsError as exc:
         print(f"reverseapoc stats: error: {exc}", file=sys.stderr)
         return EXIT_TOOL

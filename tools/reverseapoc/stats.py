@@ -119,7 +119,7 @@ def read_attempts(path: Path) -> list[dict]:
 
 # ---- todo errata-ledger: corrections to committed records ----
 
-ERRATA = Path("progress") / "errata.toml"  # under the repo, next to the attempt log
+ERRATA = "errata.toml"  # next to the attempt log: progress/errata.toml for the committed one
 _ERRATUM_KEYS = ("run", "field", "old", "new", "reason", "date")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -182,18 +182,25 @@ def _same(a: object, b: object) -> bool:
     return type(a) is type(b) and a == b
 
 
+def _holder(record: dict, parents: Sequence[str]) -> dict | None:
+    """The mapping the dotted field's last part lives in, or None when the path is absent."""
+    holder: object = record
+    for part in parents:
+        holder = holder.get(part) if isinstance(holder, dict) else None
+    return holder if isinstance(holder, dict) else None
+
+
 def _corrected(record: dict, erratum: Erratum) -> dict | None:
-    """The record with the erratum applied, or None when it does not apply to it."""
+    """A copy of the record with the erratum applied, or None when it does not apply to it
+    (the logged record itself is never changed)."""
     *parents, last = erratum.field.split(".")
     if record["run"] != erratum.run:
         return None
-    out = json.loads(json.dumps(record))  # a deep copy; the original stays as logged
-    holder = out
-    for part in parents:
-        holder = holder.get(part) if isinstance(holder, dict) else None
-    if not isinstance(holder, dict) or last not in holder or not _same(holder[last], erratum.old):
+    holder = _holder(record, parents)
+    if holder is None or last not in holder or not _same(holder[last], erratum.old):
         return None
-    holder[last] = erratum.new
+    out = json.loads(json.dumps(record))  # a deep copy, only of a record that changes
+    _holder(out, parents)[last] = erratum.new
     return out
 
 
@@ -225,7 +232,7 @@ def apply_errata(records: Sequence[dict], errata: Sequence[Erratum]
 def _errata_lines(errata: Sequence[Mapping]) -> list[str]:
     if not errata:
         return ["errata applied: none"]
-    return [f"errata applied ({ERRATA.as_posix()}):"] + [
+    return [f"errata applied ({ERRATA} next to the attempt log):"] + [
         f"  {e['run']} {e['field']}: {e['old']!r} -> {e['new']!r} on {e['records']} "
         f"record{'s' if e['records'] != 1 else ''} ({e['date']}): {e['reason']}"
         for e in errata]  # fmt: skip
@@ -774,13 +781,13 @@ def _curve(records: Sequence[Mapping]) -> dict:
     the bucket's tokens."""
     runs = sorted(r["check"]["runs"] for r in records if r["outcome"] in _EXACT)
     at = Counter(runs)
-    cumulative, seen = {}, 0
+    cumulative, seen = [], 0
     for checks in sorted(at):
         seen += at[checks]
-        cumulative[str(checks)] = tenth(Decimal(seen) * 100 / len(runs))
+        cumulative.append([checks, tenth(Decimal(seen) * 100 / len(runs))])
     tokens = sum(map(_token_total, records))
     return {"sessions": len(records), "exact": len(runs),
-            "exact_at": {str(k): at[k] for k in sorted(at)}, "cumulative_percent": cumulative,
+            "exact_at": [[k, at[k]] for k in sorted(at)], "cumulative_percent": cumulative,
             **{f"p{p}": _nearest_rank(runs, p) for p in _PERCENTILES},
             "latest": runs[-1] if runs else None,
             "bands": [_band(records, low, high, tokens) for low, high in _CHECK_BANDS]}  # fmt: skip
@@ -827,7 +834,7 @@ def _percent(fraction: float) -> str:
 def _proportion(exact: int, n: int) -> dict:
     interval = wilson(exact, n)
     return {"exact": exact, "functions": n,
-            "rate_percent": _percent(exact / n) if n else None,
+            "rate_percent": _rate(exact, n),
             "wilson_percent": None if interval is None
             else [_percent(x) for x in interval]}  # fmt: skip
 
@@ -888,9 +895,9 @@ def format_comparison(doc: Mapping) -> str:
     return "\n".join(lines)
 
 
-def compare(repo: Path, log: Path, run_a: str, run_b: str) -> dict:
-    """`stats --compare`: compare_runs over `log` with <repo>/progress/errata.toml applied."""
-    records, _ = apply_errata(read_attempts(log), read_errata(Path(repo) / ERRATA))
+def compare(log: Path, run_a: str, run_b: str) -> dict:
+    """`stats --compare`: compare_runs over `log` with the ledger next to it applied."""
+    records, _ = apply_errata(read_attempts(log), read_errata(Path(log).parent / ERRATA))
     return compare_runs(records, run_a, run_b)
 
 
@@ -1093,7 +1100,7 @@ def _curve_lines(label: str, c: Mapping) -> list[str]:
     if not c["sessions"]:
         return [f"  {label}: no matching session"]
     if c["exact"]:
-        by_check = ", ".join(f"{k} {v}%" for k, v in c["cumulative_percent"].items())
+        by_check = ", ".join(f"{k} {v}%" for k, v in c["cumulative_percent"])
         head = (f"  {label}: {c['exact']} exact of {c['sessions']} sessions; p50 {c['p50']}, "
                 f"p95 {c['p95']}, latest {c['latest']}; exact by check: {by_check}")  # fmt: skip
     else:
@@ -1157,18 +1164,25 @@ def collect(repo: Path, log: Path, config: Path, *, runs: Sequence[str] | None =
     Quick 261110-f30 (spike 012, owner ruling 2026-11-10): with `runs`, the report adds the
     comparison per arm, priced by backends.toml (an unreadable table is a StatsError) and with
     the per-try rates of <repo>/build/driver; without `runs`, `comparison` is null.
-    Todo errata-ledger: <repo>/progress/errata.toml (ERRATA) is applied to the whole log first,
-    and the report lists the corrections of the runs it reports (all of them without `runs`)."""
-    records, applied = apply_errata(read_attempts(log), read_errata(Path(repo) / ERRATA))
+    Todo errata-ledger: the ledger next to `log` (ERRATA, progress/errata.toml for the
+    committed log) is applied to the whole log first, and the report lists the corrections of
+    the runs it holds a record of."""
+    records, applied = apply_errata(read_attempts(log), read_errata(Path(log).parent / ERRATA))
     if runs is None:
         records = [r for r in records if r.get("hold_run") is not True]
         return build_report(records, history(repo), read_sizes(config), read_tiers(config),
-                            errata=[e.to_json(n) for e, n in applied])  # fmt: skip
+                            errata=_listed(applied, records))  # fmt: skip
     records = [r for r in records if _selected(r, runs)]
     try:
         arms = backends.load_arms()
     except backends.ArmError as exc:
         raise StatsError(f"the arm table: {exc}") from None
-    listed = [e.to_json(n) for e, n in applied if run_selected(e.run, runs)]
     return build_report(records, history(repo), read_sizes(config), read_tiers(config),
-                        own=True, arms=arms, repo=Path(repo), errata=listed)  # fmt: skip
+                        own=True, arms=arms, repo=Path(repo),
+                        errata=_listed(applied, records))  # fmt: skip
+
+
+def _listed(applied: Sequence[tuple[Erratum, int]], records: Sequence[Mapping]) -> list[dict]:
+    """The applied corrections of the runs the report holds a record of."""
+    runs = {r["run"] for r in records}
+    return [e.to_json(n) for e, n in applied if e.run in runs]

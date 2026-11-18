@@ -37,9 +37,14 @@ def _notes(repo: Path, run: str, text: str, function: str = "func_00012340", n: 
         ("not read: no disassembly of our object (tooling request).\nCheck 0009: exit 1.", []),
         ("Earlier notes also request review of the function row end.", []),
         ("1. Tooling request: one.\n2. Tooling request: two.", ["one", "two"]),
+        ("**Tooling request**: a wider window.\n**Tooling requests:** a listing.",
+         ["a wider window", "a listing"]),
+        ("Tooling request: a sweep flag, e.g. -ol, i.e. one letter, vs. two. Then more.",
+         ["a sweep flag, e.g. -ol, i.e. one letter, vs. two"]),
+        ("the last line has no period\n## Next\nTooling request: X", ["X"]),
     ],
     ids=["numbered", "qualified-and-wrapped", "split-marker", "inline", "no-text", "no-tag",
-         "two-items"],
+         "two-items", "bold-and-plural", "abbreviations", "heading"],
 )
 def test_extract(text, found):
     assert requests.extract(text) == found
@@ -50,6 +55,7 @@ def test_group_key_folds_hex_and_cuts_the_first_clause():
         "a disassembly of our object")  # fmt: skip
     assert requests.group_key("show the window at 0x0006052B for func_0005F230") == (
         "show the window at N for func_N")  # fmt: skip
+    assert requests.group_key("show the bytes at 5F119") == "show the bytes at N"  # causes' rule
     assert requests.group_key("a disassembly of our object would replace the inferences") == (
         "a disassembly of our object")  # fmt: skip
 

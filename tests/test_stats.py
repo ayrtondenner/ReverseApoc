@@ -1304,8 +1304,8 @@ def test_check_curves_per_bucket(tmp_path, capsys):
     curves = _curve_report(capsys, tmp_path)["check_curves"]
     small = curves["[0, 64)"]
     assert (small["sessions"], small["exact"]) == (6, 3)
-    assert small["exact_at"] == {"1": 2, "2": 1}
-    assert small["cumulative_percent"] == {"1": "66.7", "2": "100.0"}
+    assert small["exact_at"] == [[1, 2], [2, 1]]  # [checks, sessions], in check order
+    assert small["cumulative_percent"] == [[1, "66.7"], [2, "100.0"]]
     assert (small["p50"], small["p95"], small["latest"]) == (1, 2, 2)
     bands = {b["checks"]: b for b in small["bands"]}
     assert list(bands) == ["0", "1-3", "4-6", "7-10", "11-15", "16+"]
@@ -1313,7 +1313,7 @@ def test_check_curves_per_bucket(tmp_path, capsys):
     assert bands["1-3"]["tokens_percent"] == "55.0"  # 550 of the bucket's 1000 tokens
     assert (bands["16+"]["sessions"], bands["16+"]["exact"]) == (1, 0)
     assert bands["16+"]["tokens_percent"] == "40.0"
-    assert curves["[256, 1024)"]["exact_at"] == {"10": 1}
+    assert curves["[256, 1024)"]["exact_at"] == [[10, 1]]
     empty = curves["[64, 256)"]
     assert (empty["sessions"], empty["p50"], empty["latest"]) == (0, None, None)
     assert empty["bands"][0]["tokens_percent"] is None
@@ -1340,14 +1340,15 @@ def test_check_curves_count_a_held_exact_under_run(tmp_path, capsys):
     repo, _ = _repo(tmp_path)
     report = _json(capsys, repo, _log(tmp_path, held), "--run", "night1",
                    config=tmp_path / "config")  # fmt: skip
-    assert report["check_curves"]["unknown"]["exact_at"] == {"4": 1}
+    assert report["check_curves"]["unknown"]["exact_at"] == [[4, 1]]
 
 
 # ---- U7 (todo errata-ledger): progress/errata.toml, applied and listed ----
 
 
-def _errata(repo: Path, text: str) -> None:
-    _write(repo / "progress" / "errata.toml", text)
+def _errata(log_dir: Path, text: str) -> None:
+    """The ledger next to the attempt log (_log writes it under tmp_path)."""
+    _write(log_dir / "errata.toml", text)
 
 
 _COST_ERRATUM = """
@@ -1371,7 +1372,7 @@ date = "2026-11-18"
 
 def test_errata_applied_and_listed_under_run(tmp_path, capsys):
     repo, _ = _repo(tmp_path)
-    _errata(repo, _COST_ERRATUM)
+    _errata(tmp_path, _COST_ERRATUM)
     log = _log(tmp_path, _on_v3(0x10000), _on_v3(0x10010, run="night2"))
     report = _json(capsys, repo, log, "--run", "night1", config=tmp_path / "config")
     assert report["totals"]["cost_usd"] == "1.50"
@@ -1385,14 +1386,14 @@ def test_errata_applied_and_listed_under_run(tmp_path, capsys):
     ]  # fmt: skip
     assert _run(repo, log, "--run", "night1", config=tmp_path / "config") == 0
     out = capsys.readouterr().out
-    assert "errata applied (progress/errata.toml):" in out
+    assert "errata applied (errata.toml next to the attempt log):" in out
     assert ("  night1 cost_usd: 0.25 -> 1.5 on 1 record (2026-11-18): the CLI's figure was a "
             "made-up undercount") in out  # fmt: skip
 
 
 def test_errata_of_an_unselected_run_are_not_listed(tmp_path, capsys):
     repo, _ = _repo(tmp_path)
-    _errata(repo, _COST_ERRATUM)
+    _errata(tmp_path, _COST_ERRATUM)
     log = _log(tmp_path, _on_v3(0x10000), _on_v3(0x10010, run="night2"))
     report = _json(capsys, repo, log, "--run", "night2", config=tmp_path / "config")
     assert report["errata"] == []
@@ -1403,6 +1404,27 @@ def test_errata_of_an_unselected_run_are_not_listed(tmp_path, capsys):
 
 def test_no_ledger_no_errata(tmp_path, capsys):
     assert _report(capsys, tmp_path, _on_v3(0x10000))["errata"] == []
+
+
+def test_the_ledger_is_read_next_to_the_log(tmp_path, capsys):
+    """A ledger in the repo does not apply to a --log elsewhere (its corrections would match
+    nothing there)."""
+    repo, _ = _repo(tmp_path)
+    _write(repo / "progress" / "errata.toml", _COST_ERRATUM)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    log = _log(other, _on_v3(0x10000, run="night9"))
+    assert _json(capsys, repo, log, config=tmp_path / "config")["errata"] == []
+
+
+def test_errata_of_records_the_report_leaves_out_are_not_listed(tmp_path, capsys):
+    """The default report leaves hold runs out, so it lists no correction of one."""
+    repo, _ = _repo(tmp_path)
+    _errata(tmp_path, _COST_ERRATUM)
+    log = _log(tmp_path, _on_v3(0x10000, hold_run=True))
+    assert _json(capsys, repo, log, config=tmp_path / "config")["errata"] == []
+    assert len(_json(capsys, repo, log, "--run", "night1",
+                     config=tmp_path / "config")["errata"]) == 2  # fmt: skip
 
 
 @pytest.mark.parametrize(
@@ -1419,7 +1441,7 @@ def test_no_ledger_no_errata(tmp_path, capsys):
 )
 def test_a_bad_erratum_is_refused(tmp_path, capsys, text, message):
     repo, _ = _repo(tmp_path)
-    _errata(repo, text)
+    _errata(tmp_path, text)
     assert _run(repo, _log(tmp_path, _on_v3(0x10000)), "--run", "night1",
                 config=tmp_path / "config") == 2  # fmt: skip
     err = capsys.readouterr().err
@@ -1427,7 +1449,7 @@ def test_a_bad_erratum_is_refused(tmp_path, capsys, text, message):
 
 
 def test_committed_errata_ledger_reads():
-    errata = reverseapoc.stats.read_errata(REPO_ROOT / reverseapoc.stats.ERRATA)
+    errata = reverseapoc.stats.read_errata(REPO_ROOT / "progress" / reverseapoc.stats.ERRATA)
     records = reverseapoc.stats.read_attempts(REPO_ROOT / ATTEMPT_LOG)
     reverseapoc.stats.apply_errata(records, errata)  # every entry still changes a record
 
@@ -1512,13 +1534,6 @@ _HELD_V1_SEED = 20261118
 _HELD_V1_PER_STRATUM = 20
 
 
-def _stratum_of(size: int) -> int:
-    from reverseapoc import driver
-
-    return next(i for i, (low, high) in enumerate(driver.STRATA)
-                if low <= size and (high is None or size < high))  # fmt: skip
-
-
 def _held_v1_sample(base: Path) -> list[tuple[str, int]]:
     """The header's recipe: the partial rows of each config/<exe>/status.csv at the base
     commit, in driver.STRATA groups by that commit's functions.csv size, sorted; one
@@ -1542,7 +1557,7 @@ def _held_v1_sample(base: Path) -> list[tuple[str, int]]:
     for exe in ("ufo2p", "tacp"):
         for row in read_status(base / exe / "status.csv"):
             if row.status == "partial":
-                groups[_stratum_of(sizes[(exe, row.start)])].append((exe, row.start))
+                groups[driver._stratum(sizes[(exe, row.start)])].append((exe, row.start))
     rng = random.Random(_HELD_V1_SEED)
     return [key for group in groups for key in rng.sample(sorted(group), _HELD_V1_PER_STRATUM)]
 

@@ -11,8 +11,9 @@ write it as a list item or inline: `3. Tooling request: ...`, `- Tooling request
 - A note is cut into blocks (a blank line, a list item or a heading starts one), and each block's
   lines are joined, so a request wrapped over lines, or a tag split over two, is read whole.
 - A request is the text after a tag (`tooling request`, an optional parenthesised or
-  comma-led qualifier, then a colon) up to the end of its sentence, or to the `)` closing a
-  parenthesis the tag opened. A tag with no colon names no request and is skipped.
+  comma-led qualifier, then a colon; `requests` and Markdown bold too) up to the end of its
+  sentence (not at `e.g.`, `i.e.` or `vs.`), or to the `)` closing a parenthesis the tag
+  opened. A tag with no colon names no request and is skipped.
 - Requests are grouped by group_key: lower case, hex addresses and `func_` names folded to N
   (causes' rule for hex), cut at the first clause break. A group counts the notes files that
   raise it (a note repeating a request counts once), most first.
@@ -27,14 +28,15 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import flags
+from . import causes, flags
 from .attempt import NOTES_FILE
 
-_BLOCK_START = re.compile(r"\s*(?:[-*+]|\d+[.)]|#)\s")  # a list item or a heading
-_TAG = re.compile(r"tooling\s+request\b(?:\s*\([^)]*\))?(?:,[^:.]{0,60})?\s*:", re.IGNORECASE)
-_SENTENCE_END = re.compile(r"\.(?:\s|$)")
+_BLOCK_START = re.compile(r"\s*(?:[-*+]|\d+[.)]|#+)\s")  # a list item or a heading
+# `tooling request` or `requests`, bold or not, an optional qualifier, then a colon
+_TAG = re.compile(r"\**tooling\s+requests?\b\**(?:\s*\([^)]*\))?(?:,[^:.]{0,60})?\s*:\**",
+                  re.IGNORECASE)  # fmt: skip
+_SENTENCE_END = re.compile(r"(?<!\be\.g)(?<!\bi\.e)(?<!\bvs)\.(?:\s|$)")  # not e.g. i.e. vs.
 _FUNC_NAME = re.compile(r"\bfunc_[0-9a-f]{8}\b")
-_HEX = re.compile(r"\b0x[0-9a-f]+\b")
 _CLAUSE_BREAK = re.compile(r"[,;:(]|\s(?:so|would|because)\s")
 EXAMPLE_PATHS = 3  # the paths a group shows
 
@@ -85,7 +87,7 @@ def extract(text: str) -> list[str]:
 def group_key(request: str) -> str:
     """The request's group: lower case, `func_` names and hex folded to N, cut at the first
     clause break."""
-    text = _HEX.sub("N", _FUNC_NAME.sub("func_N", request.lower()))
+    text = causes._hex_folded(_FUNC_NAME.sub("func_N", request.lower()))
     return _CLAUSE_BREAK.split(text, maxsplit=1)[0].strip().rstrip(".")
 
 
