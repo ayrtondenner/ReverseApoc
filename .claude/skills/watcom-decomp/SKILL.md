@@ -15,9 +15,9 @@ You make one claimed function byte-identical to the original, proven by `attempt
 | What you may write | that view unit, and in this attempt's directory notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr) and, beside it, `plan.json`, `check-note.json` and `giveup.json` (under "The attempt wrapper" and "When to give up"). No header anywhere. The hooks also allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`), but a matching session writes none: nothing applies a matching session's proposals (the driver's rename step runs after readability sessions only). A name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl. Nothing else. |
 | Types you need | declared in the view unit, at file scope (see "Replacing INCLUDE_ASM"). |
 | Names | placeholders stay: `func_XXXXXXXX`, `D_XXXXXXXX` and your own function's name. A name idea goes in notes.md. |
-| The only commands | the seven wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Read and search files with your harness's own file tools wherever it lets them read, never with a command; anywhere else, or with no file tools, read through the wrapper: `attempt context`, `attempt asm`, `attempt asm <NAME>` and `attempt check` print what you need. |
+| The only commands | the eight wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Read and search files with your harness's own file tools wherever it lets them read, never with a command; anywhere else, or with no file tools, read through the wrapper: `attempt context`, `attempt asm`, `attempt asm <NAME>` and `attempt check` print what you need. |
 | Check exit codes | under "The attempt wrapper" below. |
-| Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. |
+| Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing, such as a check without a valid `plan.json` and `check-note.json`. A check whose C repeats an earlier exit `0` or `1` check of this attempt, comments and blanks aside, gets that check's verdict at once and uses none: its first line reads `repeat of NNNN`, and it removes your check-note.json, so write a new note for the next real check. |
 | Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/25, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
 | Full evidence | `<attempt dir>/checks/NNNN.json` (check's JSON) and `checks/NNNN.c` (the exact C that run checked), one pair per run, plus a line in `checks.jsonl`. Each check prints both full paths. |
 | Flags of your check | the unit's rule in the view's `config/cflags.txt` (HEAD's copy): its own line if it has one, else the `*` default `wcc386@10.6 -4r -s -fpi`. |
@@ -126,8 +126,15 @@ struct unk_002C {
 | `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes); it is printed, so you need not open context.md |
 | `uv run --frozen reverseapoc attempt plan` | checks your `plan.json` against the function's size and prints its regions (no check used) |
 | `uv run --frozen reverseapoc attempt giveup` | checks your `giveup.json` (no check used); see "When to give up" |
+| `uv run --frozen reverseapoc attempt diff` | prints every differing run of your last plain check, yours beside the original's, each with its class (no check used, nothing compiled) |
 
 The pack's "Earlier give-ups" and "Earlier best C" sections say where earlier attempts on this function stopped and hold the best earlier definition: read them before you plan.
+
+Other pack sections, when present:
+- **Owner hints** is written by the owner, not by an agent or a tool. Treat it as the owner's word about this function: a type, a struct, a known flag, or why the last attempt stalled. It comes from `config/hints/<exe>.toml`, which sessions never edit. If a hint looks wrong, say so in notes.md.
+- **Callee signatures** gives each callee's argument registers, stack arguments and result as the lifter infers them (`int` stands for an unknown type). A matched callee's own C prototype is in "Callees" and wins.
+- **Struct shapes** lists the fields other functions of the original code read through the same pointer: offset, width, how it is read, and how many functions read it. Declare your struct from it in your own unit; the field names are yours. A field marked "sign unknown" was only read by plain moves, so the bytes decide its signedness.
+- **Control-flow outline** (rows of 256 B and up) gives a count line (blocks, branches, loops, switches, calls, returns), one line per basic block with its exit, and the loops as back edges. Read it before writing C. Write the skeleton first, with one `if`/loop/`switch` per outline item in the same order, then fill in the statements. After each check, compare the summary's `shape:` line (ours against the original: code length, blocks, branches) before reading byte differences. A block or branch count that differs means the control flow is wrong, so fix that before tuning registers or the stack.
 
 **The plan and the note.** A check needs two files beside notes.md. Without them `attempt check`, plain or `--sweep`, is refused with exit `2` and uses none of the 25 checks. The refusal names what is missing or wrong, e.g. `write plan.json beside notes.md first`: write that file, then run the check again.
 
@@ -190,11 +197,19 @@ A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the
 ### From a mismatch to the instruction
 
 1. Read the window the summary prints under the claimed function, after `first difference at`: your instructions on the left, the original's on the right, one per row. The row marked `>` is the first differing instruction; `-` means that side has no instruction there.
+   Under the window, `class <c>: N differing runs (...)` names the function's class and counts its runs by class:
+   - `slot`: stack offsets only;
+   - `register`: register choice only;
+   - `branch`: jump mnemonics or targets;
+   - `size`: another frame or instruction count;
+   - `tail`: one side ends early;
+   - `mixed`: none of these.
+   `attempt diff` prints every run in full.
 2. An instruction that ends in `(relocated)` covers a relocated field: the byte compare ignores that operand, and yours shows the unlinked placeholder. A wrong target there shows in `reloc.problems`, never in the window.
 3. For the rest of the original, take `bytes.first_va` and each address named in `reloc.problems` and find them in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`, some with a note after it.
 4. Change the C shape behind that instruction, one change per check, using the idioms in `docs/matching.md`.
 
-The window is all you see of your own object: at most 8 rows around the first difference, never the whole function. If that blocks you, write it in notes.md as a tooling request.
+The window shows at most 8 rows around the first difference; `attempt diff` shows every differing run of the whole function.
 
 ## When to give up
 

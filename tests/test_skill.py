@@ -114,7 +114,7 @@ def _commands(text: str) -> list[list[str]]:
 # The forms the skill quotes, and the matching-only forms it does not quote yet (RULINGS "The
 # five pinned-form tests": 07.2-02 added ("giveup",), 07.2-03 ("plan",); 07.2-09 teaches them and
 # empties it, D-26). `attempt diff` waits here until the skill names it (writing-skills).
-PENDING_SKILL_FORMS = (("diff",),)
+PENDING_SKILL_FORMS: tuple = ()
 SKILL_FORMS = tuple(form for form in hooks.MATCHING_FORMS if form not in PENDING_SKILL_FORMS)
 
 
