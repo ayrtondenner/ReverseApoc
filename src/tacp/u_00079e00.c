@@ -9,7 +9,10 @@
 
 INCLUDE_ASM(func_00079E00);
 INCLUDE_ASM(func_00079FE0);
-INCLUDE_ASM(func_0007A000);
+void func_0007A000(void)
+{
+    return;
+}
 
 unsigned char func_0007A010(unsigned char r_eax)
 {
