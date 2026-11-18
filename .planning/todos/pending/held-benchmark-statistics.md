@@ -1,0 +1,15 @@
+---
+title: A frozen held benchmark with repeats, intervals and paired tests
+created: 2026-11-18
+source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-reproducibility.md #3; docs/research/notes-ideas-agentic-projects.md #6)
+---
+
+# A frozen held benchmark with repeats, intervals and paired tests
+
+**Why.** Model comparisons use single runs and raw rates, with no spread (trAIns' single baseline is the pattern to avoid). Mizuchi repeats runs; VideoGameBench keeps hidden games; McNemar and Wilson intervals fit paired match/no-match data.
+
+**Do.** A versioned pick set with a dev/held-out split, k repeats per arm, Wilson intervals and McNemar tests in stats, and decision rules written before each held comparison.
+
+**Done when.** stats --compare prints intervals and the paired test; a pre-registered comparison is run once.
+
+**Effort / value.** M / high. Evidence and sources: docs/research/notes-ideas-tooling-reproducibility.md #3; docs/research/notes-ideas-agentic-projects.md #6.
