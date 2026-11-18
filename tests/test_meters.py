@@ -427,3 +427,16 @@ def test_the_drives_default_meter_seam_is_the_budget_meter(tmp_path):
     seams = driver.default_seams(tmp_path)
     assert seams.meter("claude-haiku-5-5").used == pytest.approx(1.0)
     assert seams.meter("gpt-6.1-terra") is None
+
+
+def test_an_unusable_table_mid_night_is_no_reading(tmp_path, monkeypatch):
+    """refuse_budgets read quota.toml and backends.toml before the night; one that turns
+    unusable during it gives no reading (the session cap holds), never a stopped night."""
+    from reverseapoc import quota
+
+    def broken():
+        raise quota.QuotaError("quota.toml: made up")
+
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73)])
+    monkeypatch.setattr(quota, "load_quota", broken)
+    assert meters.budget_meter(tmp_path)("claude-haiku-5-5") is None

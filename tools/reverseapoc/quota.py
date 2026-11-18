@@ -45,7 +45,7 @@ _ARM_KEYS = {"plan", "source", "read", "estimate", "matched", "sessions", "rate_
              *_FIELDS}  # fmt: skip
 _PLAN_KEYS = {"name", "credit_usd", "meter", "no_meter", "usd_per_week_point", "point_source"}
 _TENTH = Decimal("0.1")
-_CENT = Decimal("0.01")
+_STEP = Decimal("0.0001")  # a spend and what is left, shown and held to a ten-thousandth
 
 # Todo budget-meter-wiring: a plan's `meter` and the unit it reads: the OpenRouter credits API
 # (the account's whole usage, in dollars), the arm's records' `credits` (each Copilot session's
@@ -237,8 +237,15 @@ class Spent:
     how: str
 
 
-def _cents(amount: Decimal, unit: str) -> str:
-    return _shown(amount.quantize(_CENT, rounding=ROUND_HALF_UP), unit)
+def _rounded(amount: Decimal, unit: str) -> str:
+    return _shown(amount.quantize(_STEP, rounding=ROUND_HALF_UP), unit)
+
+
+def _left(budget: Budget, spent: Spent | None) -> Decimal:
+    """The budget less the earlier spend, rounded down to _STEP (never more than is left)."""
+    if spent is None:
+        return budget.amount
+    return (budget.amount - spent.amount).quantize(_STEP, rounding=ROUND_FLOOR)
 
 
 def _figure(value: object) -> Decimal:
@@ -321,15 +328,15 @@ class Sizing:
         """What the night may spend: the budget less the run's earlier spend."""
         if self.spent is None:
             return self.budget
-        return Budget(self.budget.amount - self.spent.amount, self.budget.unit)
+        return Budget(_left(self.budget, self.spent), self.budget.unit)
 
     def _spent_text(self) -> str:
         if self.spent is None:
             return ""
         unit = self.budget.unit
-        return (f", {_cents(self.spent.amount, unit)} spent earlier by {self.spent.sessions} "
+        return (f", {_rounded(self.spent.amount, unit)} spent earlier by {self.spent.sessions} "
                 f"sessions of run {self.spent.run} ({self.spent.how}), "
-                f"{_cents(self.left.amount, unit)} left")  # fmt: skip
+                f"{_rounded(self.left.amount, unit)} left")  # fmt: skip
 
     def _meter_text(self) -> str:
         """Todo budget-meter-wiring: what holds the budget between launches."""
@@ -411,11 +418,11 @@ def size(arm: str, budget: Budget, table: Mapping[str, ArmQuota], *,
         raise QuotaError(f"arm {arm} has no quota entry in {QUOTA_TOML.name}, so a budget "
                          f"cannot size it (arms with one: {', '.join(table)})")
     per = _per_session(entry, budget.unit)
-    left = budget.amount - (spent.amount if spent is not None else 0)
+    left = _left(budget, spent)
     by_budget = int((left / per).to_integral_value(rounding=ROUND_FLOOR))
     if by_budget < 1:
         earlier = ("" if spent is None else
-                   f" ({_cents(spent.amount, budget.unit)} spent earlier by {spent.sessions} "
+                   f" ({_rounded(spent.amount, budget.unit)} spent earlier by {spent.sessions} "
                    f"sessions of run {spent.run})")  # fmt: skip
         raise QuotaError(f"budget {budget} for arm {arm} buys 0 sessions at "
                          f"{_shown(per, budget.unit)} per session{earlier}")  # fmt: skip

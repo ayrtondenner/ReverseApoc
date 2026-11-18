@@ -353,25 +353,34 @@ def budget_meter(repo: Path, seams: Seams | None = None) -> Callable[[str], Budg
     `cost_usd`: what the arm's attempt records in `repo`'s attempts.jsonl spent (quota.spend:
     their credits, or their cost_usd at the plan's usd_per_week_point), which the night appends
     as each session ends. None for a plan with `no_meter` (no source moves during a night) and
-    an arm with no quota or backends entry: the budget's session cap alone holds it."""
+    an arm with no quota or backends entry: the budget's session cap alone holds it. A seam
+    never raises (it runs between launches on a worker): a quota.toml or backends.toml that
+    turned unusable after refuse_budgets read it is no reading, as a failed source read is."""
     seams = seams or default_seams()
     log = Path(repo) / ATTEMPT_LOG
 
     def meter(arm: str) -> BudgetReading | None:
-        entry = quota.load_quota().get(arm)
-        if entry is None or entry.plan.meter is None:
+        try:
+            return _budget_reading(arm, log, seams)
+        except (quota.QuotaError, backends.ArmError):
             return None
-        unit = quota.METER_UNITS[entry.plan.meter]
-        if entry.plan.meter == quota.METER_OPENROUTER:
-            found = [r for r in read("openrouter", seams) if r.meter == "credits" and not r.error]
-            return BudgetReading(found[0].used, unit) if found else None
-        table = backends.load_arms()
-        if arm not in table:
-            return None
-        records = [r for r in _jsonl(log) if is_arm_attempt(r, table[arm])] if log.is_file() else []
-        return BudgetReading(float(quota.spend(entry, unit, records)), unit)
 
     return meter
+
+
+def _budget_reading(arm: str, log: Path, seams: Seams) -> BudgetReading | None:
+    entry = quota.load_quota().get(arm)
+    if entry is None or entry.plan.meter is None:
+        return None
+    unit = quota.METER_UNITS[entry.plan.meter]
+    if entry.plan.meter == quota.METER_OPENROUTER:
+        found = [r for r in read("openrouter", seams) if r.meter == "credits" and not r.error]
+        return BudgetReading(found[0].used, unit) if found else None
+    table = backends.load_arms()
+    if arm not in table:
+        return None
+    records = [r for r in _jsonl(log) if is_arm_attempt(r, table[arm])] if log.is_file() else []
+    return BudgetReading(float(quota.spend(entry, unit, records)), unit)
 
 
 # ---- the text report ----

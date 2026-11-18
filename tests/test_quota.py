@@ -347,3 +347,17 @@ def test_a_budget_the_run_already_spent_is_refused():
     with pytest.raises(QuotaError) as exc:
         size(COPILOT, parse_budget("100credits"), table, max_sessions=None, spent=spent)
     assert "0 sessions" in str(exc.value) and "120credits spent earlier" in str(exc.value)
+
+
+def test_a_week_spend_is_shown_and_left_to_a_ten_thousandth():
+    """$3.10 of Opus cost_usd is 0.17484...%week at $17.73 a point: the line shows 0.1748%week
+    spent and 4.8251%week left (rounded down, so the night never holds more than is left), and
+    the night's budget carries no 28-digit figure."""
+    table = load_quota()
+    spent = quota.spent(table["claude-opus-5-5"], quota.WEEK, [_rec(3.10)], "r1")
+    sizing = size("claude-opus-5-5", parse_budget("5%week"), table, max_sessions=None,
+                  spent=spent)  # fmt: skip
+    assert sizing.left == Budget(Decimal("4.8251"), quota.WEEK)
+    assert str(sizing.left) == "4.8251%week"
+    assert "0.1748%week spent earlier" in sizing.line() and "4.8251%week left" in sizing.line()
+    assert sizing.sessions == 120

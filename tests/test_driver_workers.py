@@ -1827,15 +1827,19 @@ def test_hold_progress_counts_a_copilot_guardrail_record(tmp_path):
     from test_driver_pick import _hold_record
     from test_driver_records import _log
 
-    copilot, claude, tool = 0x00010010, 0x00010020, 0x00010030
-    records = [{**_hold_record(RUN, copilot), "outcome": "GAVE_UP", "abort_reason": "guardrail",
-                "harness": "copilot", "backend": "github", "credits": 25.0},
-               {**_hold_record(RUN, claude), "outcome": "GAVE_UP", "abort_reason": "guardrail"},
-               {**_hold_record(RUN, tool), "outcome": "GAVE_UP", "abort_reason": "tool",
-                "harness": "copilot", "backend": "github", "credits": None}]  # fmt: skip
+    copilot, claude, tool, breach = 0x00010010, 0x00010020, 0x00010030, 0x00010040
+    ended = {"outcome": "GAVE_UP", "abort_reason": "guardrail", "harness": "copilot",
+             "backend": "github", "credits": 25.0}  # fmt: skip
+    records = [{**_hold_record(RUN, copilot), **ended, "hook_blocks": 1},
+               {**_hold_record(RUN, claude), "outcome": "GAVE_UP", "abort_reason": "guardrail",
+                "hook_blocks": 1},
+               {**_hold_record(RUN, tool), **ended, "abort_reason": "tool", "hook_blocks": 1},
+               # a Copilot session with no refused call cannot have ended on a denied write: its
+               # guardrail record is a breach, which the stop cut short
+               {**_hold_record(RUN, breach), **ended, "hook_blocks": 0}]  # fmt: skip
     done, last = driver.hold_progress(_log(tmp_path, records), RUN)
     assert done == {("ufo2p", copilot)}
-    assert last == {("ufo2p", s): 1 for s in (copilot, claude, tool)}
+    assert last == {("ufo2p", s): 1 for s in (copilot, claude, tool, breach)}
 
 
 GEMINI = "gemini-flash"  # an agy arm (07.2-15)

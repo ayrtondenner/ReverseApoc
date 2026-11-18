@@ -2377,9 +2377,11 @@ def hold_progress(log: Path, run: str) -> tuple[frozenset[Key], dict[Key, int]]:
     PARTIAL, GAVE_UP). Not counted, so attempted again: a GAVE_UP guardrail or tool record (the
     night's stop or its arm's cut the attempt short and reset its work), a transient abort, and
     a session the stop killed, which left no record. Todo held-run-denied-write-repick: a
-    Copilot arm's GAVE_UP guardrail record counts, since that session ended on its own
-    (`_SessionEnded`, owner ruling 2026-11-16: its arm goes on); a session another arm's stop or
-    an interrupt cut short is never recorded (`_audit`)."""
+    Copilot arm's GAVE_UP guardrail record with a refused call (`hook_blocks`) counts, since such
+    a session ends on its own when its strays are writes Copilot denied (`_SessionEnded`, owner
+    ruling 2026-11-16: its arm goes on); a session another arm's stop or an interrupt cut short
+    is never recorded (`_audit`). The record does not tell that end from a Copilot breach that
+    also had a refused call (`_guardrail`, the night stopped), which counts too."""
     done: set[Key] = set()
     last: dict[Key, int] = {}
     for record in _log_records(log):
@@ -2403,8 +2405,9 @@ def is_arm_attempt(record: Mapping, arm: backends.Arm) -> bool:
 
 def _cut_short(record: Mapping) -> bool:
     """A hold-run attempt record a stop cut short (`hold_progress`): a tool record, or a
-    guardrail one off the Copilot harness."""
-    if record["abort_reason"] == GUARDRAIL and record.get("harness") == backends.COPILOT:
+    guardrail one but a Copilot session's with a refused call (a denied write's end)."""
+    if (record["abort_reason"] == GUARDRAIL and record.get("harness") == backends.COPILOT
+            and record["hook_blocks"] > 0):  # fmt: skip
         return False
     return record["abort_reason"] in _CUT_SHORT
 
