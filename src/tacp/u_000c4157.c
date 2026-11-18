@@ -13,4 +13,9 @@ int func_000C4157(void *stream, long *position)
 {
     return (*position = ftell(stream)) == -1;
 }
-INCLUDE_ASM(func_000C416A);
+int fseek(void *fp, long offset, int whence);
+
+int func_000C416A(void *stream, long *position)
+{
+    return fseek(stream, *position, 0);
+}
