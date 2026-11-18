@@ -251,3 +251,37 @@ Entry format:
 
 - **What we found.** OpenApoc reads `ufo2p.exe` from the CD image, and the Steam `cd.iso` / GOG `XCOM.BIN` carry the v1.00 CD build (UFO2P.EXE 1,702,206 bytes, CRC32 `0x4749FFC1`; TACP.EXE 3,170,298 bytes). The installed `XCOMA/` tree holds a second build (1,705,790 / 3,161,594 bytes) that is also on the disc, as `XCOM3/UFOEXE/UFO2P4.EXE` and `XCOM3/TACEXE/TACP4.EXE` (byte-identical; trailer spike 003, 2026-10-20), so it is not a store patch. Verified with pycdlib on both disc images; SMKP.EXE and XCOMAPOC.EXE are identical in both.
 - **Why it matters.** OpenApoc's offsets and `FUN_` addresses only apply to the CD build. We keep the installed build as primary target, record the CD build in `config/targets.toml`, and treat the build-to-build diff as free matching evidence later. Which build is newer is unknown; a build-to-build diff after Phase 5 may tell. Update, 2026-10-25: D-42 keeps the installed build primary and revisits twin matching of the CD build after Phase 7.
+
+## 2026-11-18: every Copilot event type judged, and Sonnet's scratch files
+
+- Copilot CLI 1.0.111's `schemas/session-events.schema.json` (under
+  `%LOCALAPPDATA%\copilot\pkg\win32-x64\<version>\`) documents 179 event types and 8
+  `system.notification` kinds. The audit knew 39 of them. The review read the other 140 one by
+  one. Each is now in `copilotjson` as known (15 more, each in the schema's own words), known
+  only in an exact shape, or kept unknown on purpose with a reason, and `tests/test_copilot.py`
+  checks that against the installed schema. Shaped: `assistant.usage` and `session.usage_record`
+  (initiator `user` or `agent`, conversation-agent, no sub-agent parent; their model joins the
+  model check), `tool.execution_progress` of a started call, and
+  `session_limits_exhausted.completed` answered `cancel`. Kept unknown: hooks, skills,
+  subagents, fusion, MCP, permissions, model or mode switches, Autopilot, system messages,
+  other tools and programs, IDE and canvas, resume and schedules, `abort` (the driver never
+  interrupts a session), a cwd change and a session-workspace write. Any event whose envelope
+  carries `agentId` (a subagent's) is unknown too, whatever its type. The tests also fail when
+  an installed CLI version is not the reviewed one.
+- The schema's own words were wrong once: it says a usage's `initiator` is "absent for
+  user-initiated calls", but all 7,405 persisted usage records carry `user` (first call) or
+  `agent`. Check a shape against recorded data, not only the schema.
+- The persisted log (`session-state/<id>/events.jsonl` under the session's home) holds types
+  stdout never streams: one `system.message` per session, a `session.usage_record` per model
+  call and `permission.requested`/`.completed` pairs (206 of each). `system.message` and the
+  permission events are kept unknown, so a CLI version that streamed them would stop sessions;
+  its canary would show that first. On each new version, re-run the review against its schema
+  and point the test at it.
+- Replaying all 436 recorded Copilot transcripts through the new audit gave no event-type stop.
+- Copilot Sonnet 5.5 tried a scratch copy (`plan2.json`, `giveup.json.tmp`, `giveup2.json`,
+  `giveup.json2`, `plan.json.tmp`) in 14 sessions of runs 20261116-copilot2 to -mixed4,
+  uncounted retries and audit-stopped sessions included; in the three read closely, the real file
+  was already written. The Copilot prompt now says to write each session file in place
+  (create once, then edit) and nothing else. Measured cost: 25.4 credits a recorded session
+  (11 sessions, 279.9 credits, 1 match), so quota.toml drops its estimate of 40. The 60-credit
+  cap stays: the costliest session spent 47.6.

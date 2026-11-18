@@ -33,11 +33,13 @@ them for each arm.
   reads them (D-26).
 - `unknown_steps` (fail closed): each call that is not known, each start or completion whose
   toolCallId is not a string, each completion with no start, each second start or completion of
-  one id (only one of each is read), and each event of a type outside KNOWN_EVENTS (a hook, a
-  skill, a subagent, a permission prompt, a model switch...): the audit counts each as a
-  stray. `hook_traces`: each tool result that carries a hook's guidance text (the owner's
-  user-level postToolUse hook reached the capture's results): the per-session COPILOT_HOME
-  turns every hook off, so any is a stray.
+  one id (only one of each is read), each event carrying `agentId` (a subagent's), and each
+  event of a type outside KNOWN_EVENTS that is not one of SHAPED_EVENTS in its known shape:
+  one of KEPT_UNKNOWN (a hook, a skill, a subagent, a
+  permission prompt, a model switch...) names its reason, any other is a type no review read.
+  The audit counts each as a stray. `hook_traces`: each tool result that carries a hook's
+  guidance text (the owner's user-level postToolUse hook reached the capture's results): the
+  per-session COPILOT_HOME turns every hook off, so any is a stray.
 - `failure`: the first `session.error`'s errorType and message, else the result's non-zero
   exit code, else None. `classify`: a wall-clock timeout is counted; a session.error is LIMIT
   for a rate limit or a quota, counted for a context limit, STOP for anything else; a result
@@ -129,12 +131,148 @@ KNOWN_EVENTS = frozenset({
     "tool.execution_partial_result", "session.info", "session.background_tasks_changed",
     _TURN_END, "session.usage_checkpoint", "assistant.idle", _RESULT,
     "session.compaction_start", "session.compaction_complete", "session.compaction_summarized",
-    "session.truncation", "session.usage_info", "assistant.usage", "assistant.turn_retry",
+    "session.truncation", "session.usage_info", "assistant.turn_retry",
     "model.call_failure", _ERROR, "session.warning", "session.idle", "session.shutdown",
     "session.session_limits_changed",
+    # The event review of 2026-11-18 (todo copilot-event-types-review): every event type 1.0.111's
+    # schemas/session-events.schema.json documents is in KNOWN_EVENTS, SHAPED_EVENTS or
+    # KEPT_UNKNOWN (tests/test_copilot.py reads the installed schema). Known as is, each in the
+    # schema's own words; none runs anything or names a tool, path, model, agent, hook,
+    # permission or instruction text the audit would have to judge:
+    "assistant.intent",  # "agent intent description for current activity or plan"
+    "assistant.streaming_delta",  # "streaming response progress with cumulative byte count"
+    "session.title_changed",  # "the new display title for the session"
+    # "the agent's todos or todo_deps table was written to": only through the sql tool, which
+    # the session does not have (a call to it is an unknown call)
+    "session.todos_changed",
+    # "a provider-owned quota observation, distinct from per-call usage and charge accounting";
+    # a quota stop comes as a session.error (classify)
+    "session.quota_observation",
+    # "behavior-neutral record of structured runtime facts present when an agent completion
+    # decision is accepted" (stop reason, final tool, tool counts)
+    "session.completion_receipt",
+    "pending_messages.modified",  # "empty payload; ... the pending message queue has changed"
+    "capabilities.changed",  # "session capability change notification" (its UI capabilities)
+    # "session command list change notification"; running one (command.execute, .queued) is
+    # kept unknown
+    "commands.changed",
+    # "canonical bytes for a content-addressed binary asset shared by reference across events"
+    # (an image a view returned); the call that returned it is judged as any call
+    "session.binary_asset",
+    # "internal durable marker that the server rejected a compressed model request body"
+    "session.request_body_compression_disabled",
+    "session.indexed_search",  # "transient indexed-search status and diagnostics"
+    # "links a standalone replay head to its complete preceding numbered journal archive"
+    "session.journal_link",
+    # "internal content-free receipt for the first model request that consumed one or more
+    # pending canonical instruction updates": the text came in an instruction.update
+    "instruction.update_delivery",
+    # "session limit exhaustion notification requiring user action": the driver's own
+    # --max-ai-credits cap reached; its answer is shaped (_limit_kept)
+    "session_limits_exhausted.requested",
 })  # fmt: skip
 # the events whose `model` field names the model that served the session
-_MODEL_EVENTS = frozenset({"model.call_start", "assistant.message", _TOOL_START})
+_MODEL_EVENTS = frozenset({"model.call_start", "assistant.message", _TOOL_START,
+                           "assistant.usage"})  # fmt: skip
+_USAGE_RECORD = "session.usage_record"
+_PROGRESS = "tool.execution_progress"
+_LIMIT_DONE = "session_limits_exhausted.completed"
+# The event review of 2026-11-18: why each documented type the session could not emit locked
+# down (no MCP, skills, subagents, hooks or custom instructions; five tools; headless) is kept
+# unknown on purpose. Each stops the night with its reason.
+_KEPT = {
+    "a hook ran": ("hook.start", "hook.progress", "hook.end"),
+    "a skill ran or was loaded": ("skill.invoked", "skill.invoked_ref", "skill.context_delivered",
+                                  "skill.context_delivered_ref", "session.skills_loaded"),
+    "a subagent, custom agent or background agent ran": (
+        "subagent.started", "subagent.completed", "subagent.failed", "subagent.selected",
+        "subagent.deselected", "subagent.configured", "session.custom_agents_updated"),
+    "a HydraFusion multi-model turn": (
+        "assistant.fusion_phase_started", "assistant.fusion_phase_activity",
+        "assistant.fusion_phase_completed", "assistant.fusion_phase_failed",
+        "session.fusion_route_started", "session.fusion_route_failed", "session.fusion_resolved",
+        "session.fusion_handoff", "session.fusion_commit_started", "session.fusion_completed",
+        "session.fusion_change_checkpoint"),
+    "an MCP server, MCP app or MCP sampling": (
+        "mcp.oauth_required", "mcp.oauth_completed", "mcp.oauth_recovery_completed",
+        "mcp.headers_refresh_required", "mcp.headers_refresh_completed",
+        "mcp.tools.list_changed", "mcp.prompts.list_changed", "mcp.resources.list_changed",
+        "mcp_app.tool_call_complete", "session.mcp_server_status_changed",
+        "session.mcp_server_tools_loaded", "session.mcp_server_needs_reconnect",
+        "session.mcp_server_removed", "sampling.requested", "sampling.completed"),
+    # 1.0.111 persists a permission.requested and .completed per refusal but streams neither
+    "a permission prompt, decision or mode": (
+        "permission.requested", "permission.completed", "permission.assentDetected",
+        "permission.carriedForward", "permission.contextualAuthorization",
+        "permission.messageAuthorization", "permission.messageAuthorizationDegraded",
+        "permission.messageAuthorizationRead", "session.permissions_changed",
+        "session.permission_recovery", "program.permission_requested"),
+    "a model switch or Auto model routing": (
+        "session.model_change", "session.model_deselected", "session.auto_mode_resolved",
+        "session.auto_tier_recommendation", "session.auto_tier_switch_failed",
+        "auto_mode_switch.requested", "auto_mode_switch.completed",
+        "auto_mode_recovery.outcome", "auto_mode_recovery_consent.requested",
+        "auto_mode_recovery_consent.completed"),
+    "an agent mode, plan mode or Autopilot objective": (
+        "session.mode_changed", "session.mode_notice_delivered", "session.plan_changed",
+        "exit_plan_mode.requested", "exit_plan_mode.completed",
+        "session.autopilot_objective_changed", "session.autopilot_stopped",
+        "session.task_complete"),
+    # 1.0.111 persists one system.message per session but streams none
+    "instruction text the driver did not write": ("system.message", "session.custom_notification",
+                                                  "session.managed_settings_resolved",
+                                                  "session.managed_settings_enforced"),
+    "a tool, program or command outside the session's five tools": (
+        "external_tool.requested", "external_tool.completed", "program.execution",
+        "program.tool_execution_start", "program.tool_execution_complete", "tool.user_requested",
+        "tool_search.activated", "assistant.server_tool_progress", "command.execute",
+        "command.queued", "command.completed", "workflow.run_started", "workflow.run_updated",
+        "workflow.run_settled", "session.memory_changed", "sandbox.decision"),
+    # "internal durable record of tool calls that ran without their own tool events"
+    "tool calls the stream does not show": ("session.tool_outcomes_recorded",),
+    "a question, form or reply that needs a person": (
+        "user_input.requested", "user_input.completed", "elicitation.requested",
+        "elicitation.completed", "human_response.recorded", "ui.ephemeral_query"),
+    "an IDE, canvas, extension or plugin": (
+        "ide.connection_changed", "ide.selection_changed", "ide.add_file_reference",
+        "ide.elicitation_complete", "session.canvas.opened", "session.canvas.closed",
+        "session.canvas.recorded", "session.canvas.removed", "session.canvas.registry_changed",
+        "session.canvas.unavailable", "session.extensions_loaded",
+        "session.extensions.attachments_pushed", "session.managed_plugin_progress"),
+    # the driver never interrupts a session: it ends one with taskkill /F, in its own process
+    # group, so no console Ctrl-C reaches it either
+    "an interrupt the driver did not send": ("abort", "agent.interrupted"),
+    "another session, host or schedule steering this one": (
+        "session.resume", "session.handoff", "session.remote_steerable_changed",
+        "session.schedule_created", "session.schedule_cancelled", "session.schedule_rearmed",
+        "session.snapshot_rewind", "session.context_cleared"),
+    # the audit resolves relative paths from session.start's cwd, the attempt dir
+    "a working directory the audit did not resolve paths from": ("session.context_changed",),
+    # "relative path within the session workspace files directory", under COPILOT_HOME
+    "a write into Copilot's own session workspace that no tool call names": (
+        "session.workspace_file_changed",),
+}
+KEPT_UNKNOWN = {kind: why for why, kinds in _KEPT.items() for kind in kinds}
+
+
+def _usage_known(usage: object) -> bool:
+    """A model call's usage (1.0.111's AssistantUsageData) of the main agent: initiator `user`
+    (the first call) or `agent`, interactionType conversation-agent (all 7,405 usage records of
+    the 436 recorded sessions), no sub-agent's parentToolCallId. The schema's other initiators
+    ("sub-agent", "mcp-sampling") and classes (conversation-subagent, -sampling, -background)
+    stay unknown."""
+    usage = _mapping(usage)
+    return (usage.get("initiator") in ("user", "agent")
+            and usage.get("interactionType") == "conversation-agent"
+            and "parentToolCallId" not in usage)  # fmt: skip
+
+
+def _limit_kept(event: dict) -> bool:
+    """An exhausted-cap prompt answered `cancel`: "leave the limit unchanged and cancel the
+    blocked model request" (add, set and unset would lift the driver's cap)."""
+    return _mapping(_data(event).get("response")).get("action") == "cancel"
+
+
 # Run 20261116-copilot: "a detected loss of a previously cached prompt prefix" (1.0.111's event
 # schema). It runs nothing; it is known only while both of its requests list none but the
 # session's tools (_cache_break_known), and their models join init_problems' model check.
@@ -144,8 +282,18 @@ _CACHE_REQUESTS = ("beforeRequest", "afterRequest")
 
 # Run 20261116-fable-ab: "runtime events like background task completion" (1.0.111's event
 # schema). Only kind shell_completed is known: it reports a powershell command the audit judges
-# by its own call. Its other kinds (instruction_discovered, an agent's completion) stay unknown.
+# by its own call. Its other kinds stay unknown on purpose (the review of 2026-11-18):
 _NOTIFICATION = "system.notification"
+KEPT_UNKNOWN_NOTIFICATIONS = {
+    "agent_completed": "a background agent completed",
+    "agent_idle": "a background agent went idle",
+    "new_inbox_message": "a message from another sender",
+    # powershell's `detach` is itself kept unknown
+    "shell_detached_completed": "a detached shell, which outlives the audit",
+    "instruction_discovered": "an instruction file found during tool access",
+    "workflow_completed": "a workflow run",
+    "unclassified": "an external host's notification",
+}
 
 
 def _notification_known(event: dict) -> bool:
@@ -170,11 +318,14 @@ def _cache_break_known(event: dict) -> bool:
 
 
 def _served_models(events: Sequence[dict]) -> list:
-    """Every model a model call, message, tool call or cache-break request names."""
+    """Every model a model call, message, tool call, usage, usage record or cache-break request
+    names (a usage's `responseModel` is the provider's own spelling, never an arm's id)."""
     out = [_data(e).get("model") for e in events if e.get("type") in _MODEL_EVENTS]
     for event in events:
         if event.get("type") == _CACHE_BREAK:
             out += [_mapping(r).get("model") for r in _cache_requests(event)]
+        elif event.get("type") == _USAGE_RECORD:
+            out.append(_mapping(_data(event).get("usage")).get("model"))
     return out
 # 1.0.111's two refusal texts (the capture): a rule named, and no allow rule with nobody to ask
 _DENIED_CODE = "denied"
@@ -524,6 +675,51 @@ def _rejected(call: Call) -> bool:
             and message == _ENOENT.format(path=path))  # fmt: skip
 
 
+def _progress_known(event: dict, seen: Mapping) -> bool:
+    """Progress of a call this session already started (`seen` holds the starts read so far)."""
+    ident = _data(event).get("toolCallId")
+    return isinstance(ident, str) and (_TOOL_START, ident) in seen
+
+
+# Each of the types known only in an exact shape: its check (the event, the tool starts read so
+# far) and why an event outside that shape is unknown. With KNOWN_EVENTS and KEPT_UNKNOWN they
+# cover every event type of the reviewed schema.
+_SHAPE_CHECKS = {
+    _CACHE_BREAK: (lambda e, _: _cache_break_known(e), "lists a tool the session was not given"),
+    _NOTIFICATION: (lambda e, _: _notification_known(e),
+                    "of a kind the Copilot audit does not know"),
+    "assistant.usage": (lambda e, _: _usage_known(_data(e)), "is not a main-agent usage"),
+    _USAGE_RECORD: (lambda e, _: _usage_known(_data(e).get("usage")),
+                    "is not a main-agent usage"),
+    _PROGRESS: (_progress_known, "names no tool call this session started"),
+    _LIMIT_DONE: (lambda e, _: _limit_kept(e), "answers the credit cap with anything but cancel"),
+}
+SHAPED_EVENTS = frozenset(_SHAPE_CHECKS)
+
+
+def _event_problem(event: dict, seen: Mapping) -> str | None:
+    """Why the audit cannot judge this event, or None (see unknown_steps)."""
+    kind = event.get("type")
+    if not isinstance(kind, str):
+        return f"event type {kind!r} is not one the Copilot audit knows"
+    if _AGENT in event:  # the CLI's schema: on the envelope of a subagent's events
+        return f"event type {kind!r} carries agentId: a subagent's event"
+    if kind in KNOWN_EVENTS:
+        return None
+    if kind in SHAPED_EVENTS:
+        check, why = _SHAPE_CHECKS[kind]
+        if check(event, seen):
+            return None
+        sort = _mapping(_data(event).get("kind")).get("type") if kind == _NOTIFICATION else None
+        if isinstance(sort, str) and sort in KEPT_UNKNOWN_NOTIFICATIONS:
+            return (f"event type {kind!r} of kind {sort!r} is kept unknown on purpose: "
+                    f"{KEPT_UNKNOWN_NOTIFICATIONS[sort]}")  # fmt: skip
+        return f"event type {kind!r} {why}"
+    if kind in KEPT_UNKNOWN:
+        return f"event type {kind!r} is kept unknown on purpose: {KEPT_UNKNOWN[kind]}"
+    return f"event type {kind!r} is not one the Copilot audit knows"
+
+
 def unknown_steps(events: Sequence[dict]) -> list[str]:
     """Fail closed: why each tool call, completion or event is one the audit cannot judge (see
     the module docstring)."""
@@ -532,12 +728,9 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
     seen: dict[tuple[object, object], int] = {}
     for event in events:
         kind, ident = event.get("type"), _data(event).get("toolCallId")
-        if kind == _CACHE_BREAK and not _cache_break_known(event):
-            out.append(f"event type {kind!r} lists a tool the session was not given")
-        elif kind == _NOTIFICATION and not _notification_known(event):
-            out.append(f"event type {kind!r} of a kind the Copilot audit does not know")
-        elif kind not in KNOWN_EVENTS and kind not in (_CACHE_BREAK, _NOTIFICATION):
-            out.append(f"event type {kind!r} is not one the Copilot audit knows")
+        why = _event_problem(event, seen)
+        if why is not None:
+            out.append(why)
         if kind not in (_TOOL_START, _TOOL_DONE):
             continue
         key = (kind, ident if isinstance(ident, str) else repr(ident))
