@@ -783,6 +783,7 @@ HANDOFF_CSV = "handoff.csv"  # under config/: committed, the owner's alone to ed
 # the progress page lists the board by this exact header: never change it
 HANDOFF_HEADER = ("exe", "address", "reason", "retired_on", "return_rule")
 _HANDOFF_ADDRESS = re.compile(r"0x[0-9A-Fa-f]{8}")  # `0x0008A0E0`, as status.csv writes a start
+_HANDOFF_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # fromisoformat alone takes 20261118
 _HANDOFF_TEXT = ("reason", "return_rule")  # free text, never empty
 
 
@@ -795,10 +796,13 @@ def _handoff_key(row: Mapping[str, str], where: str) -> Key:
     for name in _HANDOFF_TEXT:
         if not row[name].strip():
             raise PickerError(f"{where}: {name} is empty")
+    day = row["retired_on"]
     try:
-        datetime.date.fromisoformat(row["retired_on"])
+        if not _HANDOFF_DATE.fullmatch(day):
+            raise ValueError("not dashed")
+        datetime.date.fromisoformat(day)
     except ValueError as exc:
-        raise PickerError(f"{where}: retired_on {row['retired_on']!r} is not YYYY-MM-DD") from exc
+        raise PickerError(f"{where}: retired_on {day!r} is not a YYYY-MM-DD day") from exc
     return row["exe"], int(row["address"], 16)
 
 
@@ -807,24 +811,33 @@ def read_handoff(path: Path) -> frozenset[Key]:
     key, the row start, why it was retired, the day, and the rule for its return). A missing
     file retires nothing. Another header, a row without every field, an unknown EXE, an address
     that is not 0x and 8 hex digits, an empty reason or return_rule, a retired_on that is not
-    YYYY-MM-DD, or a row listed twice is a PickerError naming the line."""
+    YYYY-MM-DD day, a row listed twice, or anything the csv reader refuses is a PickerError
+    naming the line."""
     path = Path(path)
     if not path.is_file():
         return frozenset()
+    seen: dict[Key, int] = {}
     with path.open(encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, restkey="", restval=None)
-        if tuple(reader.fieldnames or ()) != HANDOFF_HEADER:
-            raise PickerError(f"{path}: header {','.join(reader.fieldnames or ())!r} is not "
-                              f"{','.join(HANDOFF_HEADER)!r}")  # fmt: skip
-        seen: dict[Key, int] = {}
-        for row in reader:
-            where = f"{path} line {reader.line_num}"
-            if "" in row or None in row.values():
-                raise PickerError(f"{where}: not the {len(HANDOFF_HEADER)} fields "
-                                  f"{','.join(HANDOFF_HEADER)}")  # fmt: skip
-            key = _handoff_key(row, where)
-            if key in seen:
-                raise PickerError(f"{where}: {key[0]} 0x{key[1]:08X} is listed again (first on "
-                                  f"line {seen[key]})")  # fmt: skip
-            seen[key] = reader.line_num
+        try:
+            for key, line in _handoff_rows(path, reader):
+                if key in seen:
+                    raise PickerError(f"{path} line {line}: {key[0]} 0x{key[1]:08X} is listed "
+                                      f"again (first on line {seen[key]})")  # fmt: skip
+                seen[key] = line
+        except csv.Error as exc:
+            raise PickerError(f"{path} line {reader.line_num}: {exc}") from exc
     return frozenset(seen)
+
+
+def _handoff_rows(path: Path, reader: csv.DictReader) -> Iterator[tuple[Key, int]]:
+    """Each board row's key and line, the header and each row's fields checked first."""
+    if tuple(reader.fieldnames or ()) != HANDOFF_HEADER:
+        raise PickerError(f"{path}: header {','.join(reader.fieldnames or ())!r} is not "
+                          f"{','.join(HANDOFF_HEADER)!r}")  # fmt: skip
+    for row in reader:
+        where = f"{path} line {reader.line_num}"
+        if "" in row or None in row.values():
+            raise PickerError(f"{where}: not the {len(HANDOFF_HEADER)} fields "
+                              f"{','.join(HANDOFF_HEADER)}")  # fmt: skip
+        yield _handoff_key(row, where), reader.line_num

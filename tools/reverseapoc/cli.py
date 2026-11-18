@@ -2147,11 +2147,12 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    "under 64 B, B of 64 to 255 B and C of 256 B and up, in queue order")
     p.add_argument("--write-picks", type=Path, default=None, metavar="FILE",
                    help="with --stratify: write the stratified picks to FILE; with --dry-run "
-                   "and a near-miss lane: write the lane's rows in its own order (bytes left) "
-                   "that a --picks night can queue, for a following --hold --picks FILE")
+                   "and a near-miss lane: write the lane's rows that a --picks night can "
+                   "queue, ranked by bytes left, for a following --hold --picks FILE (which "
+                   "queues them in the tier queue's own order)")
     p.add_argument("--max-picks", type=_positive, default=None, metavar="N",
-                   help="with --near-miss and --write-picks: write the lane's first N rows "
-                   "only; default: every one")  # fmt: skip
+                   help="with --near-miss and --write-picks: write only the first N of those "
+                   "rows by bytes left; default: every one")  # fmt: skip
     p.add_argument("--order", choices=picker.ORDERS, default=picker.ORDER_SCORE,
                    help="the signed tier queue's order inside each group and pass: score "
                    "(callees-first level, then score's rank) or similarity (the best look-alike "

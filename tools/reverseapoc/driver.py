@@ -7372,6 +7372,16 @@ def _key_list(keys: Iterable[Key]) -> str:
     return _listed([f"{exe} 0x{start:08X}" for exe, start in sorted(keys)])
 
 
+def refuse_board(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
+    """Todo long-tail-handoff-board: a board row that is no functions.csv row start of its EXE
+    (a typo would retire nothing, silently) refuses the run, naming every such row."""
+    unknown = [key for key in handoff_keys(options.config_root)
+               if key[1] not in worlds[key[0]].units]  # fmt: skip
+    if unknown:
+        raise Refused("handoff", f"{HANDOFF_CSV}: not a function row start of its EXE: "
+                                 f"{_key_list(unknown)}")  # fmt: skip
+
+
 def picks_queue_keys(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> frozenset[Key]:
     """07.2-06 (D-17): the functions a `--picks` night may queue: the signed tier's items (never
     a hand-off board row), else the Phase 6 pools' candidates."""
@@ -7516,8 +7526,10 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     `only` (quick 261101-b5f, a Fable trial) restricts each built queue to those keys
     (`TierQueue.only`: the queue's own order, no wait on a key outside them). The hand-off
     board's rows (todo long-tail-handoff-board, `handoff_keys`) are never queued either, and
-    nothing waits on them. `similar` (todo similarity-first-picking) gives each built queue the
-    similarity order over the matched set it reads (`similarity`)."""
+    nothing waits on them. `similar` (todo similarity-first-picking) gives every built queue the
+    similarity order through one Similarity (`similarity`), so each ratio is computed once and a
+    match one lane's queue records raises the ratios of every lane's; each build adds the
+    matched set it reads."""
     root = Path(config_root)
     if not (root / mechanics.MECHANICS_TOML).is_file():
         return None
@@ -7526,6 +7538,7 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
         return None
     held = mechanics.signed_held(root, mech)
     retired = handoff_keys(root)
+    shared = similarity(worlds, ()) if similar else None
     exes = {row.exe for row in rows}
     graphs = {exe: world.graph() for exe, world in worlds.items()
               if exe in exes and world.graph is not None}  # fmt: skip
@@ -7533,9 +7546,11 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
 
     def build(passes: Mapping[Key, int] | None = None) -> TierQueue:
         matched = matched_keys(root)
+        for key in matched if shared is not None else ():
+            shared.matched(key)
         queue = tier_queue(mech, rows, graphs, ranks, _units(worlds), matched=matched,
                            passes=passes, held=held, retired=retired,
-                           similarity=similarity(worlds, matched) if similar else None)
+                           similarity=shared)  # fmt: skip
         return queue if only is None else queue.only(only)
 
     return build
@@ -7801,7 +7816,8 @@ def near_miss_written(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     """Todo near-miss-write-picks: the keys `--write-picks` writes from the near-miss lane's rows
     `near` (`near_miss_picks`, the lane's own order): the first `--max-picks` (all without it)
     of those a following `--picks` night can queue (`picks_queue_keys`, as `refuse_picks`
-    checks them), and the lane's rows it left out for that, in lane order."""
+    checks them), and the lane's rows it left out for that, in lane order. The file keeps
+    the lane's order, which picks the first N; the `--picks` night queues them in its own."""
     queue = picks_queue_keys(options, worlds)
     kept = [item.key for item in near if item.key in queue]
     outside = [item.key for item in near if item.key not in queue]
@@ -8588,6 +8604,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                     return readability_dry_run(options, worlds, git=seams.git)
         else:
             with _phase("picks"):
+                refuse_board(options, worlds)  # todo long-tail-handoff-board
                 if _similar(options) and tier_source(options.config_root, worlds) is None:
                     raise Refused("order", "--order similarity orders the signed tier queue, "
                                            "and no tier is signed")  # fmt: skip

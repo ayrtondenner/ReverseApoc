@@ -140,3 +140,31 @@ def test_a_malformed_board_refuses_the_drive(tmp_path, capsys):
     assert code == 2
     doc = json.loads(out)
     assert (doc["event"], doc["reason"]) == ("REFUSED", "handoff")
+
+
+def test_read_handoff_takes_only_dashed_dates(tmp_path):
+    """fromisoformat alone would take 20261118 or 2026-W47-3; the board writes YYYY-MM-DD."""
+    path = tmp_path / "handoff.csv"
+    for date in ("20261118", "2026-W47-3", "2026-11-31"):
+        path.write_text(_board([_row("ufo2p", TA, date=date)]), encoding="utf-8")
+        with pytest.raises(PickerError, match="retired_on"):
+            picker.read_handoff(path)
+
+
+def test_read_handoff_names_a_csv_error(tmp_path):
+    path = tmp_path / "handoff.csv"
+    path.write_text(_board([_row("ufo2p", TA, reason="r" * 200_000)]), encoding="utf-8")
+    with pytest.raises(PickerError, match="field larger than field limit"):
+        picker.read_handoff(path)
+
+
+def test_a_board_row_must_be_a_function_row(tmp_path, capsys):
+    """A typo retires nothing silently: a board row that is no functions.csv row start of its
+    EXE refuses the drive, naming it."""
+    rig, worlds = _nm_rig(tmp_path)
+    _retire(rig, (UFO2P, TA + 1))
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "handoff")
+    assert f"ufo2p 0x{TA + 1:08X}" in doc["detail"]

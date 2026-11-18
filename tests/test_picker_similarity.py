@@ -152,3 +152,19 @@ def test_similarity_needs_a_signed_tier(tmp_path, capsys):
     assert code == 2
     doc = json.loads(out)
     assert (doc["event"], doc["reason"]) == ("REFUSED", "order")
+
+
+def test_every_lane_shares_one_similarity(tmp_path):
+    """The queues one tier source builds (one per lane) share one Similarity: each ratio is
+    computed once a night, and a match one lane lands raises the ratios every lane sees."""
+    rig, worlds = _similar_rig(tmp_path)
+    worlds[UFO2P] = replace(worlds[UFO2P], mnemonics=lambda start: {
+        TA: FAR, TB: LEAF, TC: FAR}[start])  # fmt: skip
+    source = driver.tier_source(rig.repo / "config", worlds, similar=True)
+    one, other = source(None), source(None)
+    assert other.next_item().similarity == 1.0  # TB, TACP's TM twin
+    one.take((UFO2P, TC))
+    one.finish((UFO2P, TC), matched=True)
+    # TA (FAR) now has TC's twin; TC itself is left to `other`'s own matched set
+    assert [(i.pick.start, i.similarity) for i in other.preview(10)] == [
+        (TA, 1.0), (TB, 1.0), (TC, 0.0)]  # fmt: skip
