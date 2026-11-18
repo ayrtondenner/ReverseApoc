@@ -197,6 +197,14 @@ def _run(argv: list[str], *, ready: bool = True) -> int:
         return int(exc.code)
 
 
+def _new_c(tag: str) -> None:
+    """Change the claimed unit's code, so the next check is no repeat of an earlier one (a
+    repeated C gets the earlier verdict and runs nothing: refuse-repeated-check)."""
+    claim = attempt.Claim.from_env(attempt.os.environ, roots=attempt.ROOTS)
+    unit = attempt.unit_path(claim, attempt.ROOTS)
+    unit.write_bytes(unit.read_bytes() + f"int made_up_{tag};\n".encode("ascii"))
+
+
 def _lines(attempt_dir: Path) -> list[dict]:
     path = attempt_dir / "checks.jsonl"
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -415,6 +423,7 @@ def test_attempt_check_passes_exit_codes_and_logs(repo: Path, monkeypatch, capsy
     assert "1/25" in out and "checks/0001.json" in out
 
     runner.answer = attempt.Ran(1, json.dumps(_check_doc(ok=False, percent=87.5)), "")
+    _new_c("second")
     assert _run(["attempt", "check"]) == 1
     second = _lines(repo)[1]
     assert (second["n"], second["exit"], second["best_percent"]) == (2, 1, 87.5)
@@ -422,6 +431,7 @@ def test_attempt_check_passes_exit_codes_and_logs(repo: Path, monkeypatch, capsy
     assert "made-up relocation problem" in capsys.readouterr().out
 
     runner.answer = attempt.Ran(2, "not json", "reverseapoc check: error: made-up tool error")
+    _new_c("third")
     assert _run(["attempt", "check"]) == 2
     third = _lines(repo)[2]
     assert (third["n"], third["exit"], third["best_percent"]) == (3, 2, None)
@@ -446,13 +456,13 @@ def test_attempt_check_snapshots_the_source(repo: Path, monkeypatch):
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=50.0)), returncode=1))
     unit = attempt.ROOTS.src / "ufo2p" / "u_000a34f0.c"
     assert _run(["attempt", "check"]) == 1
-    unit.write_bytes(UNIT_TEXT + b"/* second shape */\n")
+    unit.write_bytes(UNIT_TEXT + b"int second_shape;\n")
     assert _run(["attempt", "check"]) == 1
     first, second = _lines(repo)
     assert first["source"] == "checks/0001.c"
     assert second["source"] == "checks/0002.c"
     assert (repo / "checks" / "0001.c").read_bytes() == UNIT_TEXT
-    assert (repo / "checks" / "0002.c").read_bytes().endswith(b"/* second shape */\n")
+    assert (repo / "checks" / "0002.c").read_bytes().endswith(b"int second_shape;\n")
 
 
 def test_attempt_sweep_with_no_measured_cell_logs_no_percent(repo: Path, monkeypatch, capsys):
@@ -485,6 +495,7 @@ def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
     near = _cell(3, "11.0", ["-5r", "-s", "-fpi"], 100.0, reloc_ok=False)
     same = _cell(1, "10.6", ["-4r", "-s", "-fpi"], 100.0)  # the default rule: no hit
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(same, near)), "")
+    _new_c("second")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[1]["sweep_hit"] is None
 
@@ -560,6 +571,7 @@ def test_attempt_sweep_best_cells_show_first_va_and_size(repo: Path, monkeypatch
             "differing 0  first_va none  size 16") in out  # fmt: skip
 
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(_cell(1, "10.6", ["-4r"], 62.5))), "")
+    _new_c("second")
     assert _run(["attempt", "check", "--sweep"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert "  best cell 01  wcc386@10.6 -4r  objdiff 62.5%  reloc ok  differing 0" in out
@@ -760,6 +772,7 @@ def test_attempt_check_the_claimed_function_must_pass_and_check_exit_0(repo: Pat
     runner = _use(monkeypatch, FakeRunner(json.dumps(doc), returncode=1))
     assert _run(["attempt", "check"]) == 1
     runner.answer = attempt.Ran(2, "", "reverseapoc check: error: made-up")
+    _new_c("second")
     assert _run(["attempt", "check"]) == 2
 
 
@@ -792,6 +805,7 @@ def test_attempt_sweep_exit_is_never_a_match(repo: Path, monkeypatch, capsys):
     assert "never a match" in out
     assert " OK" not in out
     runner.answer = attempt.Ran(1, json.dumps(_sweep_doc(low)), "")
+    _new_c("second")
     assert _run(["attempt", "check", "--sweep"]) == 2
     runner.answer = attempt.Ran(2, "", "reverseapoc check: error: made-up")
     assert _run(["attempt", "check", "--sweep"]) == 2
@@ -949,6 +963,7 @@ def test_attempt_check_refuses_a_concurrent_run(repo: Path, monkeypatch, capsys)
                                                                    "0001.note.json"]  # fmt: skip
     assert not (repo / "check.lock").exists()
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _new_c("second")
     assert _run(["attempt", "check"]) == 0
     assert [line["n"] for line in _lines(repo)] == [1, 2]
 
@@ -1409,7 +1424,7 @@ VIEW_TEXT = UNIT_TEXT + b"/* the view unit, private to this session */\n"
 VIEW_CFLAGS = "* wcc386@10.6 -4r -s -fpi\nsrc/ufo2p/u_000a34f0.c wcc386@10.6 -4r -ot -s -fpi\n"
 PHASE6_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", hooks.ATTEMPT_NAME_SLOT),
                 ("context",))  # fmt: skip
-MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",), ("plan",))  # the matching-only verbs (D-26)
+MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",), ("plan",), ("diff",))  # the matching-only verbs
 
 
 @pytest.fixture
@@ -1602,6 +1617,7 @@ def test_sweep_default_rule_from_view_cflags(view: Path, monkeypatch):
     assert _lines(view.parent)[0]["sweep_hit"] is None
     shared_default = _cell(2, "10.6", ["-4r", "-s", "-fpi"], 100.0)
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(shared_default)), "")
+    _new_c("second")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(view.parent)[1]["sweep_hit"] == "wcc386@10.6 -4r -s -fpi"
 
@@ -1659,10 +1675,12 @@ def test_wrapper_reports_stage2_hit(repo: Path, monkeypatch, capsys):
 
     stage1_hit = _cell(7, "10.5", ["-4r", "-ox", "-s", "-fpi"], 100.0)
     runner.answer = attempt.Ran(0, json.dumps({**doc, "cells": [near, stage1_hit]}), "")
+    _new_c("second")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[1]["sweep_hit"] == "wcc386@10.5 -4r -ox -s -fpi"  # stage 1 first
 
     runner.answer = attempt.Ran(0, json.dumps({**doc, "stage2": None}), "")
+    _new_c("third")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[2]["sweep_hit"] is None
 
@@ -1788,6 +1806,7 @@ def test_checks_line_has_readlint_counts(readable: Path, monkeypatch):
     assert (sweep["readlint_violations"], sweep["readlint_waivers"]) == (None, None)
     monkeypatch.delenv(hooks.SESSION_KIND_ENV)
     runner.answer = attempt.Ran(0, json.dumps(_check_doc(ok=True)), "")
+    _new_c("matching")
     assert _run(["attempt", "check"]) == 0
     matching = _lines(readable.parent)[2]
     assert (matching["readlint_violations"], matching["readlint_waivers"]) == (None, None)
@@ -1843,7 +1862,7 @@ def test_readability_forms_unchanged(readable: Path, monkeypatch, capsys):
     for extra in (["--readlint"], ["readlint"], ["check", "--units", CLAIM]):
         assert _run(["attempt", *extra]) == 2
     matching_only = [form for form in hooks.MATCHING_FORMS if form not in hooks.ATTEMPT_FORMS]
-    assert matching_only == [("giveup",), ("plan",)]
+    assert matching_only == [("giveup",), ("plan",), ("diff",)]
     for form in matching_only:  # 07.2-02, 07.2-03 (D-26): none in a readability session
         assert _run(["attempt", *form]) == 2, form
     assert runner.calls == []
@@ -2027,6 +2046,7 @@ def test_check_consumes_the_note(repo: Path, monkeypatch, capsys):
     assert (repo / "plan.json").is_file()  # the plan stays for every later check
     assert _lines(repo)[0]["note"] == "checks/0001.note.json"
     capsys.readouterr()
+    _new_c("second")
     assert _run(["attempt", "check"], ready=False) == 2
     assert "check-note.json" in capsys.readouterr().err
     assert not (repo / "checks" / "0002.c").exists()
@@ -2046,6 +2066,7 @@ def test_wrapper_ledger(repo: Path, monkeypatch, capsys):
     ledger.parent.mkdir(parents=True)
     ledger.write_bytes(b"")
     monkeypatch.setenv(attempt.WRAPPER_LEDGER_ENV, str(ledger))
+    _new_c("second")
     assert _run(["attempt", "check"]) == 0
     entries = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
     assert all(set(entry) == {"path", "sha256"} for entry in entries)
@@ -3050,3 +3071,240 @@ def test_context_cache_misses_when_a_run_becomes_a_hold_run(tree: attempt.Roots,
     assert after[0] == 0 and len(loads) == 2
     assert "made-up earlier note" not in after[1]
     assert _pack(attempt_dir) == after[1].encode("utf-8")
+
+
+# ---- the full aligned diff and the class line (attempt diff; todo attempt-check-full-diff) ----
+
+DIFF_ROW = 0x10030  # clear of conftest's code page start; ours and the original are made up
+DIFF_FUNC = f"func_{DIFF_ROW:08X}"
+DIFF_UNIT = f"u_{DIFF_ROW:08x}"
+# push ebx; sub esp, 0x10; mov eax|edx, ebx; inc eax x2; je|jne +2; inc eax x2; add esp; pop; ret
+DIFF_OURS = bytes.fromhex("53 83ec10 89d8 40 40 7402 40 40 83c410 5b c3")
+DIFF_ORIGINAL = bytes.fromhex("53 83ec10 89da 40 40 7502 40 40 83c410 5b c3")
+DIFF_UNIT_TEXT = b'#include "common.h"\n\n/* made up */\nint f(void) { return 0; }\n'
+
+
+def _diff_doc(*, differing: int = 2, first_va: str = f"0x{DIFF_ROW + 5:08X}") -> dict:
+    """check's JSON for the made-up pair: the claimed function differs in two bytes."""
+    return {"exe": "ufo2p", "unit": DIFF_UNIT, "compiler": "wcc386@10.6", "flags": ["-4r"],
+            "functions": [{"name": DIFF_FUNC, "va": f"0x{DIFF_ROW:08X}", "size": len(DIFF_OURS),
+                           "objdiff_percent": 80.0, "reloc": {"ok": True, "problems": []},
+                           "bytes": {"ok": False, "differing": differing, "first_va": first_va},
+                           "raw_fields": []}],
+            "problems": [], "stubs": [], "splice": [{"exe": "UFO2P.EXE", "ok": False}],
+            "target": {"raw_fields": [], "undecoded": []}, "ok": False}  # fmt: skip
+
+
+@pytest.fixture
+def diffed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A legacy-mode claim on a synthetic UFO2P.EXE whose row holds DIFF_ORIGINAL, with our
+    object (DIFF_OURS) where a check of the committed tree writes it, build/ufo2p/obj/."""
+    from relocpair import game_row, our_object, table
+
+    repo = tmp_path / "repo"
+    data = build_le_image(fixups=[b"", b"", b""], patches={DIFF_ROW: DIFF_ORIGINAL}).data
+    orig = repo / "orig"
+    orig.mkdir(parents=True)
+    (orig / "UFO2P.EXE").write_bytes(data)
+    manifest = write_manifest(repo / "targets.toml", {"UFO2P.EXE": data})
+    config = repo / "config"
+    end = DIFF_ROW + len(DIFF_ORIGINAL)
+    write_functions_csv(config / "ufo2p" / "functions.csv",
+                        [FunctionRow(DIFF_ROW, end, DIFF_FUNC, "game", DIFF_UNIT, "call")],
+                        "UFO2P.EXE")  # fmt: skip
+    write_units_csv(config / "ufo2p" / "units.csv", [UnitRow(DIFF_UNIT, DIFF_ROW, end, "first")],
+                    "UFO2P.EXE")  # fmt: skip
+    src = repo / "src"
+    _write(src / "ufo2p" / f"{DIFF_UNIT}.c", DIFF_UNIT_TEXT.decode("ascii"))
+    linker = table(game_row(DIFF_ROW, end)).linker_name(DIFF_ROW)
+    obj = repo / "build" / "ufo2p" / "obj" / f"{DIFF_UNIT}.obj"
+    obj.parent.mkdir(parents=True)
+    obj.write_bytes(our_object(DIFF_OURS, publics=[(linker, 0)]))
+    attempt_dir = repo / "build" / "driver" / "run1" / "ufo2p" / DIFF_FUNC / "attempt-1"
+    attempt_dir.mkdir(parents=True)
+    roots = dataclasses.replace(attempt.ROOTS, repo=repo, orig=orig, manifest=manifest,
+                                config=config, src=src)  # fmt: skip
+    monkeypatch.setattr(attempt, "ROOTS", roots)
+    monkeypatch.setenv(attempt.CLAIM_ENV, f"ufo2p/{DIFF_UNIT}")
+    monkeypatch.setenv(attempt.FUNC_ENV, DIFF_FUNC)
+    monkeypatch.setenv(attempt.DIR_ENV, str(attempt_dir))
+    monkeypatch.setenv(hooks.NOTES_ENV, str(attempt_dir / "notes.md"))
+    return attempt_dir
+
+
+def test_attempt_check_prints_the_class_line(diffed: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert ("    class branch: 2 differing runs (register 1, branch 1); `attempt diff` prints "
+            "each in full") in out  # fmt: skip
+    saved = json.loads((diffed / "checks" / "0001.diff.json").read_text(encoding="utf-8"))
+    assert [run["class"] for run in saved["runs"]] == ["register", "branch"]
+    assert "0001.diff.json" not in (diffed / "checks.jsonl").read_text(encoding="utf-8")
+
+
+def test_attempt_diff_prints_every_run_with_its_class(diffed: Path, monkeypatch, capsys):
+    """The todo's done test: a two-run mismatch prints both runs and their classes."""
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    assert _run(["attempt", "diff"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    first = f"0x{DIFF_ROW + 4:08X}"
+    jump = f"0x{DIFF_ROW + 8:08X}"
+    target = f"{DIFF_ROW + 12:#x}"  # capstone spells a jump target in lower case
+    assert out[0] == (f"attempt diff of check 0001 ufo2p/{DIFF_UNIT} {DIFF_FUNC}: class branch, "
+                      f"2 differing runs, 2 differing bytes from 0x{DIFF_ROW + 5:08X}; ours | "
+                      "original")  # fmt: skip
+    assert out[1:5] == [
+        "  run 1 of 2: register",
+        f"    {first}  mov eax, ebx | {first}  mov edx, ebx",
+        "  run 2 of 2: branch",
+        f"    {jump}  je {target} | {jump}  jne {target}",
+    ]
+    assert out[5].endswith("checks/0001.diff.json")
+
+
+def test_attempt_diff_bounds_its_output(diffed: Path, monkeypatch, capsys):
+    monkeypatch.setattr(attempt, "DIFF_LINES", 3)
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    assert _run(["attempt", "diff"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[1:4] == ["  run 1 of 2: register", out[2], "  run 2 of 2: branch"]
+    assert out[4].startswith("  ... 1 more line not shown; ")
+    assert out[4].endswith("checks/0001.diff.json holds every run")
+
+
+def test_the_class_line_needs_the_object_this_check_judged(diffed: Path, monkeypatch, capsys):
+    """An object whose bytes do not give check's own count is not the one that run compiled."""
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc(differing=5)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out
+    assert ("    class: not shown (the object on disk is not the one this check judged: "
+            "2 bytes differ from 0x00010035, check says 5 from 0x00010035)") in out  # fmt: skip
+    capsys.readouterr()
+    assert _run(["attempt", "diff"]) == 2
+    assert "not shown" in capsys.readouterr().err
+
+
+def test_no_class_line_without_an_object(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "    class: not shown (no object " in capsys.readouterr().out
+
+
+def test_no_class_line_for_matching_bytes(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert "    class" not in capsys.readouterr().out
+    assert not (repo / "checks" / "0001.diff.json").exists()
+    assert _run(["attempt", "diff"]) == 0
+    assert "check 0001 saved no full diff" in capsys.readouterr().out
+
+
+def test_attempt_diff_needs_a_plain_check(repo: Path, monkeypatch, capsys):
+    assert _run(["attempt", "diff"]) == 2
+    assert "no plain check in this attempt yet" in capsys.readouterr().err
+
+
+def test_attempt_diff_is_a_matching_form():
+    assert ("diff",) in hooks.MATCHING_FORMS and ("diff",) not in hooks.ATTEMPT_FORMS
+
+
+# ---- a repeated C returns the earlier verdict (todo refuse-repeated-check) ----
+
+
+def test_a_repeated_check_returns_the_cached_verdict(repo: Path, monkeypatch, capsys):
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    unit = attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c"
+    unit.write_bytes(UNIT_TEXT.replace(b"\n\n", b"\n  /* a comment */\n\n   ") + b"// tail\n")
+    assert _run(["attempt", "check"], ready=False) == 1  # no plan or note needed: nothing runs
+    out = capsys.readouterr().out.splitlines()
+    assert len(runner.calls) == 1  # nothing compiled
+    assert out[0] == (f"attempt check repeat of 0001 (the same C, whitespace and comments aside): "
+                      f"no check used ({attempt.CHECK_BUDGET - 1} left), nothing compiled "
+                      f"{CLAIM} {FUNC}: exit 1 MISMATCH")  # fmt: skip
+    assert any(line.startswith(f"  {FUNC}  0x000A3980  objdiff 100%") for line in out)
+    assert not (repo / "checks" / "0002.c").exists()  # no budget spent
+    assert len(_lines(repo)) == 1
+    assert attempt.repeat_count(repo) == 1
+    assert not (repo / "checks" / "0002.note.json").exists()
+
+
+def test_the_diff_and_the_repeat_log_are_ledgered(diffed: Path, monkeypatch, capsys):
+    """07.2-13: the audit takes only ledgered files under checks/ for the wrapper's own."""
+    ledger = diffed.parents[2] / "ledger" / f"ufo2p__{DIFF_FUNC}__attempt-1.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"")
+    monkeypatch.setenv(attempt.WRAPPER_LEDGER_ENV, str(ledger))
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert _run(["attempt", "check"]) == 1  # the same C: a repeat
+    paths = [json.loads(line)["path"] for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert "checks/0001.diff.json" in paths and "checks/repeats.jsonl" in paths
+
+
+def test_a_changed_c_is_no_repeat(repo: Path, monkeypatch, capsys):
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    (attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c").write_bytes(UNIT_TEXT + b"int x;\n")
+    assert _run(["attempt", "check"]) == 1
+    assert len(runner.calls) == 2 and attempt.repeat_count(repo) == 0
+
+
+def test_a_tool_error_is_never_a_cached_verdict(repo: Path, monkeypatch, capsys):
+    runner = _use(monkeypatch, FakeRunner("not json", returncode=2))
+    assert _run(["attempt", "check"]) == 2
+    assert _run(["attempt", "check"]) == 2
+    assert len(runner.calls) == 2 and attempt.repeat_count(repo) == 0
+
+
+def test_a_sweep_is_no_repeat_of_a_plain_check(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_sweep_doc()), returncode=0))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert len(runner.calls) == 1
+    assert _run(["attempt", "check", "--sweep"]) == 0  # the second sweep is a repeat
+    assert len(runner.calls) == 1 and attempt.repeat_count(repo) == 1
+
+
+def test_a_repeat_after_the_budget_still_answers(repo: Path, monkeypatch, capsys):
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    _reserve(repo, attempt.CHECK_BUDGET - 1, log=True)
+    (attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c").write_bytes(UNIT_TEXT + b"int x;\n")
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    assert _run(["attempt", "check"]) == 1
+    assert len(runner.calls) == 1
+    assert "no check used (0 left)" in capsys.readouterr().out.splitlines()[0]
+
+
+def test_a_readability_check_is_never_cached(readable: Path, monkeypatch, capsys):
+    """Its verdict also reads proposals.jsonl, which the session may change between checks."""
+    _readable_unit(readable, NAMED, renamed=True)
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert _run(["attempt", "check"]) == 0
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "same"),
+    [
+        ("int f(void){return 1;}", "int f(void){return 1;}  /* x */\n\n", True),
+        ("int f(void)\n{\n    return 1;\n}\n", "int f(void)\n{\n\treturn 1; // one\n}", True),
+        ("int a; /* multi\nline */ int b;", "int a;  int b;", True),
+        ('char *s = "a  b";', 'char *s = "a b";', False),
+        ('char *s = "/* x */";', 'char *s = "";', False),
+        ("#define A 1\nint b;", "#define A 1 int b;", False),
+        ("return a+b;", "return a + b;", False),
+        ("int x = 'a';", "int x = 'b';", False),
+    ],
+)  # fmt: skip
+def test_the_normalized_source(a: str, b: str, same: bool):
+    assert (attempt.source_digest(a.encode()) == attempt.source_digest(b.encode())) is same

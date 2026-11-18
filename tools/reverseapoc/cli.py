@@ -1574,6 +1574,8 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
             return attempt.cmd_giveup()
         if args.attempt_command == "plan":
             return attempt.cmd_plan()
+        if args.attempt_command == "diff":
+            return attempt.cmd_diff()
         return attempt.cmd_context()
     except _ERRORS as exc:
         print(f"reverseapoc attempt: error: {_one_line(exc)}", file=sys.stderr)
@@ -1643,7 +1645,7 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
         "A matching check also needs plan.json and check-note.json beside notes.md.",
     )
     asub = p.add_subparsers(dest="attempt_command", required=True,
-                            metavar="{check,asm,context,giveup,plan}")  # fmt: skip
+                            metavar="{check,asm,context,giveup,plan,diff}")  # fmt: skip
     c = asub.add_parser(
         "check",
         allow_abbrev=False,
@@ -1678,6 +1680,12 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
         help="validate plan.json beside notes.md (frame, slots, calls, regions covering the "
         "claimed function) and print the accepted regions; a matching session only",
+    )
+    asub.add_parser(
+        "diff",
+        allow_abbrev=False,
+        help="print the latest plain check's full diff: every differing run, ours beside the "
+        "original, each with its class (no check used); a matching session only",
     )
     p.set_defaults(func=_cmd_attempt)
 

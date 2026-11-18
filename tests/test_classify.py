@@ -286,7 +286,7 @@ def class_of_object(tmp_path, ours: bytes, theirs: bytes, callee: str | None = N
     fixups, externs = ([call(CALL_FIELD, 1)], [callee]) if callee else ([], [])
     publics = [(symbols.linker_name(ROW), 0)]
     obj.write_bytes(our_object(ours, fixups, externs, publics=publics))
-    return classify._class_of(exe, ROW, SimpleNamespace(job=SimpleNamespace(obj=obj)), False)
+    return classify._class_of(exe, ROW, obj, False)
 
 
 def test_a_stack_offset_fails_the_relocation_check_and_stays_class_slot(tmp_path):
@@ -397,3 +397,114 @@ def test_a_relocation_on_a_row_ending_off_16_stays_mixed(tmp_path):
 def test_classify_pair_still_reads_a_filler_tail_as_another_length():
     """The cut lives in _class_of, and classify_pair's contract does not change."""
     assert classed(body(LOAD_SLOT_4), body(LOAD_SLOT_8) + FILLER) == "size"
+
+
+# ---- the full aligned diff (attempt diff): every differing run, each with its class ----
+
+
+def runs(ours: bytes, theirs: bytes, masked: set[int] = NO_RELOCS) -> list[tuple[str, int, int]]:
+    """(class, our instructions, the original's) of each run diff_runs finds."""
+    return [(run.klass, len(run.ours), len(run.original))
+            for run in classify.diff_runs(ours, theirs, VA, masked)]  # fmt: skip
+
+
+TWO_RUNS = (body(f"{MOVE_EBX_TO_EAX} {INC_EAX} {INC_EAX} {JE} {INC_EAX} {INC_EAX}"),
+            body(f"{MOVE_EBX_TO_EDX} {INC_EAX} {INC_EAX} {JNE} {INC_EAX} {INC_EAX}"))  # fmt: skip
+
+
+def test_a_two_run_mismatch_has_two_runs_each_with_its_class():
+    assert runs(*TWO_RUNS) == [("register", 1, 1), ("branch", 1, 1)]
+
+
+def test_a_run_shows_both_sides_instructions():
+    first, second = classify.diff_runs(*TWO_RUNS, VA, NO_RELOCS)
+    assert [(i.va, i.mnemonic, i.operands) for i in first.ours] == [(VA + 4, "mov", "eax, ebx")]
+    assert [(i.va, i.mnemonic, i.operands) for i in first.original] == [(VA + 4, "mov", "edx, ebx")]
+    assert (second.ours[0].mnemonic, second.original[0].mnemonic) == ("je", "jne")
+
+
+def test_equal_bodies_have_no_run():
+    assert runs(body(LOAD_SLOT_4), body(LOAD_SLOT_4)) == []
+
+
+def test_a_stack_offset_run_is_class_slot():
+    assert runs(body(LOAD_SLOT_4), body(LOAD_SLOT_8)) == [("slot", 1, 1)]
+
+
+def test_a_missing_end_is_class_tail():
+    ours = bytes.fromhex(f"{INC_EAX} c3")
+    assert runs(ours, ours + FILLER) == [("tail", 0, 1)]
+
+
+def test_an_inserted_instruction_is_class_size():
+    assert runs(body(f"{INC_EAX} {INC_EAX}"), body(INC_EAX)) == [("size", 1, 0)]
+
+
+def test_nothing_fits_a_run_is_class_mixed():
+    assert runs(body(INC_EAX), body(DEC_EAX)) == [("mixed", 1, 1)]
+
+
+def test_another_encoding_of_the_same_text_is_a_run():
+    """mov eax, ebx both ways: equal text, other bytes, so no mask explains it."""
+    assert runs(body(MOVE_EBX_TO_EAX), body("8bc3")) == [("mixed", 1, 1)]
+
+
+def test_a_jump_to_another_instruction_is_class_branch():
+    """Tokens hide jump targets, so an equal-looking jump that lands elsewhere is a run too."""
+    ours = bytes.fromhex(f"7401 {INC_EAX} {INC_EAX} c3")
+    theirs = bytes.fromhex(f"7402 {INC_EAX} {INC_EAX} c3")
+    assert runs(ours, theirs) == [("branch", 1, 1)]
+
+
+def test_a_jump_over_a_shifted_body_is_no_run():
+    """Both jumps land on the same aligned instruction, whatever their displacement."""
+    ours = bytes.fromhex(f"7403 {INC_EAX} {INC_EAX} {INC_EAX} c3")
+    theirs = bytes.fromhex(f"7402 {INC_EAX} {INC_EAX} c3")
+    assert runs(ours, theirs) == [("size", 1, 0)]
+
+
+def test_a_relocated_operand_is_no_run():
+    ours, theirs = body(RELOCATED["ours"]), body(RELOCATED["theirs"])
+    assert runs(ours, theirs, RELOCATED_FIELD) == []
+    (run,) = classify.diff_runs(ours, body(DEC_EAX), VA, RELOCATED_FIELD)
+    assert run.ours[0].relocated and not run.original[0].relocated
+
+
+def full_diff_of_object(tmp_path, ours: bytes, theirs: bytes) -> classify.FullDiff | str:
+    """full_diff with `ours` in an OMF object on disk and `theirs` as the row of a synthetic EXE."""
+    row = game_row(ROW, ROW + len(theirs))
+    orig = original({ROW: theirs})
+    symbols = table(row)
+    exe = SimpleNamespace(rows=(row,), flat=orig.flat, fixups=tuple(orig.fixups), symbols=symbols,
+                          target=SimpleNamespace(name="SYNTH.EXE"))  # fmt: skip
+    obj = tmp_path / "f.obj"
+    obj.write_bytes(our_object(ours, [], [], publics=[(symbols.linker_name(ROW), 0)]))
+    return classify.full_diff(exe, obj, ROW)
+
+
+def test_full_diff_has_the_class_the_runs_and_checks_byte_count(tmp_path):
+    ours, theirs = TWO_RUNS
+    diff = full_diff_of_object(tmp_path, ours, theirs)
+    assert diff.klass == "branch"
+    assert [run.klass for run in diff.runs] == ["register", "branch"]
+    assert (diff.differing, diff.first_va, diff.whole) == (2, ROW + 5, True)
+    assert diff.to_json()["runs"][0] == {
+        "class": "register",
+        "ours": [{"va": f"0x{ROW + 4:08X}", "mnemonic": "mov", "operands": "eax, ebx",
+                  "relocated": False}],
+        "original": [{"va": f"0x{ROW + 4:08X}", "mnemonic": "mov", "operands": "edx, ebx",
+                      "relocated": False}],
+    }  # fmt: skip
+
+
+def test_full_diff_leaves_out_the_kept_filler(tmp_path):
+    """check counts the original's kept trailing filler as ours, so no run shows it."""
+    rest = f"{LOAD_SLOT_4} {INC_EAX} {INC_EAX} {INC_EAX}"  # 18 bytes and 14 of filler: 16-aligned
+    ours = body(f"{MOVE_EBX_TO_EAX} {rest}")
+    diff = full_diff_of_object(tmp_path, ours, body(f"{MOVE_EBX_TO_EDX} {rest}") + FILLER * 7)
+    assert [run.klass for run in diff.runs] == ["register"]
+
+
+def test_full_diff_of_an_object_without_the_function_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch, "function_body", lambda *_: "not defined")
+    assert full_diff_of_object(tmp_path, body(INC_EAX), body(DEC_EAX)) == "not defined"
