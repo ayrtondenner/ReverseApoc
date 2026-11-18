@@ -308,10 +308,72 @@ def test_a_failing_gate_restores_every_file(repo):
     assert git(repo, "status", "--porcelain") == ""
 
 
-def test_landing_refuses_a_dirty_unit(repo):
-    (repo / "src" / "tacp" / f"{B_UNIT}.c").write_text(B_SOURCE + "\n", encoding="utf-8")
-    with pytest.raises(Exception, match="uncommitted changes"):
-        land(repo, Container(repo))
+def test_a_dirty_unit_fails_its_transfer_and_is_left_alone(repo):
+    unit = repo / "src" / "tacp" / f"{B_UNIT}.c"
+    unit.write_text(B_SOURCE + "\n", encoding="utf-8", newline="\n")
+    container = Container(repo)
+    report = land(repo, container)
+    ((exe, name, why),) = report.failed
+    assert (exe, name) == (TACP, fname(B_START)) and why.startswith("uncommitted changes in ")
+    assert unit.read_text(encoding="utf-8") == B_SOURCE + "\n"
+    assert container.argvs == []
+    assert "0 twins landed, 1 failed" in report.format()
+
+
+def items_text(source: str) -> list[tuple[str, str]]:
+    return [(item.kind, item.text) for item in twins._items(source)]
+
+
+def test_a_continued_define_is_one_item():
+    source = "#define SWAP(a, b) \\\n    { int t = a; a = b; b = t; }\nextern int g_x;\n"
+    assert items_text(source) == [
+        ("define", "#define SWAP(a, b) \\\n    { int t = a; a = b; b = t; }"),
+        ("decl", "extern int g_x;")]
+
+
+def test_dead_code_and_conditionals_are_never_items():
+    source = "#if 0\nextern int g_dead;\n#endif\n#undef X\nextern int g_live;\n"
+    assert items_text(source) == [("directive", "#undef X"), ("decl", "extern int g_live;")]
+    needed = twins._needed(twins._items(source), "int f(void) { return g_live; }", "f")
+    assert [i.text for i in needed] == ["extern int g_live;"]
+
+
+def test_a_rename_leaves_string_literals_alone():
+    text = 'x = D_00020004; puts("D_00020004"); /* D_00020004 */'
+    assert twins._rename(text, {"D_00020004": "D_00020008"}) == (
+        'x = D_00020008; puts("D_00020004"); /* D_00020008 */')
+
+
+def test_a_name_the_body_does_not_use_never_borrows_a_pair(repo):
+    """D_00020000 shares a declaration with a used name: it is not renamed, and it does not
+    take the D_00020004 field as `the data it points into`."""
+    text = A_SOURCE.replace("extern int D_00020004;", "extern int D_00020000, D_00020004;")
+    (repo / "src" / "ufo2p" / f"{A_UNIT}.c").write_text(text, encoding="utf-8", newline="\n")
+    (t,) = plan(repo).transfers
+    assert t.reason == "" and "D_00020000" not in t.renames
+    assert t.renames["D_00020004"] == "D_00020008"
+
+
+def test_sources_are_tried_in_order():
+    calls = []
+
+    def attempt(source, target):
+        calls.append(source)
+        return twins.Transfer(source, target, "no C" if source == "a" else "")
+
+    assert twins._first_candidate(["a", "b", "c"], "t", attempt).source == "b"
+    assert calls == ["a", "b"]
+    assert twins._first_candidate(["a"], "t", attempt).reason == "no C"
+
+
+def test_cd_map_never_maps_two_rows_to_one_cd_start():
+    stub = bytes.fromhex("b878563412" "c3")
+    installed = original({0x10100: stub, 0x10200: stub})
+    cd = original({0x10180: stub})
+    rows = [FunctionRow(0x10100, 0x10106, fname(0x10100), "game", "u", "call"),
+            FunctionRow(0x10200, 0x10206, fname(0x10200), "game", "u", "call")]
+    mapped = twins.cd_map(rows, twins.Code.of(installed.le), twins.Code.of(cd.le))
+    assert [(m.cd_start, m.status) for m in mapped] == [(0x10180, "moved"), (None, "unmapped")]
 
 
 def test_landing_refuses_a_matching_session(repo):
@@ -444,3 +506,22 @@ def test_cd_map_names_the_ingest_step_when_the_cd_build_is_missing(repo, capsys)
     add_cd_build(repo, UFO, image_b())
     assert cli_main(cd_map_argv(repo)) == 1
     assert "ingest --cd IMAGE" in capsys.readouterr().err
+
+
+def test_twins_and_cd_map_write_refuse_while_a_drive_holds_the_lock(repo, capsys):
+    from reverseapoc.locks import DRIVE_LOCK, ProcessLock
+
+    add_cd_build(repo, UFO, image_b())
+    (repo / "cd").mkdir()
+    (repo / "cd" / UFO).write_bytes(image_b())
+    other = ProcessLock(repo / DRIVE_LOCK)
+    assert other.try_acquire()
+    try:
+        with pytest.raises(Exception, match="drive"):
+            land(repo, Container(repo))
+        assert cli_main(cd_map_argv(repo, "--write")) == 1
+        assert "drive" in capsys.readouterr().err
+        assert not (repo / "config" / "ufo2p" / "cd-map.csv").exists()
+        assert cli_main(cd_map_argv(repo)) == 0  # without --write it only reads
+    finally:
+        other.release()

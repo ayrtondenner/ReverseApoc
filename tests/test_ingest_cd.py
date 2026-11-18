@@ -171,3 +171,11 @@ def test_cli_ingest_cd(tmp_path, capsys):
     bad = write_image(tmp_path, build_iso({}), "empty.iso")
     argv[2] = str(bad)
     assert cli_main(argv) == 1
+
+
+def test_a_bad_cd_build_entry_names_its_table(tmp_path):
+    manifest = make_manifest(tmp_path)
+    text = manifest.read_text(encoding="utf-8")
+    manifest.write_text(text.replace(hashlib.sha1(TAC).hexdigest(), "xyz"), encoding="utf-8")
+    with pytest.raises(ValueError, match=r"cd_builds\[1\] \(TACP.EXE\): 'sha1' must be 40 hex"):
+        load_cd_builds(manifest)

@@ -2895,9 +2895,7 @@ def _cmd_cd_map(args: argparse.Namespace) -> int:
     name, mapped = twins.build_cd_map(args.exe, orig_dir=args.orig, manifest=args.manifest,
                                       config_root=args.config, cd_dir=cd_dir)  # fmt: skip
     if args.write:
-        path = twins.cd_map_path(args.config, name)
-        write_atomic(path, twins.format_cd_map(mapped, name).encode("utf-8"))
-        print(f"wrote {path}")
+        print(f"wrote {twins.write_cd_map(args.config, name, mapped)}")
     print(f"{name}: {twins.coverage(mapped)}")
     return 0
 

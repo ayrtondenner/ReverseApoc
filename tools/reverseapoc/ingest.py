@@ -235,7 +235,13 @@ def load_cd_builds(manifest: Path | str | None = None) -> list[Target]:
         raise ManifestError(f"{path}: no [[cd_builds]] entries")
     if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
         raise ManifestError(f"{path}: 'cd_builds' must be an array of tables ([[cd_builds]])")
-    return [_parse_target(i, entry) for i, entry in enumerate(entries)]
+    builds = []
+    for i, entry in enumerate(entries):
+        try:
+            builds.append(_parse_target(i, entry))
+        except ManifestError as exc:  # _parse_target names the [[targets]] table
+            raise ManifestError(f"{path}: cd_builds{str(exc).removeprefix('targets')}") from None
+    return builds
 
 
 class _Mode1Image:

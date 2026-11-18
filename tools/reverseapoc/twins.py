@@ -4,7 +4,8 @@ twins`) and the installed-to-CD function map (`reverseapoc cd-map`).
 One matcher serves both (`masked`): a span's bytes with every LE fixup field and every rel32 field
 of a call or jump leaving the span zeroed, plus the offsets it zeroed. Two spans with equal masked
 bodies differ only in where they point. UFO2P.EXE and TACP.EXE share engine functions, and the
-installed ("4") build shares most of its code with the CD v1.00 build, at shifted addresses.
+installed ("4") build shares part of its code with the CD v1.00 build, at shifted addresses (a
+third of the rows on 2026-11-18; most others were compiled differently, not only moved).
 
 twins (docs/workflow.md, Select): the game and thunk rows of every EXE with units, grouped by
 masked body. A group with a matched row and an unmatched one is a transfer: the matched C, renamed
@@ -25,14 +26,16 @@ the next transfer runs. Refused while a drive runs or inside a matching session.
 
 cd-map: each functions.csv row of the installed build looked up in the CD build: at the address
 the previous mapped row's shift predicts, else anywhere its longest unmasked run of at least
-_MIN_ANCHOR bytes occurs and the whole masked body verifies (the nearest such address wins).
-`identical` is the same address, `moved` another one, `unmapped` none. OpenApoc's offsets describe
-the CD build (docs/toolchain.md), so the map translates them.
+_MIN_ANCHOR bytes occurs and the whole masked body verifies (the nearest such address wins; no
+two rows take one address). `identical` is the same address, `moved` another one, `unmapped`
+none. OpenApoc's offsets describe the CD build (docs/toolchain.md), so the map translates them.
+`cd-map --write`, like `twins`, is refused while a drive holds build/driver/drive.lock.
 """
 
 from __future__ import annotations
 
 import bisect
+import functools
 import os
 import re
 from collections import defaultdict
@@ -53,7 +56,7 @@ from .functions import (
 from .hooks import CLAIM_ENV
 from .ingest import load_cd_builds
 from .le import LE, Fixup
-from .libmatch import _OBJ_EXECUTABLE, _occurrences, _unmasked_runs
+from .libmatch import _OBJ_EXECUTABLE, _unmasked_runs
 from .status import MATCHED, read_status, status_path
 from .symbols import SymbolError, SymbolTable
 from .targets import hash_file, load_manifest, target_problems
@@ -208,16 +211,28 @@ def _counts(groups: Mapping[Body, list[Member]], names: Sequence[str]) -> tuple[
     return tuple(out)
 
 
-def _pairs(groups: Mapping[Body, list[Member]]) -> Iterator[tuple[Member, Member]]:
-    """(source, target) for each unmatched row of a group with a matched row: the source is
-    the group's first matched row in manifest and address order."""
+def _pairs(groups: Mapping[Body, list[Member]]) -> Iterator[tuple[list[Member], Member]]:
+    """(the group's matched rows in manifest and address order, target) for each unmatched row
+    of a group with a matched row."""
     for members in groups.values():
         sources = [m for m in members if m.matched]
         if not sources:
             continue
         for target in members:
             if not target.matched:
-                yield sources[0], target
+                yield sources, target
+
+
+def _first_candidate(sources: Sequence[Member], target: Member,
+                     attempt: Callable[[Member, Member], Transfer]) -> Transfer:  # fmt: skip
+    """The first source that gives a candidate, else the first source's reason."""
+    first = None
+    for source in sources:
+        transfer = attempt(source, target)
+        if not transfer.reason:
+            return transfer
+        first = first or transfer
+    return first
 
 
 # ---- twins: the C of a transfer ----
@@ -228,8 +243,11 @@ _NOT_NEWLINE = re.compile(r"[^\n]")
 _IDENT = re.compile(unitdefs._IDENT)
 _DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
 _DEFINE_NAME = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)")
+_IF_ZERO = re.compile(r"[ \t]*#[ \t]*if[ \t]+0\b")
+_OPENS = frozenset({"if", "ifdef", "ifndef"})
 _COMMON_H = '#include "common.h"'
-DECL, DEF, INCLUDE, MACRO, MARKER = "decl", "def", "include", "define", "marker"
+DECL, DEF, INCLUDE, MACRO, MARKER, DIRECTIVE = ("decl", "def", "include", "define", "marker",
+                                                "directive")  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -253,6 +271,8 @@ def _idents(code: str) -> frozenset[str]:
 
 
 def _directive(line: str) -> _Item:
+    """An #include (copied), a #define (copied when needed) or any other directive (never
+    copied: configure.py allows no live conditional, and an #undef is the target's business)."""
     kind = _DIRECTIVE.match(line).group(1)
     text = line.strip()
     if kind == "include":
@@ -260,7 +280,55 @@ def _directive(line: str) -> _Item:
     define = _DEFINE_NAME.match(line)
     if define is not None:
         return _Item(MACRO, text, frozenset({define.group(1)}), _idents(_blank(line)))
-    return _Item(INCLUDE, text, frozenset(), frozenset())  # any other directive: copied as is
+    return _Item(DIRECTIVE, text, frozenset(), frozenset())
+
+
+def _line_end(blank: str, i: int) -> int:
+    """The index after the logical line starting at `i`: a backslash before the newline
+    continues it."""
+    while True:
+        stop = blank.find("\n", i)
+        if stop < 0:
+            return len(blank)
+        if not blank[i:stop].rstrip(" \t\r").endswith("\\"):
+            return stop + 1
+        i = stop + 1
+
+
+def _dead_line(stack: list[str], line: str) -> bool:
+    """Whether `line` is blanked as part of an `#if 0` branch, updating `stack` ("dead",
+    "nested" inside a dead branch, or "else" for the live #else of an `#if 0`)."""
+    directive = _DIRECTIVE.match(line)
+    word = directive.group(1) if directive else None
+    top = stack[-1] if stack else None
+    if top not in ("dead", "nested"):
+        if _IF_ZERO.match(line):
+            stack.append("dead")
+            return True
+        if top == "else" and word == "endif":
+            stack.pop()
+            return True
+        if top == "else" and word in _OPENS:
+            stack.append("live")
+        elif top == "live" and word == "endif":
+            stack.pop()
+        return False
+    if word in _OPENS:
+        stack.append("nested")
+    elif word == "else" and top == "dead":
+        stack[-1] = "else"
+    elif word == "endif":
+        stack.pop()
+    return True
+
+
+def _drop_dead(blank: str) -> str:
+    """`blank` with each `#if 0` branch and its own directives turned into spaces; the #else
+    branch of one stays (configure.py's code_text drops the same branches)."""
+    stack: list[str] = []
+    lines = blank.split("\n")
+    return "\n".join(_NOT_NEWLINE.sub(" ", line) if _dead_line(stack, line) else line
+                     for line in lines)  # fmt: skip
 
 
 def _piece(text: str, blank: str, start: int, end: int, brace: int | None) -> _Item | None:
@@ -283,15 +351,14 @@ def _items(text: str) -> list[_Item]:
     """The file-scope items of a unit, in file order: a `;` at brace depth 0 ends a declaration,
     the `}` closing a body that follows a `)` ends a definition, and a directive line outside
     any pending item is an item of its own."""
-    blank = _blank(text)
+    blank = _drop_dead(_blank(text))
     items: list[_Item | None] = []
     start = depth = i = 0
     brace: int | None = None
     while i < len(blank):
         line_start = i == 0 or blank[i - 1] == "\n"
         if depth == 0 and line_start and _DIRECTIVE.match(blank, i) and not blank[start:i].strip():
-            stop = blank.find("\n", i)
-            stop = len(blank) if stop < 0 else stop + 1
+            stop = _line_end(blank, i)
             items.append(_directive(text[i:stop]))
             start = i = stop
             continue
@@ -396,9 +463,10 @@ def _paired(va: int, kind: str, pairs: Mapping[int, int], above: int | None) -> 
 
 def _renames(names: Iterable[str], a: SymbolTable, b: SymbolTable,
              pairs: Mapping[int, int]) -> tuple[dict[str, str], str]:  # fmt: skip
-    """(source C name -> target C name, "") or ({}, why not)."""
+    """(source C name -> target C name, "") or ({}, why not). A displaced field is searched no
+    further than the next address a name here or a symbols.csv row of the source gives."""
     linked = {ident: found for ident in sorted(names) if (found := _link(a, ident)) is not None}
-    addresses = sorted({va for va, _ in linked.values()})
+    addresses = sorted({va for va, _ in linked.values()} | set(a.symbols))
     renames: dict[str, str] = {}
     for ident, (va, kind) in linked.items():
         nxt = bisect.bisect_right(addresses, va)
@@ -417,10 +485,18 @@ def _renames(names: Iterable[str], a: SymbolTable, b: SymbolTable,
 
 
 def _rename(text: str, renames: Mapping[str, str]) -> str:
+    """`text` with each name renamed in code and comments, never inside a string or character
+    literal (its bytes are data the gate compares)."""
     if not renames:
         return text
+    literals = [m.span() for m in _COMMENT_OR_LITERAL.finditer(text) if m.group()[0] in "\"'"]
     pattern = re.compile(r"\b(" + "|".join(map(re.escape, renames)) + r")\b")
-    return pattern.sub(lambda m: renames[m.group(1)], text)
+
+    def swap(m: re.Match[str]) -> str:
+        inside = any(lo <= m.start() < hi for lo, hi in literals)
+        return m.group(1) if inside else renames[m.group(1)]
+
+    return pattern.sub(swap, text)
 
 
 def _read_unit(path: Path) -> str:
@@ -481,7 +557,8 @@ def _transfer(exes: _Exes, source: Member, target: Member) -> Transfer:
     pairs = address_pairs(exes.codes[source.exe], source.row.start, exes.codes[target.exe],
                           target.row.start, source.row.end - source.row.start)  # fmt: skip
     needed = _needed(items, definition, own_a)
-    names = _idents(_blank(definition)).union(*(i.used | i.declared for i in needed))
+    # the names the body can reference: its own and those of the macros it expands
+    names = _idents(_blank(definition)).union(*(i.used for i in needed if i.kind == MACRO))
     renames, why = _renames(names - {own_a}, a.symbols, b.symbols, pairs)
     if why:
         return Transfer(source, target, why)
@@ -516,7 +593,8 @@ def plan_twins(*, repo: Path, orig_dir: Path, manifest: Path) -> TwinsPlan:
     cross = [g for g in groups.values() if len({m.exe for m in g}) > 1]
     cross_rows = {name: sum(m.exe == name for g in cross for m in g) for name in names}
     exes = _Exes(repo, inputs, codes)
-    transfers = tuple(_transfer(exes, s, t) for s, t in _pairs(groups))
+    attempt = functools.partial(_transfer, exes)
+    transfers = tuple(_first_candidate(s, t, attempt) for s, t in _pairs(groups))
     return TwinsPlan(_counts(groups, names), len(cross), cross_rows, transfers)
 
 
@@ -560,9 +638,13 @@ class _Lander:
                 status_path(Path("config"), stem).as_posix(), driver.FEED]  # fmt: skip
 
     def land(self, t: Transfer) -> tuple[bool, str]:
-        """(True, commit) or (False, why) with every file restored."""
+        """(True, commit) or (False, why) with every file restored; a path with uncommitted
+        changes fails the transfer before anything is written."""
         paths = self.paths(t)
-        flags._refuse_dirty(self.git, paths)
+        try:
+            flags._refuse_dirty(self.git, paths)
+        except flags.FlagsError as exc:
+            return False, str(exc)
         snap = flags._snapshot_files(self.repo, paths)
         staged: list[str] = []
         try:
@@ -662,35 +744,61 @@ class CdMapRow:
     status: str
 
 
-def _verifies(cd: Code, at: int, want: Body) -> bool:
-    length = len(want[0])
-    return cd.base <= at and at + length <= cd.end and masked(cd, at, length) == want
+@dataclass(frozen=True)
+class _Wanted:
+    """One installed row's masked body and its unmasked runs (the bytes a candidate must
+    hold as they are)."""
+
+    body: Body
+    runs: tuple[tuple[int, int], ...]
+
+    @classmethod
+    def of(cls, body: Body) -> _Wanted:
+        return cls(body, tuple(_unmasked_runs(len(body[0]), frozenset(body[1]))))
 
 
-def _find(cd: Code, want: Body, predicted: int) -> int | None:
-    if _verifies(cd, predicted, want):
+def _verifies(cd: Code, at: int, want: _Wanted) -> bool:
+    """The masked body of the CD span at `at` equals the row's: its unmasked runs compared
+    first, as raw bytes, before the decode."""
+    data, length = want.body[0], len(want.body[0])
+    if at < cd.base or at + length > cd.end:
+        return False
+    if any(cd.flat[at + lo : at + hi] != data[lo:hi] for lo, hi in want.runs):
+        return False
+    return masked(cd, at, length) == want.body
+
+
+def _find(cd: Code, want: _Wanted, predicted: int, taken: set[int]) -> int | None:
+    """Where in the CD code the row is: `predicted`, else the nearest verified hit of its
+    longest unmasked run; never an address another row took."""
+    if predicted not in taken and _verifies(cd, predicted, want):
         return predicted
-    body, offsets = want
-    runs = _unmasked_runs(len(body), frozenset(offsets))
-    lo, hi = max(runs, key=lambda run: run[1] - run[0], default=(0, 0))
+    lo, hi = max(want.runs, key=lambda run: run[1] - run[0], default=(0, 0))
     if hi - lo < _MIN_ANCHOR:
         return None
-    code = cd.flat[cd.base : cd.end]
-    found = [at for hit in _occurrences(code, body[lo:hi])
-             if _verifies(cd, at := cd.base + hit - lo, want)]  # fmt: skip
+    needle, found = want.body[0][lo:hi], []
+    hit = cd.flat.find(needle, cd.base + lo, cd.end)
+    while hit >= 0:
+        at = hit - lo
+        if at not in taken and _verifies(cd, at, want):
+            found.append(at)
+        hit = cd.flat.find(needle, hit + 1, cd.end)
     return min(found, key=lambda at: (abs(at - predicted), at), default=None)
 
 
 def cd_map(rows: Sequence[FunctionRow], installed: Code, cd: Code) -> list[CdMapRow]:
-    """Each row of the installed build placed in the CD build (module docstring)."""
-    out, shift = [], 0
+    """Each row of the installed build placed in the CD build (module docstring); no two rows
+    share a CD address."""
+    out, shift, taken = [], 0, set()
     for row in sorted(rows, key=lambda r: r.start):
         at = None
         if row.end > row.start:
-            at = _find(cd, masked(installed, row.start, row.end - row.start), row.start + shift)
+            want = _Wanted.of(masked(installed, row.start, row.end - row.start))
+            at = _find(cd, want, row.start + shift, taken)
         if at is None:
             out.append(CdMapRow(row, None, UNMAPPED))
             continue
+        taken.add(at)
         shift = at - row.start
         out.append(CdMapRow(row, at, IDENTICAL if at == row.start else MOVED))
     return out
@@ -733,3 +841,15 @@ def build_cd_map(exe: str, *, orig_dir: Path, manifest: Path, config_root: Path,
 
 def cd_map_path(config_root: Path, name: str) -> Path:
     return Path(config_root) / exe_stem(name) / CD_MAP_CSV
+
+
+def write_cd_map(config_root: Path, name: str, mapped: Sequence[CdMapRow]) -> Path:
+    """config/<exe>/cd-map.csv, written while build/driver/drive.lock of the checkout that
+    holds `config_root` is free (nothing writes the checkout during a drive)."""
+    path = cd_map_path(config_root, name)
+    lock = flags._hold_drive_lock(Path(config_root).resolve().parent)
+    try:
+        write_atomic(path, format_cd_map(mapped, name).encode("utf-8"))
+    finally:
+        lock.release()
+    return path
