@@ -315,6 +315,13 @@ def test_a_converter_match_is_credited_to_the_converter():
                   "Matched-By: reverseapoc lift", "Co-Authored-By: Claude <noreply@anthropic.com>")
     (found,) = progress.build_timeline([], [lift], (), (), ()).days
     assert found.driver == "reverseapoc lift: 1 match"
+    # A batch landing names its author in Matched-By alone (flags.py, 07-48c); the commit hook's
+    # Co-Authored-By: Claude is the approving session's, not the author's.
+    batch = commit(progress, "c2", "2026-11-03", "feat(ufo2p): match func_0005FBD0 in u (C89)",
+                   "Matched-By: claude subagent (spike 011)",
+                   "Co-Authored-By: Claude <noreply@anthropic.com>")  # fmt: skip
+    (found,) = progress.build_timeline([], [batch], (), (), ()).days
+    assert found.driver == "claude subagent (spike 011): 1 match"
 
 
 def test_flags_approvals_drive_a_day():

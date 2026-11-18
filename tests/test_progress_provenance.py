@@ -60,6 +60,18 @@ def test_the_classes_are_stats_classes():
             trailers)
 
 
+def test_matched_starts_reads_any_hex_start_as_driver_does():
+    """A past status.csv is read the way driver.matched_starts reads it (the agreement with
+    stats rests on it): any column order, any hex spelling of the start."""
+    from reverseapoc import driver
+
+    progress = provenance_module()
+    text = ("# a comment\nstatus,start,name\nmatched,0x0001abcd,f\nmatched,0x10,g\n"
+            "partial,0x00020000,h\nmatched,zz,i\n")  # fmt: skip
+    assert progress._matched_starts(text) == driver.matched_starts(text.encode("utf-8"))
+    assert progress._matched_starts(None) == frozenset()
+
+
 def test_the_split_counts_each_matched_function_by_its_latest_match(tmp_path):
     """Per EXE: each function status.csv calls matched, by its latest match event; a function
     matched with no event in the history is unclassed, and an event of a function no longer

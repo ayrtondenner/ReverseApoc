@@ -24,6 +24,7 @@ on:
       - "config/asm-functions.csv"
       - "config/handoff.csv"
       - "progress/verifications.jsonl"
+      - "config/targets.toml"
       - "tools/progress.py"
       - "decomphub.progress.json"
       - ".github/workflows/pages.yml"

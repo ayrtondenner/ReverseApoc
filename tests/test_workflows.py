@@ -17,10 +17,12 @@ GITIGNORE = REPO_ROOT / ".gitignore"
 
 # D-27: the inputs of tools/progress.py and the workflow itself; plan 07-15 adds the mechanics
 # coverage view's inputs and the signed asm list (DEC-05, D-23); the hand-off board and the
-# owner's cold-rebuild records follow (todos long-tail-handoff-board, cold-rebuild-record).
+# owner's cold-rebuild records follow, with targets.toml whose SHA-1s the record is compared
+# with (todos long-tail-handoff-board, cold-rebuild-record).
 PATHS = ("config/*/status.csv", "config/*/functions.csv", "config/*/units.csv",
          "config/mechanics.toml", "config/mechanics-members.csv", "config/asm-functions.csv",
-         "config/handoff.csv", "progress/verifications.jsonl", "tools/progress.py",
+         "config/handoff.csv", "progress/verifications.jsonl", "config/targets.toml",
+         "tools/progress.py",
          "decomphub.progress.json", ".github/workflows/pages.yml")  # fmt: skip
 PROGRESS_RUN = "python3 -I tools/progress.py --out _site --report build/report.json"
 # D-28: one combined artifact; recomp.fyi reads it by this name from the default branch.

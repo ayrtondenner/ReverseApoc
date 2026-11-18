@@ -1103,17 +1103,20 @@ def _match_size(rest: str) -> int:
 
 def _credit(trailers: Iterable[tuple[str, str]]) -> str:
     """Who a match is credited to (owner ruling 2026-11-18): the reverseapoc tool other than
-    the driver a Matched-By names (`reverseapoc lift`, the converter, wrote the C), else the
-    first Co-Authored-By name (a landing from a hold run lists its own model first, then one
-    line per other arm that held the function exact), else the model a Matched-By names, else
-    "no co-author"."""
+    the driver a Matched-By names (`reverseapoc lift`, the converter, wrote the C); without the
+    driver's Matched-By, the author another Matched-By names (a batch landing's, 07-48c: the
+    commit hook's Co-Authored-By is the approving session's); else the first Co-Authored-By
+    name (a landing from a hold run lists its own model first, then one line per other arm that
+    held the function exact; a flags landing lists every model that wrote a matching candidate,
+    the earliest pass first); else the model a Matched-By names; else "no co-author"."""
     pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
     tools = [value for key, value in pairs if key == MATCHED_BY
              and value.startswith(MATCHED_BY_TOOL) and value != MATCHED_BY_DRIVE]  # fmt: skip
     names = [value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR]
     models = [value for key, value in pairs
               if key == MATCHED_BY and not value.startswith(MATCHED_BY_TOOL)]  # fmt: skip
-    return next(iter(tools + names + models), "no co-author")
+    authors = [] if (MATCHED_BY, MATCHED_BY_DRIVE) in pairs else models
+    return next(iter(tools + authors + names + models), "no co-author")
 
 
 def _flag_ranges(ids: Iterable[int]) -> str:
@@ -1515,16 +1518,22 @@ def _matched_starts(text: str | None) -> frozenset[int]:
     out = set()
     lines = (line for line in (text or "").splitlines() if line and not line.startswith(_COMMENT))
     for rec in csv.DictReader(lines):
-        if rec.get("status") != MATCHED or not _ADDRESS_CELL.fullmatch(rec.get("start") or ""):
+        start = rec.get("start")
+        if rec.get("status") != MATCHED or not isinstance(start, str):
             continue
-        out.add(int(rec["start"], 16))
+        try:
+            out.add(int(start, 16))
+        except ValueError:  # not a start: driver.matched_starts skips it too
+            continue
     return frozenset(out)
 
 
 def _status_commits(repo: Path) -> list[tuple[tuple[tuple[str, str], ...], list[tuple]]]:
     """(trailers, [(stem, old blob or None, new blob or None)]) of every non-merge commit that
     changed a status.csv, parents first (topological order, as stats walks them)."""
+    # --no-renames: a table moved into place is an add, as stats' ls-tree comparison sees it.
     raw = _git(repo, ["log", "--reverse", "--topo-order", "--no-merges", "--raw", "--no-abbrev",
+                      "--no-renames",
                       f"--format={_RECORD}%(trailers:only,unfold,separator=%x1d)", "HEAD", "--",
                       *STATUS_PATHS])  # fmt: skip
     out = []
@@ -1703,8 +1712,9 @@ def build_verification_doc(verification: Verification | None) -> dict[str, objec
 
 # ---- the hand-off board (todo long-tail-handoff-board) ----
 #
-# config/handoff.csv lists the functions retired from agent queues (the picker skips them) for
-# the owner or a human contributor; the page lists it. A missing or header-only file lists none.
+# config/handoff.csv lists the functions retired from agent queues (the picker's side of the todo
+# skips them) for the owner or a human contributor; the page lists it. A missing or header-only
+# file lists none.
 
 HANDOFF_CSV = "handoff.csv"
 HANDOFF_COLUMNS = ("exe", "address", "reason", "retired_on", "return_rule")
@@ -1733,6 +1743,7 @@ def read_handoff(config: Path, progress: Progress) -> tuple[HandoffRow, ...]:
                  for f in exe.functions}  # fmt: skip
     stems = [stem for stem, _label in EXES]
     rows: list[HandoffRow] = []
+    seen: set[tuple[str, int]] = set()
     for number, rec in enumerate(_records(path, HANDOFF_COLUMNS), start=1):
         if rec["exe"] not in stems:
             raise ProgressError(f"{path}: data row {number}: exe {rec['exe']!r} is not a "
@@ -1744,8 +1755,9 @@ def read_handoff(config: Path, progress: Progress) -> tuple[HandoffRow, ...]:
         if key not in functions:
             raise ProgressError(f"{path}: data row {number}: the row at 0x{key[1]:08X} names no "
                                 f"game or thunk row of config/{key[0]}/{FUNCTIONS_CSV}")
-        if any((row.stem, row.function.start) == key for row in rows):
+        if key in seen:
             raise ProgressError(f"{path}: data row {number}: 0x{key[1]:08X} appears twice")
+        seen.add(key)
         label, function = functions[key]
         rows.append(HandoffRow(key[0], label, function, rec["reason"], rec["retired_on"],
                                rec["return_rule"]))  # fmt: skip
