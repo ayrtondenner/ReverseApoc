@@ -39,6 +39,7 @@ from . import (
     session,
     splits,
     stats,
+    twins,
 )
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
@@ -93,7 +94,7 @@ from .ghidra import (
     export_functions,
     read_ghidra_export,
 )
-from .ingest import IngestError, ingest, ingest_cd
+from .ingest import CD_DIR, IngestError, ingest, ingest_cd
 from .iso9660 import ISOError
 from .land import LandError, write_landed
 from .le import LE, LEError, format_summary
@@ -2875,6 +2876,63 @@ def _add_meters_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_meters)
 
 
+# ---- twins and cd-map: relocation-masked bodies across the EXEs and builds ----
+
+
+def _cmd_twins(args: argparse.Namespace) -> int:
+    """Exit 0 when the plan (--dry-run) or every landing attempt ran; a failed lint or gate is
+    reported, restored and not an error."""
+    if args.dry_run:
+        plan = twins.plan_twins(repo=args.repo, orig_dir=args.orig, manifest=args.manifest)
+        print("\n".join(plan.lines()))
+        return 0
+    print(twins.land_twins(repo=args.repo, orig_dir=args.orig, manifest=args.manifest).format())
+    return 0
+
+
+def _cmd_cd_map(args: argparse.Namespace) -> int:
+    cd_dir = args.cd if args.cd is not None else args.orig / CD_DIR
+    name, mapped = twins.build_cd_map(args.exe, orig_dir=args.orig, manifest=args.manifest,
+                                      config_root=args.config, cd_dir=cd_dir)  # fmt: skip
+    if args.write:
+        path = twins.cd_map_path(args.config, name)
+        write_atomic(path, twins.format_cd_map(mapped, name).encode("utf-8"))
+        print(f"wrote {path}")
+    print(f"{name}: {twins.coverage(mapped)}")
+    return 0
+
+
+def _add_twins_commands(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "twins",
+        help="find game and thunk rows whose relocation-masked bodies are identical, within and "
+        "across the EXEs, and land each unmatched one that has a matched twin: its C renamed "
+        f"into place, the container lint and gate, one commit with `{twins.MATCHED_BY}` (host); "
+        "refused while a drive runs",
+    )
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the counts and the planned transfers; write nothing")
+    p.add_argument("--repo", type=Path, default=REPO_ROOT, help=default)
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.set_defaults(func=_cmd_twins)
+    p = sub.add_parser(
+        "cd-map",
+        help="map every functions.csv row of the installed build to the CD v1.00 build by "
+        "relocation-masked body (identical, moved or unmapped); --write commits it as "
+        f"config/<exe>/{twins.CD_MAP_CSV}",
+    )
+    p.add_argument("exe", help="e.g. UFO2P.EXE or ufo2p")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--cd", type=Path, default=None, metavar="DIR",
+                   help=f"where the CD build is; default: <orig>/{CD_DIR} (`ingest --cd`)")
+    p.add_argument("--write", action="store_true", help=f"write config/<exe>/{twins.CD_MAP_CSV}")
+    p.set_defaults(func=_cmd_cd_map)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -2954,6 +3012,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_causes_command(sub)
     _add_compare_objects_command(sub)
     _add_meters_command(sub)
+    _add_twins_commands(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -2990,6 +3049,7 @@ _ERRORS = (
     ContextPackError,
     MechanicsError,
     flags.FlagsError,
+    twins.TwinsError,
     stats.StatsError,
     OSError,
 )
