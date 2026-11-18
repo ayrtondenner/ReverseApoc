@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, ghidra, lift, unitdefs
+from . import asm, check, contextpack, ghidra, lift, structs, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -1723,7 +1723,8 @@ def make_pack(
 ) -> contextpack.Pack:
     """The D-13 pack of `row`: status from config/<exe>/status.csv, every unit text of the EXE,
     the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
-    idioms and earlier notes. Pass `calls` to reuse one CallIndex across functions."""
+    idioms, earlier notes and the struct shapes `reverseapoc structs` left under the repo's
+    build/structs/<exe>/. Pass `calls` to reuse one CallIndex across functions."""
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
     listing_dir = Path(asm_root) / data.stem
     inputs = contextpack.gather(
@@ -1732,6 +1733,7 @@ def make_pack(
         draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
+        shapes=structs.load(roots.repo, data.stem),
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 
@@ -1809,7 +1811,8 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
              *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
     if form == "context":
         facts["notes"] = _notes_digest(claim)
-        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching]
+        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching,
+                  structs.shapes_path(ROOTS.repo, claim.exe)]
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
 
 

@@ -4,9 +4,10 @@ matching attempt starts from.
 
 A pack holds, in this fixed order (D-13): the target asm listing, the unit file, the callers and
 callees with their match status (and a matched one's C prototype), the `D_` externs the function
-touches, include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md
-idioms, the earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike
-functions with their C.
+touches, the struct shapes it touches (structs.py, todo struct-shapes-across-functions),
+include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md idioms, the
+earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike functions with
+their C. The struct shapes are a required section, bounded by structs.section itself.
 
 Listings and drafts are game-derived, so a pack is written only under the gitignored
 build/driver/ (D-14, docs/legal.md "Generated files stay local") and never committed. Every
@@ -24,7 +25,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import asm, check, ghidra
+from . import asm, check, ghidra, structs
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
@@ -43,6 +44,7 @@ TITLE_UNIT = "Unit file"
 TITLE_CALLERS = "Callers"
 TITLE_CALLEES = "Callees"
 TITLE_EXTERNS = "D_ externs"
+TITLE_STRUCTS = "Struct shapes"  # todo struct-shapes-across-functions: structs.section
 TITLE_COMMON_H = "include/common.h"
 TITLE_DRAFT = "Ghidra draft"
 TITLE_BEST_C = "Earlier best C"  # 07.2-02 (999.5): the best earlier attempt's definition
@@ -59,8 +61,8 @@ TITLE_IDIOMS = "Matching idioms"
 TITLE_GIVEUPS = "Earlier give-ups"  # 07.2-02 (999.5): one line per committed give-up
 TITLE_NOTES = "Earlier notes"
 TITLE_LOOKALIKES = "Look-alikes"
-ORDER = (TITLE_LISTING, TITLE_UNIT, TITLE_CALLERS, TITLE_CALLEES, TITLE_EXTERNS, TITLE_COMMON_H,
-         TITLE_DRAFT, TITLE_BEST_C, TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES,
+ORDER = (TITLE_LISTING, TITLE_UNIT, TITLE_CALLERS, TITLE_CALLEES, TITLE_EXTERNS, TITLE_STRUCTS,
+         TITLE_COMMON_H, TITLE_DRAFT, TITLE_BEST_C, TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES,
          TITLE_LOOKALIKES)  # fmt: skip
 LOOKALIKE_FLOOR = 0.6  # research A10: a starting metric, tuned from attempts.jsonl later
 LOOKALIKE_TOP = 3  # D-13: up to 3 look-alikes
@@ -268,6 +270,7 @@ def build_pack(
     callers: Sequence[Neighbour],
     callees: Sequence[Neighbour],
     externs: Sequence[str],
+    struct_shapes: str,
     common_h: str | None,
     draft: str | None,
     idioms: str | None,
@@ -293,6 +296,7 @@ def build_pack(
         TITLE_UNIT: _fenced(unit_text, "c"),
         TITLE_CALLEES: _neighbours(callees),
         TITLE_EXTERNS: _lines([f"- {name}" for name in externs]),
+        TITLE_STRUCTS: struct_shapes,
         TITLE_COMMON_H: _fenced(common_h, "c"),
         TITLE_IDIOMS: _fenced(idioms, "markdown"),
     }
@@ -777,15 +781,18 @@ def gather(
     notes: str | Notes | None,
     calls: CallIndex | None = None,
     lookalike_floor: float = LOOKALIKE_FLOOR,
+    shapes: structs.Shapes | None = None,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
     missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
     ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
-    functions. ContextPackError for a status outside STATUSES (a typo would silently drop
-    prototypes and look-alikes; review M-6). Unit texts should be read as bytes decoded as
-    strict UTF-8, as check and configure read them, so a lone CR is refused, not translated."""
+    functions. `shapes` are the EXE's struct shapes (structs.load; None when none were built),
+    of which the section shows the ones the row touches. ContextPackError for a status outside
+    STATUSES (a typo would silently drop prototypes and look-alikes; review M-6). Unit texts
+    should be read as bytes decoded as strict UTF-8, as check and configure read them, so a lone
+    CR is refused, not translated."""
     _check_statuses(status)
     calls = calls if calls is not None else CallIndex.build(rows, flat, fixups)
     prototypes = _Prototypes(unit_texts)
@@ -801,6 +808,8 @@ def gather(
         "callees": tuple(_neighbour(va, symbols, status, prototypes)
                          for va in calls.callees_of(row.start)),  # fmt: skip
         "externs": externs(row, fixups, symbols),
+        "struct_shapes": structs.section(shapes, row.start, frozenset(
+            va for va, state in status.items() if state == STATUS_MATCHED)),
         "common_h": common_h,
         "draft": _read(Path(draft_dir) / ghidra.draft_name(row.start)),
         "idioms": idioms,

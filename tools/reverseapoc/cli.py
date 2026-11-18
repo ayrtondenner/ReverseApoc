@@ -39,6 +39,7 @@ from . import (
     session,
     splits,
     stats,
+    structs,
 )
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
@@ -2205,6 +2206,37 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_drive)
 
 
+# ---- structs: struct shapes inferred across functions (todo struct-shapes-across-functions) ----
+
+
+def _cmd_structs(args: argparse.Namespace) -> int:
+    exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
+                                config_root=args.config)  # fmt: skip
+    matched = structs.matched_starts(args.config, exe.stem)
+    shapes = structs.analyze(exe)
+    header, data = structs.write(shapes, matched, repo=args.repo)
+    print(structs.summary(shapes, matched))
+    print(f"wrote {header.as_posix()} and {data.as_posix()}")
+    return 0
+
+
+def _add_structs_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    about = ("infer struct shapes from the field accesses of every game and thunk row of the "
+             "original code, joined across calls, and write them as build/structs/<exe>/"
+             "structs.h (reference C, never included by a unit) and structs.json (what the "
+             "context pack reads); never touches src/ or include/")  # fmt: skip
+    p = sub.add_parser("structs", help=about, description=about)
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
+                   help="where status.csv says which rows are matched; " + default)  # fmt: skip
+    p.add_argument("--repo", type=Path, default=REPO_ROOT, metavar="PATH",
+                   help="the checkout whose build/structs/ is written; " + default)  # fmt: skip
+    p.set_defaults(func=_cmd_structs)
+
+
 def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser, *, media: bool, dest: bool) -> None:
         default = "default: %(default)s"
@@ -2947,6 +2979,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_causes_command(sub)
     _add_compare_objects_command(sub)
     _add_meters_command(sub)
+    _add_structs_command(sub)
     _add_watcom_commands(sub)
     return parser
 

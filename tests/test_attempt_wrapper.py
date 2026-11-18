@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
-from reverseapoc import attempt, check, hooks, lift
+from reverseapoc import attempt, check, hooks, lift, structs
 from reverseapoc.cli import build_parser, main
 from reverseapoc.functions import (
     FunctionRow,
@@ -2543,6 +2543,14 @@ def _common_h(attempt_dir: Path, monkeypatch) -> Path:
     return _add_line(attempt.ROOTS.common_h, "/* made up */\n")
 
 
+def _struct_shapes(attempt_dir: Path, monkeypatch) -> Path:
+    """Made-up shapes of the claimed function (B) in build/structs/ufo2p/structs.json."""
+    made_up = structs.Shape("shape_made_up", (structs.Base(structs.ARG, FUNC_B, 0),), (
+        structs.Field(0, 4, "", (), (FUNC_B,)), structs.Field(4, 2, "s", (), (FUNC_B,))))
+    shapes = structs.Shapes("ufo2p", (made_up,), rows=3, skipped=0, bases=1, links=0, refused=0)
+    return structs.write(shapes, frozenset(), repo=attempt.ROOTS.repo)[1]
+
+
 def _matching_md(attempt_dir: Path, monkeypatch) -> Path:
     return _add_line(attempt.ROOTS.matching, "\nA made-up line.\n")
 
@@ -2787,6 +2795,7 @@ CONTEXT_READS = [  # one change per input attempt context reads (design answer 4
     _orig_and_manifest, _manifest, _functions_csv, _units_csv, _symbols_csv, _status_csv,
     _listing_b, _draft, _draft_removed, _view_unit_ab, _view_unit_c, _view_unit_c_removed,
     _common_h, _matching_md, _own_notes, _earlier_notes, _new_earlier_notes, _record_b, _python,
+    _struct_shapes,
 ]
 CONTEXT_UNREAD = [_header_added, _header_changed, _view_cflags, _stray_unit, _census, _listing_a,
                   _other_notes]  # fmt: skip
