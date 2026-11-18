@@ -11,6 +11,15 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-18: agy's GPT-OSS ran a web search mid-session
+
+- Run 20261118-pro stopped on a guardrail after 9 sessions. GPT-OSS 120B (agy 1.5.11) ran agy's
+  `search_web` tool (query "reverseapoc plan.json frame string"), and the step finished before the
+  agy audit stopped the drive for an unknown tool step.
+- The audit failed closed as designed, but the per-session settings never denied the tool, so
+  one search reached the web. The query held only the public project name. Todo
+  agy-search-web-guard denies network tools up front and adds a canary probe for them.
+
 ## 2026-11-18: a Store pwsh alias breaks Codex's sandbox
 
 - Every Codex canary failed with `CreateProcessAsUserW failed: 5 (Access denied)` on every command,
