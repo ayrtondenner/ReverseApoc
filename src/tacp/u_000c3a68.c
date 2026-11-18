@@ -13,6 +13,16 @@ int func_000C3A68(const char *file_path)
 {
     return __clock(file_path);
 }
-INCLUDE_ASM(func_000C3A6D);
+#define CASE_LOWER_FIRST 0x61
+#define CASE_LOWER_LAST 0x7a
+#define CASE_SHIFT 0x20
+
+int func_000C3A6D(int ch)
+{
+    if (ch >= CASE_LOWER_FIRST && ch <= CASE_LOWER_LAST) {
+        ch -= CASE_SHIFT;
+    }
+    return ch;
+}
 INCLUDE_ASM(func_000C3A7B);
 INCLUDE_ASM(func_000C3A89);
