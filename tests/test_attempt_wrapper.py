@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
-from reverseapoc import attempt, check, hooks, lift
+from reverseapoc import attempt, check, contextpack, hooks, lift, signatures
 from reverseapoc.cli import build_parser, main
 from reverseapoc.functions import (
     FunctionRow,
@@ -3050,3 +3050,71 @@ def test_context_cache_misses_when_a_run_becomes_a_hold_run(tree: attempt.Roots,
     assert after[0] == 0 and len(loads) == 2
     assert "made-up earlier note" not in after[1]
     assert _pack(attempt_dir) == after[1].encode("utf-8")
+
+
+# ---- U10: the owner's hint and the signature table reach the pack and its cache key ----------
+
+OWNER_HINT = "made-up: the first argument is a pointer to a unit struct"
+
+
+def _hint_file(tree: attempt.Roots, text: str) -> Path:
+    path = contextpack.hints_path(tree.config, "ufo2p")
+    _write(path, text)
+    return path
+
+
+def test_attempt_context_packs_the_owner_hint_and_signatures(tree: attempt.Roots, monkeypatch,
+                                                             capsys):  # fmt: skip
+    _claim_b(tree, monkeypatch)
+    _hint_file(tree, f'0x{FUNC_B:08X} = "{OWNER_HINT}"\n0x{FUNC_A:08X} = "made-up: other"\n')
+    assert _run(["attempt", "context"]) == 0, capsys.readouterr().err
+    pack = capsys.readouterr().out
+    assert _section(pack, "Owner hints").strip() == f"```text\n{OWNER_HINT}\n```"
+    signatures_body = _section(pack, "Callee signatures")
+    assert "no signature table at" in signatures_body
+    assert "- func_00010020 (game, unmatched): not known" in signatures_body
+    table = signatures.table_path(tree.repo, "ufo2p")
+    data = attempt.exe_inputs("ufo2p", orig=tree.orig, manifest=tree.manifest, config=tree.config)
+    signatures.write(table, data.rows, {FUNC_C: signatures.Entry(0, 0, False)})
+    assert _run(["attempt", "context"]) == 0
+    signatures_body = _section(capsys.readouterr().out, "Callee signatures").strip()
+    assert signatures_body == ("- func_00010020 (game, unmatched): void func_00010020(void); "
+                               "lifter: no args, no result")  # fmt: skip
+
+
+def test_context_cache_misses_on_a_new_hint_or_table(tree: attempt.Roots, monkeypatch, capsys,
+                                                     loads):  # fmt: skip
+    _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _section(first[1], "Owner hints").strip() == "none"
+    _hint_file(tree, f'0x{FUNC_B:08X} = "{OWNER_HINT}"\n')
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert OWNER_HINT in _section(after[1], "Owner hints")
+    rows = read_functions_csv(tree.config / "ufo2p" / "functions.csv")
+    signatures.write(signatures.table_path(tree.repo, "ufo2p"), rows, {})
+    assert _attempt(capsys, "context")[0] == 0 and len(loads) == 3
+
+
+def _shape(length: int, blocks: int, branches: int) -> dict:
+    return {"length": length, "blocks": blocks, "branches": branches}
+
+
+def test_check_summary_prints_the_shape_of_ours_against_the_original():
+    """Todo structure-first-large-functions: the claimed function's counts, ours | original,
+    just before the region board; an older document without them prints nothing new."""
+    doc = _check_doc(ok=False)
+    fn = doc["functions"][0]
+    plain = attempt._check_summary(doc, FUNC, ["BOARD"])
+    fn["shape"] = {"ours": _shape(412, 23, 18), "original": _shape(420, 24, 19)}
+    lines = attempt._check_summary(doc, FUNC, ["BOARD"])
+    shape = ("    shape: ours 412 B, 23 blocks, 18 branches | original 420 B, 24 blocks, "
+             "19 branches")  # fmt: skip
+    assert lines == [*plain[: plain.index("BOARD")], shape, *plain[plain.index("BOARD"):]]
+    fn["shape"] = {"ours": _shape(16, 1, 0), "original": _shape(16, 1, 0)}
+    assert ("    shape: ours 16 B, 1 block, 0 branches | original 16 B, 1 block, 0 branches "
+            "(same)") in attempt._check_summary(doc, FUNC)  # fmt: skip
+    other = _check_doc(ok=False)
+    other["functions"][0]["shape"] = fn["shape"]
+    assert not any("shape:" in line for line in attempt._check_summary(other, "func_other"))

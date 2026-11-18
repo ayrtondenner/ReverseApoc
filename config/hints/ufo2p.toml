@@ -1,0 +1,12 @@
+# Owner hints for UFO2P.EXE functions: the owner writes them, nobody else. Each one appears
+# verbatim in that function's context pack, in its "Owner hints" section (attempt context and
+# the driver's packs read this file). A hint passes what a session cannot see in the bytes: a
+# type, a struct, a known flag, the reason the last attempt stalled.
+#
+# One entry per function, keyed by its row start in functions.csv, written 0x and 8 hex
+# digits; the value is free text (a """ string keeps line breaks). A key that is no game or
+# thunk row start fails the pack, so a typo never drops a hint silently. For example:
+#
+# 0x0001A2B0 = """
+# The first argument is a pointer to the vehicle struct; the second is a tile index.
+# """

@@ -25,9 +25,12 @@ from reverseapoc.symbols import SymbolTable
 
 ORDER = (
     "Target listing",
+    "Control-flow outline",
     "Unit file",
+    "Owner hints",
     "Callers",
     "Callees",
+    "Callee signatures",
     "D_ externs",
     "include/common.h",
     "Ghidra draft",
@@ -691,3 +694,111 @@ def test_pack_is_deterministic():
     forward = {0x100: (*TARGET[:8], "y", "z"), 0x200: (*TARGET[:8], "z", "y")}
     backward = dict(reversed(forward.items()))
     assert contextpack.lookalikes(TARGET, forward) == contextpack.lookalikes(TARGET, backward)
+
+
+# ---- owner hints, callee signatures and the control-flow outline (U10 todos) ----
+
+HINT = "made-up: the first argument is a pointer to the unit struct; ignore the dead store"
+SIGNATURE_LINES = ("- func_00010020 (game, unmatched): int func_00010020(int); lifter: args in "
+                   "eax, the result in eax",)  # fmt: skip
+OUTLINE = "16 bytes: 1 block, 0 branches (0 conditional), 0 loops, 0 switches, 0 calls, 1 return"
+
+
+def test_new_sections_render_in_place():
+    pack = build_pack(**_inputs(hint=HINT, callee_signatures=SIGNATURE_LINES, outline=OUTLINE))
+    body = {s.title: s.body for s in pack.sections}
+    assert body["Owner hints"] == f"```text\n{HINT}\n```"
+    assert body["Callee signatures"] == SIGNATURE_LINES[0]
+    assert body["Control-flow outline"] == f"```text\n{OUTLINE}\n```"
+    assert _headings(pack.text) == list(ORDER)
+
+
+def test_new_sections_say_none_without_input():
+    body = {s.title: s.body for s in build_pack(**_inputs()).sections}
+    for title in ("Owner hints", "Callee signatures", "Control-flow outline"):
+        assert body[title] == "none", title
+
+
+def test_owner_hints_are_never_cut_and_signatures_then_outline_go_after_the_draft():
+    inputs = {"hint": HINT * 20, "callee_signatures": ("- s" + "s" * 2000,),
+              "outline": "o" * 2000}  # fmt: skip
+    bare = _size(**_big_inputs(lookalikes=(), callers=(), draft=None, notes=None, **inputs,
+                               ))  # fmt: skip
+    pad = PACK_CAP - bare + 2  # one byte over with the signatures and the outline kept
+    pack = build_pack(**_big_inputs(pad, notes=None, **inputs))
+    assert pack.pack_bytes <= PACK_CAP
+    assert pack.truncated == (*LOOKS, *CALLERS, "draft", "callee signatures")
+    body = {s.title: s.body for s in pack.sections}
+    assert body["Callee signatures"] == "cut (1 item)"
+    assert body["Owner hints"] == f"```text\n{HINT * 20}\n```"
+    pack = build_pack(**_big_inputs(pad + 2100, notes=None, **inputs))
+    assert pack.truncated[-2:] == ("callee signatures", "control-flow outline")
+    assert "callee signatures, control-flow outline" in pack.text.split("\n## ")[0]
+
+
+def _hints(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "ufo2p.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_read_hints_by_row_start(tmp_path: Path):
+    path = _hints(tmp_path, f'0x00010010 = """\n{HINT}\n"""\n0x00010020 = "made-up: a flag"\n')
+    hints = contextpack.read_hints(path, {FUNC_B, FUNC_C})
+    assert hints == {FUNC_B: HINT + "\n", FUNC_C: "made-up: a flag"}
+    assert contextpack.read_hints(tmp_path / "none.toml", {FUNC_B}) == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        ('func_00010010 = "x"\n', "func_00010010"),  # not an address
+        ('0x10010 = "x"\n', "0x10010"),  # not eight hex digits
+        ("0x00010010 = 3\n", "0x00010010"),  # not text
+        ('0x00010010 = " "\n', "0x00010010"),  # blank
+        ('0x00010030 = "x"\n', "0x00010030"),  # no row starts there
+        ("0x00010010 = \n", "ufo2p.toml"),  # not TOML
+    ],
+)
+def test_read_hints_refuses_a_bad_entry(tmp_path: Path, text: str, match: str):
+    with pytest.raises(ContextPackError, match=match):
+        contextpack.read_hints(_hints(tmp_path, text), {FUNC_B, FUNC_C})
+
+
+@pytest.mark.parametrize("stem", ["ufo2p", "tacp"])
+def test_committed_hint_files_hold_no_hint(stem: str):
+    """The owner writes hints; the repository ships each file as a commented example only."""
+    path = REPO_ROOT / "config" / "hints" / f"{stem}.toml"
+    assert path.is_file()
+    assert contextpack.read_hints(path, set()) == {}
+
+
+def test_gather_carries_the_hint_and_the_callee_signatures(tmp_path: Path):
+    from reverseapoc.signatures import Entry, Table
+
+    table = Table({FUNC_C: Entry(1, 0, True)})
+    inputs = _gather(1, tmp_path, {}, hint=HINT, signatures=table)
+    assert inputs["hint"] == HINT
+    assert inputs["callee_signatures"] == ("- func_00010020 (game, unmatched): int "
+                                           "func_00010020(int); lifter: args in eax, the result "
+                                           "in eax",)  # fmt: skip
+    matched = _gather(0, tmp_path, {FUNC_B: "matched"}, signatures=table)
+    assert matched["callee_signatures"] == ("- func_00010010 (game, matched): int "
+                                            "func_00010010(void); from its unit",)  # fmt: skip
+    missing = _gather(1, tmp_path, {}, signatures=Table({}, "made-up: no table here"))
+    assert missing["callee_signatures"] == ("made-up: no table here",
+                                            "- func_00010020 (game, unmatched): not known")
+    absent = _gather(0, tmp_path, {}, signatures=Table({}))
+    assert absent["callee_signatures"] == ("- func_00010010 (game, unmatched): not in the "
+                                           "table",)  # fmt: skip
+    build_pack(**inputs)
+
+
+def test_gather_outlines_only_large_rows(tmp_path: Path, monkeypatch):
+    from reverseapoc import structure
+
+    assert _gather(1, tmp_path, {})["outline"] is None  # 16 bytes: under the line
+    monkeypatch.setattr(structure, "MIN_SIZE", 16)
+    outline = _gather(1, tmp_path, {})["outline"]
+    assert outline.splitlines()[0].startswith("16 bytes: 1 block, 0 branches")
+    assert "B0  0x00010010..0x00010020  4 insns, 1 call: ret" in outline

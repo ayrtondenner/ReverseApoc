@@ -2661,3 +2661,19 @@ def test_regions_in_json(env):
                                     CODE_BASE + 0x10, regions=(1, 2, 0))  # fmt: skip
     assert differing.to_json()["bytes"]["regions"] == [1, 2, 0]
     assert sum(differing.regions) == differing.differing
+
+
+def test_check_records_the_shape_of_ours_and_the_original(env, monkeypatch, capsys):
+    """Todo structure-first-large-functions: code length, blocks and branches of each side,
+    as structure.shape counts them over that side's relocated fields; counts only, no byte."""
+    from reverseapoc import structure
+
+    result = run_check(env)
+    (fn,) = result.functions
+    ours, theirs = fn.shape
+    assert ours == structure.shape(GOOD_OURS, CODE_BASE, fn.reloc.ours)
+    assert theirs.blocks == ours.blocks and theirs.branches == ours.branches
+    patch_tools(monkeypatch)
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), "--json"]) == 0
+    (fn_doc,) = json.loads(capsys.readouterr().out)["functions"]
+    assert fn_doc["shape"] == {"ours": ours.to_json(), "original": theirs.to_json()}

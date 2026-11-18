@@ -2,9 +2,11 @@
 """The per-function context pack (AGT-08, D-13, D-14): the bounded, reproducible facts every
 matching attempt starts from.
 
-A pack holds, in this fixed order (D-13): the target asm listing, the unit file, the callers and
-callees with their match status (and a matched one's C prototype), the `D_` externs the function
-touches, include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md
+A pack holds, in this fixed order (D-13): the target asm listing, its control-flow outline (for a
+row of structure.MIN_SIZE bytes and up), the unit file, the owner's hint (config/hints/<exe>.toml),
+the callers and callees with their match status (and a matched one's C prototype), each callee's
+signature (its C prototype, else the whole-program signature table's), the `D_` externs the
+function touches, include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md
 idioms, the earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike
 functions with their C.
 
@@ -17,17 +19,19 @@ from __future__ import annotations
 
 import difflib
 import re
+import tomllib
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Container, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import asm, check, ghidra
+from . import asm, check, ghidra, structure
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
+from .signatures import Table
 from .status import MATCHED, PARTIAL
 from .symbols import SymbolTable
 from .targets import REPO_ROOT
@@ -59,9 +63,15 @@ TITLE_IDIOMS = "Matching idioms"
 TITLE_GIVEUPS = "Earlier give-ups"  # 07.2-02 (999.5): one line per committed give-up
 TITLE_NOTES = "Earlier notes"
 TITLE_LOOKALIKES = "Look-alikes"
-ORDER = (TITLE_LISTING, TITLE_UNIT, TITLE_CALLERS, TITLE_CALLEES, TITLE_EXTERNS, TITLE_COMMON_H,
-         TITLE_DRAFT, TITLE_BEST_C, TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES,
-         TITLE_LOOKALIKES)  # fmt: skip
+# U10 todos: the owner's hint (owner-hint-file), the callees' signatures from the whole-program
+# table (whole-program-signature-table) and, for a row of structure.MIN_SIZE bytes and up, its
+# control-flow outline (structure-first-large-functions)
+TITLE_HINTS = "Owner hints"
+TITLE_SIGNATURES = "Callee signatures"
+TITLE_OUTLINE = "Control-flow outline"
+ORDER = (TITLE_LISTING, TITLE_OUTLINE, TITLE_UNIT, TITLE_HINTS, TITLE_CALLERS, TITLE_CALLEES,
+         TITLE_SIGNATURES, TITLE_EXTERNS, TITLE_COMMON_H, TITLE_DRAFT, TITLE_BEST_C,
+         TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES, TITLE_LOOKALIKES)  # fmt: skip
 LOOKALIKE_FLOOR = 0.6  # research A10: a starting metric, tuned from attempts.jsonl later
 LOOKALIKE_TOP = 3  # D-13: up to 3 look-alikes
 
@@ -273,13 +283,17 @@ def build_pack(
     idioms: str | None,
     notes: str | Notes | None,
     lookalikes: Sequence[Lookalike],
+    hint: str | None = None,
+    callee_signatures: Sequence[str] = (),
+    outline: str | None = None,
     cap: int = PACK_CAP,
 ) -> Pack:
     """The pack of one function, its sections in the D-13 order, at most `cap` bytes of UTF-8
     (D-14). Required sections are never cut. Until the pack fits, the optional ones are cut in
     a fixed order: look-alikes from the last (least similar) one, then the earlier best C
-    (07.2-02), then callers from the last, then the draft, then (fix round 1 M11, an extension
-    of D-14) the earlier notes: their attempt records oldest first, then the give-ups oldest
+    (07.2-02), then callers from the last, then the draft, then the callee signatures and the
+    control-flow outline (U10: each one item), then (fix round 1 M11, an extension of D-14) the
+    earlier notes: their attempt records oldest first, then the give-ups oldest
     first (07.2-02: the dense signal, kept over the records), then their notes.md texts oldest
     first. Each cut item is
     listed in `truncated` (and to_json); the header line `Truncated:` only counts them per
@@ -295,8 +309,10 @@ def build_pack(
         TITLE_EXTERNS: _lines([f"- {name}" for name in externs]),
         TITLE_COMMON_H: _fenced(common_h, "c"),
         TITLE_IDIOMS: _fenced(idioms, "markdown"),
+        TITLE_HINTS: _fenced(hint, "text"),  # the owner's word: never cut
     }
-    optional = _Optional(tuple(lookalikes), tuple(callers), draft, Notes.of(notes))
+    optional = _Optional(tuple(lookalikes), tuple(callers), draft, Notes.of(notes),
+                         tuple(callee_signatures), outline)  # fmt: skip
     truncated: list[str] = []
     while True:
         sections = optional.sections(required)
@@ -313,21 +329,25 @@ def build_pack(
 @dataclass
 class _Optional:
     """The sections build_pack may cut, in D-14 order: look-alikes, the earlier best C
-    (07.2-02), callers, the draft, then the earlier notes (M11: records, then the give-ups,
-    then the texts). Look-alikes and callers are cut from the end of their lists, notes and
-    give-ups from the start (the oldest); the `*_kept` and `*_cut` counts say where each
-    stands."""
+    (07.2-02), callers, the draft, the callee signatures, the outline, then the earlier notes
+    (M11: records, then the give-ups, then the texts). Look-alikes and callers are cut from
+    the end of their lists, notes and give-ups from the start (the oldest); the `*_kept` and
+    `*_cut` counts say where each stands."""
 
     lookalikes: tuple[Lookalike, ...]
     callers: tuple[Neighbour, ...]
     draft: str | None
     notes: Notes
+    signatures: tuple[str, ...] = ()
+    outline: str | None = None
 
     def __post_init__(self) -> None:
         self.lookalikes_kept = len(self.lookalikes)
         self.best_c_kept = bool(self.notes.best_c)
         self.callers_kept = len(self.callers)
         self.draft_kept = bool(self.draft)
+        self.signatures_kept = bool(self.signatures)
+        self.outline_kept = bool(self.outline)
         self.records_cut = 0
         self.giveups_cut = 0
         self.texts_cut = 0
@@ -346,6 +366,12 @@ class _Optional:
         if self.draft_kept:
             self.draft_kept = False
             return "draft"
+        if self.signatures_kept:
+            self.signatures_kept = False
+            return "callee signatures"
+        if self.outline_kept:
+            self.outline_kept = False
+            return "control-flow outline"
         return self._cut_notes()
 
     def _cut_notes(self) -> str | None:
@@ -373,6 +399,10 @@ class _Optional:
             parts.append(f"{len(self.callers) - self.callers_kept} of {len(self.callers)} callers")
         if self.draft and not self.draft_kept:
             parts.append("draft")
+        if self.signatures and not self.signatures_kept:
+            parts.append("callee signatures")
+        if self.outline and not self.outline_kept:
+            parts.append("control-flow outline")
         if self.records_cut:
             parts.append(f"{self.records_cut} of {len(self.notes.records)} attempt records")
         if self.giveups_cut:
@@ -387,6 +417,10 @@ class _Optional:
         draft = _fenced(self.draft, "c") if self.draft_kept or not self.draft else _cut_mark(1)
         best_c = self.notes.best_c
         best = _fenced(best_c, "c") if self.best_c_kept or not best_c else _cut_mark(1)
+        kept = self.signatures_kept or not self.signatures
+        signatures = _lines(self.signatures) if kept else _cut_mark(1)
+        kept = self.outline_kept or not self.outline
+        outline = _fenced(self.outline, "text") if kept else _cut_mark(1)
         gone = self.notes.best_gone  # todo near-miss-lane
         if gone and not best_c:
             best = BEST_C_GONE.format(best=gone)
@@ -396,6 +430,8 @@ class _Optional:
             **required,
             TITLE_CALLERS: _kept(callers, len(self.callers), "\n"),
             TITLE_DRAFT: draft,
+            TITLE_SIGNATURES: signatures,
+            TITLE_OUTLINE: outline,
             TITLE_BEST_C: best,
             TITLE_GIVEUPS: _giveups_body(self.notes.giveups, self.giveups_cut),
             TITLE_NOTES: _notes_body(self.notes, self.texts_cut, self.records_cut),
@@ -740,6 +776,77 @@ class _Prototypes:
         return self.parsed[row.unit].get(name)
 
 
+# ---- the owner's hints (todo owner-hint-file) ----
+
+HINTS_DIR = "hints"  # config/hints/<exe>.toml
+_HINT_KEY = re.compile(r"0x[0-9A-Fa-f]{8}")
+
+
+def hints_path(config: Path, stem: str) -> Path:
+    return Path(config) / HINTS_DIR / f"{stem}.toml"
+
+
+def read_hints(path: Path, starts: Container[int]) -> dict[int, str]:
+    """The owner's hints at `path` by row start: TOML whose every key is a row start written
+    `0x` and eight hex digits, each value a non-blank string the pack shows verbatim. No file
+    is no hint; a key that is no start in `starts`, or any other shape, is ContextPackError
+    naming the file and the key (a typo would silently drop the owner's hint)."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ContextPackError(f"{path}: not UTF-8 TOML: {exc}") from exc
+    hints = {}
+    for key, value in doc.items():
+        if not _HINT_KEY.fullmatch(key):
+            raise ContextPackError(f"{path}: key {key!r} is not a row start as 0x and 8 hex digits")
+        if not isinstance(value, str) or not value.strip():
+            raise ContextPackError(f"{path}: hint {key} must be a non-blank string")
+        if int(key, 16) not in starts:
+            raise ContextPackError(f"{path}: no game or thunk row starts at {key}")
+        hints[int(key, 16)] = value
+    return hints
+
+
+def _signature_lines(
+    vas: Sequence[int],
+    table: Table | None,
+    symbols: SymbolTable,
+    status: Mapping[int, str],
+    prototypes: _Prototypes,
+) -> tuple[str, ...]:
+    """One line per callee: a matched callee's own C prototype, else the table's entry. When
+    the table is missing or stale its note comes first, and the others are `not known`."""
+    if table is None:
+        return ()
+    lines = [table.note] if table.note else []
+    for va in vas:
+        neighbour = _neighbour(va, symbols, status, prototypes)
+        entry = table.entries.get(va)
+        if neighbour.prototype:
+            text = f"{one_line(neighbour.prototype)}; from its unit"
+        elif entry is not None:
+            text = entry.prototype(neighbour.name)
+        else:
+            text = "not known" if table.note else "not in the table"
+        lines.append(f"- {neighbour.name} ({neighbour.kind}, {neighbour.status}): {text}")
+    return tuple(lines)
+
+
+def _outline(row: FunctionRow, flat: bytes | bytearray, fixups: Sequence[Fixup],
+             rows: Sequence[FunctionRow]) -> str | None:  # fmt: skip
+    """The control-flow outline of a row of structure.MIN_SIZE bytes and up, else None."""
+    if not structure.wanted(row.end - row.start):
+        return None
+    items, by_field = _row_items(row, flat, asm.FixupIndex(fixups).overlapping(row.start, row.end))
+    insns = [item for item in items if isinstance(item, Insn)]
+    cases = asm.case_targets(row, flat=flat, fixups=fixups, rows=rows)
+    return structure.outline(insns, row.start, row.end, cases=cases,
+                             target=lambda insn: asm.branch_target(insn, by_field))  # fmt: skip
+
+
 def _check_statuses(status: Mapping[int, str]) -> None:
     unknown = sorted({value for value in status.values() if value not in STATUSES})
     if unknown:
@@ -777,13 +884,18 @@ def gather(
     notes: str | Notes | None,
     calls: CallIndex | None = None,
     lookalike_floor: float = LOOKALIKE_FLOOR,
+    hint: str | None = None,
+    signatures: Table | None = None,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
     missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
     ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
-    functions. ContextPackError for a status outside STATUSES (a typo would silently drop
+    functions. `hint` is the owner's hint for the row (read_hints), shown verbatim; with
+    `signatures` (the whole-program table, signatures.load) each callee gets a signature line;
+    a row of structure.MIN_SIZE bytes and up gets its control-flow outline. ContextPackError
+    for a status outside STATUSES (a typo would silently drop
     prototypes and look-alikes; review M-6). Unit texts should be read as bytes decoded as
     strict UTF-8, as check and configure read them, so a lone CR is refused, not translated."""
     _check_statuses(status)
@@ -806,6 +918,10 @@ def gather(
         "idioms": idioms,
         "notes": notes,
         "lookalikes": similar,
+        "hint": hint,
+        "callee_signatures": _signature_lines(calls.callees_of(row.start), signatures, symbols,
+                                              status, prototypes),  # fmt: skip
+        "outline": _outline(row, flat, fixups, rows),
     }
 
 

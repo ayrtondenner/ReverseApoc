@@ -37,6 +37,7 @@ from . import (
     quota,
     search,
     session,
+    signatures,
     splits,
     stats,
 )
@@ -1628,6 +1629,31 @@ def _add_context_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_context)
 
 
+def _cmd_signatures(args: argparse.Namespace) -> int:
+    data = attempt.exe_inputs(args.exe, orig=args.orig, manifest=args.manifest, config=args.config)
+    table = signatures.build(data)
+    path = signatures.table_path(attempt.ROOTS.repo, data.stem)
+    signatures.write(path, data.rows, table)
+    refused = sum(1 for entry in table.values() if entry.refused)
+    print(f"wrote {path} ({len(table) - refused} inferred, {refused} refused)")
+    return 0
+
+
+def _add_signatures_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "signatures",
+        help="write the whole-program signature table (every game/thunk row's register and "
+        "stack arguments and result, as the lifter infers them) to build/signatures/<exe>.json "
+        "(gitignored), which the context pack reads for a function's callees",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.set_defaults(func=_cmd_signatures)
+
+
 def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "attempt",
@@ -2939,6 +2965,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_land_command(sub)
     _add_gate_command(sub)
     _add_context_command(sub)
+    _add_signatures_command(sub)
     _add_attempt_command(sub)
     _add_drive_command(sub)
     _add_mechanics_command(sub)
@@ -2981,6 +3008,7 @@ _ERRORS = (
     StatusError,
     AttemptError,
     ContextPackError,
+    signatures.SignatureError,
     MechanicsError,
     flags.FlagsError,
     stats.StatsError,

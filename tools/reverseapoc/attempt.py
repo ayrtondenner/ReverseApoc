@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, ghidra, lift, unitdefs
+from . import asm, check, contextpack, ghidra, lift, signatures, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -759,6 +759,23 @@ def _board(claim: Claim, n: int, doc: Mapping[str, Any]) -> list[str]:
         return [f"    region board: not shown ({_one_line(exc)})"]
 
 
+def _shape_text(side: Mapping[str, Any]) -> str:
+    blocks, branches = side["blocks"], side["branches"]
+    return (f"{side['length']} B, {blocks} block{'' if blocks == 1 else 's'}, "
+            f"{branches} branch{'' if branches == 1 else 'es'}")  # fmt: skip
+
+
+def _shape_lines(fn: Mapping[str, Any]) -> list[str]:
+    """check's functions[].shape (todo structure-first-large-functions): code length, blocks
+    and branches of ours beside the original's; nothing for an older document without it."""
+    shape = fn.get("shape")
+    if not isinstance(shape, Mapping):
+        return []
+    ours, original = shape["ours"], shape["original"]
+    same = " (same)" if ours == original else ""
+    return [f"    shape: ours {_shape_text(ours)} | original {_shape_text(original)}{same}"]
+
+
 def _check_summary(
     doc: Mapping[str, Any], function: str | None = None, board: Sequence[str] = ()
 ) -> list[str]:
@@ -774,6 +791,7 @@ def _check_summary(
         lines += [f"    reloc: {problem}" for problem in fn["reloc"]["problems"]]
         lines += _window_lines(fn)
         if fn["name"] == function:
+            lines += _shape_lines(fn)
             lines += board
     lines += [f"  problem: {p['name']} {p['va'] or ''} {p['reason']}" for p in doc["problems"]]
     lines += [f"  stub: {s['name']} {s['va']}" for s in doc.get("stubs", ())]
@@ -1723,8 +1741,13 @@ def make_pack(
 ) -> contextpack.Pack:
     """The D-13 pack of `row`: status from config/<exe>/status.csv, every unit text of the EXE,
     the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
-    idioms and earlier notes. Pass `calls` to reuse one CallIndex across functions."""
+    idioms and earlier notes, the owner's hint from config/hints/<exe>.toml and the signature
+    table from build/signatures/<exe>.json (U10). Pass `calls` to reuse one CallIndex across
+    functions."""
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
+    starts = {other.start for other in data.rows if other.kind in CLAIMABLE_KINDS}
+    hints = contextpack.read_hints(contextpack.hints_path(config, data.stem), starts)
+    table = signatures.load(signatures.table_path(roots.repo, data.stem), data.rows, data.stem)
     listing_dir = Path(asm_root) / data.stem
     inputs = contextpack.gather(
         row, rows=data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
@@ -1732,6 +1755,7 @@ def make_pack(
         draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
+        hint=hints.get(row.start), signatures=table,
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 
@@ -1809,7 +1833,9 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
              *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
     if form == "context":
         facts["notes"] = _notes_digest(claim)
-        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching]
+        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching,
+                  contextpack.hints_path(ROOTS.config, claim.exe),
+                  signatures.table_path(ROOTS.repo, claim.exe)]  # fmt: skip
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
 
 
