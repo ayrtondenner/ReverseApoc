@@ -911,8 +911,8 @@ _FLAGS_TEXT = " under approved flags "
 TOOLING_TYPES = ("feat", "fix", "refactor", "perf", "test", "build", "ci", "style")
 PLAN_TYPES = ("docs",)
 CO_AUTHOR, MATCHED_BY = "co-authored-by", "matched-by"
-CREDIT_NAMES = 2  # a match with more co-authors than this is credited to their count
 MATCHED_BY_TOOL = "reverseapoc "  # Matched-By: reverseapoc drive / lift name the tool, no model
+MATCHED_BY_DRIVE = MATCHED_BY_TOOL + "drive"  # the driver ran the session; the model wrote the C
 RUN_KIND, RUN_FINAL = "run", ("ENDED", "STOPPED")  # STARTED alone is a run still going
 _GIT_SAFE = ("-c", "safe.directory=*")
 _RECORD, _UNIT_SEP, _TRAILER_SEP = "\x1e", "\x1f", "\x1d"
@@ -1100,17 +1100,18 @@ def _match_size(rest: str) -> int:
 
 
 def _credit(trailers: Iterable[tuple[str, str]]) -> str:
-    """Who a match is credited to: its Co-Authored-By name (two joined by "and", more counted),
-    else the model a Matched-By names, else "no co-author"."""
+    """Who a match is credited to (owner ruling 2026-11-18): the reverseapoc tool other than
+    the driver a Matched-By names (`reverseapoc lift`, the converter, wrote the C), else the
+    first Co-Authored-By name (a landing from a hold run lists its own model first, then one
+    line per other arm that held the function exact), else the model a Matched-By names, else
+    "no co-author"."""
     pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
-    names = sorted({value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR})
-    if len(names) > CREDIT_NAMES:
-        return f"{len(names)} co-authors"
-    if names:
-        return " and ".join(names)
+    tools = [value for key, value in pairs if key == MATCHED_BY
+             and value.startswith(MATCHED_BY_TOOL) and value != MATCHED_BY_DRIVE]  # fmt: skip
+    names = [value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR]
     models = [value for key, value in pairs
               if key == MATCHED_BY and not value.startswith(MATCHED_BY_TOOL)]  # fmt: skip
-    return models[0] if models else "no co-author"
+    return next(iter(tools + names + models), "no co-author")
 
 
 def _flag_ranges(ids: Iterable[int]) -> str:
@@ -1177,17 +1178,28 @@ def _most(counts: Mapping[str, int]) -> tuple[str, int]:
     return min(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
+def _matches_driver(log: _DayLog) -> str:
+    """The match group that drove the day: the model (credit) with the most matches outside
+    approved flags, "N models: K matches each" when N tie for the most (owner ruling
+    2026-11-18), or the flagged matches together when they outnumber that; "" without one."""
+    top = max(log.unflagged.values(), default=0)
+    if log.flagged > top:
+        return f"flags {_flag_ranges(log.flags)}: {_plural(log.flagged, 'match', 'matches')}"
+    if not top:
+        return ""
+    tied = [name for name, size in log.unflagged.items() if size == top]
+    if len(tied) > 1:
+        return f"{len(tied)} models: {_plural(top, 'match', 'matches')} each"
+    return f"{tied[0]}: {_plural(top, 'match', 'matches')}"
+
+
 def _driver(log: _DayLog) -> str:
-    """The day's biggest driver: the largest match group (the flagged matches together, else
-    each credit), else the last merge that changed the tables, its largest drive run, its top
-    tooling scope, its plans, its other commits, its merges or its learnings; "" for a day with
-    nothing logged."""
-    groups = dict(log.unflagged)
-    if log.flagged:
-        groups[f"flags {_flag_ranges(log.flags)}"] = log.flagged
-    if groups:
-        name, size = _most(groups)
-        return f"{name}: {_plural(size, 'match', 'matches')}"
+    """The day's biggest driver: its match group (_matches_driver), else the last merge that
+    changed the tables, its largest drive run, its top tooling scope, its plans, its other
+    commits, its merges or its learnings; "" for a day with nothing logged."""
+    matches = _matches_driver(log)
+    if matches:
+        return matches
     if log.table_merges:
         return f"merge: {log.table_merges[-1]}"
     if log.runs:
@@ -2649,9 +2661,11 @@ TIMELINE_CAPTION = (
     "of each day since the first commit, re-derived from the history of each EXE's status, "
     "functions and units tables the way the figures above are (a change counts on the day it "
     "reached main), so each line ends at today's figure. Each marker's tooltip and the table "
-    "name the day's biggest driver; each table cell gives strict with its change, then "
-    "functions and fuzzy, and the table also sums what the day did: match commits by "
-    "co-author, flags approvals, drive runs, tooling and plan commits, and learnings.")
+    "name the day's biggest driver (the model with the most matches that day, or how many "
+    "models tie for the most); each table cell gives strict with its change, then functions "
+    "and fuzzy, and the table also sums what the day did: match commits by the model that made "
+    "them (its first co-author, or the converter), flags approvals, drive runs, tooling and "
+    "plan commits, and learnings.")
 
 
 def _timeline_html(timeline: Timeline | None) -> list[str]:

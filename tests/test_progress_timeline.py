@@ -269,8 +269,52 @@ def test_match_credits_and_the_biggest_driver(tmp_path):
     crowd = commit(progress, "e8", "2026-10-07", "feat(ufo2p): match func_00010020 in u (C89)",
                    OPUS, HAIKU, "Co-Authored-By: GLM-5.3 <noreply@z.ai>")
     _day, two, three = progress.build_timeline([], [commits[0], pair, crowd], (), (), ()).days
-    assert two.driver == "Claude Fable 5.1 and Claude Opus 5.5: 1 match"
-    assert three.driver == "3 co-authors: 1 match"
+    assert two.driver == "Claude Opus 5.5: 1 match"  # the first co-author made the match
+    assert three.driver == "Claude Opus 5.5: 1 match"
+
+
+def test_a_landing_credits_its_own_model_and_a_tie_counts_the_models():
+    """Owner ruling 2026-11-18 (todo progress-coauthor-driver-label): a landing from a hold run
+    carries one Co-Authored-By per arm that held the function exact after its own credit lines,
+    so the first co-author is the model that matched. The day names the model with the most
+    matches; models tied for the most are counted ("N models")."""
+    progress = timeline_module()
+    sonnet = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+    holders = (OPUS, sonnet, "Co-Authored-By: GLM-5.3 <noreply@z.ai>",
+               "Co-Authored-By: GPT-6.1 Terra <noreply@openai.com>")  # fmt: skip
+    day = "2026-11-11"
+    landings = [commit(progress, f"l{n}", day, f"feat(tacp): match func_0009D1{n}0 in u (C89)",
+                       HAIKU, DRIVE, *holders) for n in range(3)]  # fmt: skip
+    alone = commit(progress, "l9", day, "feat(ufo2p): match func_00038550 in u (C89)", sonnet,
+                   DRIVE)  # fmt: skip
+    (found,) = progress.build_timeline([], [*landings, alone], (), (), ()).days
+    assert found.driver == "Claude Haiku 5.5: 3 matches"
+    assert found.summary.startswith("4 matches (Claude Haiku 5.5 3, Claude Sonnet 5.5 1)")
+    tie = [commit(progress, "t1", day, "feat(ufo2p): match func_00010000 in u (C89)", HAIKU),
+           commit(progress, "t2", day, "feat(ufo2p): match func_00010010 in u (C89)", OPUS),
+           commit(progress, "t3", day, "feat(tacp): match func_00020000 in u (C89)", DRIVE,
+                  "Matched-By: deepseek/deepseek-v4.1-flash")]  # fmt: skip
+    (tied,) = progress.build_timeline([], tie, (), (), ()).days
+    assert tied.driver == "3 models: 1 match each"
+    # A tie with the flags group goes to the models; more flagged matches name the flags.
+    flagged = commit(progress, "t4", day, "feat(tacp): match func_00020010 in u under approved "
+                     "flags F-0070 (C89)", DRIVE, OPUS)  # fmt: skip
+    (with_flags,) = progress.build_timeline([], [*tie, flagged], (), (), ()).days
+    assert with_flags.driver == "3 models: 1 match each"
+    more = commit(progress, "t5", day, "feat(tacp): match func_00020020 in u under approved "
+                  "flags F-0071 (C89)", DRIVE, OPUS)  # fmt: skip
+    (flags_win,) = progress.build_timeline([], [*tie, flagged, more], (), (), ()).days
+    assert flags_win.driver == "flags F-0070..F-0071: 2 matches"
+
+
+def test_a_converter_match_is_credited_to_the_converter():
+    """`Matched-By: reverseapoc lift` names the converter that wrote the C: it is the credit,
+    not the session's co-author; `Matched-By: reverseapoc drive` names no one."""
+    progress = timeline_module()
+    lift = commit(progress, "c1", "2026-11-03", "feat(ufo2p): match func_000B63C0 in u (C89)",
+                  "Matched-By: reverseapoc lift", "Co-Authored-By: Claude <noreply@anthropic.com>")
+    (found,) = progress.build_timeline([], [lift], (), (), ()).days
+    assert found.driver == "reverseapoc lift: 1 match"
 
 
 def test_flags_approvals_drive_a_day():
