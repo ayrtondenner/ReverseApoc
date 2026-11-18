@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import batch, check, contextpack, omf2elf, relocs, slots, unitdefs
+from . import archive, batch, check, classify, contextpack, omf2elf, relocs, slots, unitdefs
 from .cflags import Rule
 from .check import ExeInputs
 from .fileio import write_atomic
@@ -131,6 +131,9 @@ class SearchResult:
     bodies: int  # distinct function bodies judged
     slots: batch.SlotMap  # the winner's best cell against the row
     scalars: tuple[int, ...]  # the winner's mismatched slots that hold scalars
+    # What archived_search records: the base, the seeds, each variant that became the base and
+    # the winner, each measured by its best cell (todo candidate-archive).
+    kept: tuple[archive.Entry, ...] = ()
 
     @property
     def exact(self) -> bool:
@@ -1188,13 +1191,18 @@ class _Run:
     compiles: int = 0
     variants: int = 0
     verdicts: dict[str, batch.Verdict] = field(default_factory=dict)  # by batch.body_key
+    kept: list[_Scored] = field(default_factory=list)  # what SearchResult.kept is read from
 
 
 @dataclass(frozen=True)
 class _Scored:
     candidate: Candidate
     records: list[dict[str, Any]]  # one per cell
-    objects: list[Path]  # one per cell
+    compiled: list[batch.Compiled]  # one per cell
+
+    @property
+    def objects(self) -> list[Path]:
+        return [one.job.obj for one in self.compiled]
 
     @property
     def rank(self) -> tuple[bool, float, float]:
@@ -1252,7 +1260,7 @@ def _wave(run: _Run, wave: Sequence[Candidate]) -> list[_Scored]:
     scored = []
     for n, candidate in enumerate(wave):
         cells = compiled[n * per_variant : (n + 1) * per_variant]
-        scored.append(_Scored(candidate, _records(run, cells), [one.job.obj for one in cells]))
+        scored.append(_Scored(candidate, _records(run, cells), list(cells)))
     return scored
 
 
@@ -1299,6 +1307,7 @@ def _walk(run: _Run, seen: set[str], best: _Scored, axis: str) -> _Scored:
         found = max([best, *standing], key=lambda scored: scored.rank)
         if found is not best:
             best = found
+            run.kept.append(best)
             moves = _axis_moves(run, axis, best)
     return best
 
@@ -1330,16 +1339,68 @@ def _result(run: _Run, best: _Scored) -> SearchResult:
     lines = "".join(json.dumps(record) + "\n" for record in records)
     write_atomic(run.root / "results.jsonl", lines.encode("utf-8"))
     slot_map = _slots(run, best.objects[_best_cell(records)])
+    kept = {scored.candidate.text: scored for scored in (*run.kept, best)}
     return SearchResult(path, axes, records, run.compiles, len(run.verdicts), slot_map,
-                        _scalars(text, run.name, slot_map))  # fmt: skip
+                        _scalars(text, run.name, slot_map),
+                        tuple(_archived(run, scored) for scored in kept.values()))  # fmt: skip
+
+
+def _class(run: _Run, record: dict[str, Any], compiled: batch.Compiled) -> str | None:
+    """classify's class of one cell, or None: exact, not compiled, or not readable."""
+    try:
+        return classify.with_class(record, run.exe, run.row.start, compiled).get("class")
+    except _UNREADABLE:
+        return None
+
+
+def _archived(run: _Run, scored: _Scored) -> archive.Entry:
+    """`scored` as an archive entry, measured by its best cell."""
+    best = _best_cell(scored.records)
+    record, text = scored.records[best], scored.candidate.text
+    return archive.Entry(archive.source_key(text), record["exact"], record["score"],
+                         record["stack_score"], _class(run, record, scored.compiled[best]),
+                         "search", text)  # fmt: skip
+
+
+def _seed_text(source: str, name: str) -> str | None:
+    """`source` ready to stand for the base, or None: not ASCII, refused by the check (a
+    #pragma or inline assembly), or with no definition of `name`."""
+    if not source.isascii() or batch.refusal(source) is not None:
+        return None
+    try:
+        return split_declarators(source, function_span(source, name))
+    except batch.BatchError:
+        return None
+
+
+def _seed_candidates(seeds: Sequence[str], name: str, base: str) -> list[Candidate]:
+    """Each seed that can stand for the base and is not the base's own C, once."""
+    keys = {archive.source_key(base)}
+    found = []
+    for seed in seeds:
+        text = _seed_text(seed, name)
+        if text is None or archive.source_key(text) in keys:
+            continue
+        keys.add(archive.source_key(text))
+        found.append(Candidate(text, ("archive",)))
+    return found
 
 
 def run_search(
-    exe: ExeInputs, row: FunctionRow, text: str, rules: Sequence[Rule], *, watcom_dir: Path
+    exe: ExeInputs,
+    row: FunctionRow,
+    text: str,
+    rules: Sequence[Rule],
+    *,
+    watcom_dir: Path,
+    seeds: Sequence[str] = (),
 ) -> SearchResult:
     """Search `text`, which defines the function of `row`, under the unit's committed rule and
     SEARCH_CELLS: walk AXES, and walk them again while a round improves the base. It stops on an
-    exact variant, at BUDGET compile jobs or when the moves run out.
+    exact variant, at BUDGET compile jobs or when the moves run out. Each of `seeds`, other C of
+    the same function, is compiled beside the base in the first wave, and the best of them all
+    is the first base, the base itself on a tie (axis `archive`); with no seeds the search is a
+    function of its input alone, as the curve needs it.
     OUT/<stem>/<start:08x>/ is cleared first: it holds v<nnnn>/, best.c and results.jsonl.
     BatchError when `text` does not define the function; a compile or a conversion that fails
     only scores 0."""
@@ -1350,11 +1411,28 @@ def run_search(
     if root.exists():
         shutil.rmtree(root)
     run = _Run(exe, row, name, cells, root, watcom_dir)
-    seen = {base}
-    (best,) = _wave(run, [Candidate(base, ())])
+    first = [Candidate(base, ()), *_seed_candidates(seeds, name, base)]
+    seen = {candidate.text for candidate in first}
+    run.kept = _wave(run, first)
+    best = max(run.kept, key=lambda scored: scored.rank)
     before = None
     while best is not before:
         before = best
         for axis in AXES:
             best = _walk(run, seen, best, axis)
     return _result(run, best)
+
+
+def archived_search(
+    exe: ExeInputs, row: FunctionRow, text: str, rules: Sequence[Rule], *, watcom_dir: Path
+) -> SearchResult:
+    """run_search seeded from the row's archive (archive.seeds over archive.load: the best
+    candidate of each class, an agent's checks included), and what it kept recorded there.
+    `reverseapoc search` runs this; the curve runs run_search, which reads no archive."""
+    name = exe.symbols.c_name(row.start)
+    usable = [entry for entry in archive.load(exe.stem, row.start, name)
+              if _seed_text(entry.source, name) is not None]  # fmt: skip
+    seeds = [entry.source for entry in archive.seeds(usable)]
+    result = run_search(exe, row, text, rules, watcom_dir=watcom_dir, seeds=seeds)
+    archive.record(exe.stem, row.start, result.kept)
+    return result
