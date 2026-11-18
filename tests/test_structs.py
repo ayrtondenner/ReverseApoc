@@ -124,10 +124,29 @@ def test_an_indexed_access_records_its_scale():
     assert [(f.offset, f.strides) for f in shape.fields] == [(0, (4,)), (64, ())]
 
 
-def test_a_string_move_is_no_field_access():
-    # mov esi, eax; movsd; mov ecx, [eax + 4]; mov ecx, [eax + 8]; ret
-    shape = only(structs.analyze(stub_exe("89c6 a5 8b4804 8b4808 c3")))
+@pytest.mark.parametrize("move", ["a5", "f3a5", "f3a4"])  # movsd, rep movsd, rep movsb
+def test_a_string_move_is_no_field_access(move):
+    # mov esi, eax; <move>; mov ecx, [eax + 4]; mov ecx, [eax + 8]; ret
+    shape = only(structs.analyze(stub_exe(f"89c6 {move} 8b4804 8b4808 c3")))
     assert fields(shape) == [(4, 4, ""), (8, 4, "")]
+
+
+def test_x87_control_and_state_are_no_real_fields():
+    # fnstcw [eax + 8]; fnsave [eax]; mov ecx, [eax + 4]; ret: the control word is a plain
+    # word, and the saved state is no field at all
+    shape = only(structs.analyze(stub_exe("d97808 dd30 8b4804 c3")))
+    assert fields(shape) == [(4, 4, ""), (8, 2, "")]
+
+
+def test_a_void_callees_eax_is_no_result():
+    # row0: call row1; mov ecx, [eax + 4]; mov ecx, [eax + 8]; ret.  row1: ret
+    caller = f"{call_to(VA, SECOND)} 8b4804 8b4808 c3"
+    assert structs.analyze(stub_exe(caller, "c3")).shapes == ()
+
+
+def test_offsets_below_the_base_do_not_count_as_fields():
+    # mov ecx, [eax - 8]; mov ecx, [eax - 4]; mov ecx, [eax + 4]; ret: one offset at 0 or above
+    assert structs.analyze(stub_exe("8b48f8 8b48fc 8b4804 c3")).shapes == ()
 
 
 def test_a_displacement_with_a_fixup_is_an_array_not_a_field():
@@ -306,9 +325,41 @@ def test_the_section_says_none_for_an_untouched_function():
     assert structs.section(made_up_shapes(), 0x9999, frozenset()) == "none"
 
 
-def test_the_section_says_how_to_build_missing_shapes():
+def test_the_section_names_missing_shapes_for_the_owner():
     body = structs.section(None, A, frozenset())
-    assert "reverseapoc structs" in body and "structs.json" in body
+    assert body.startswith("none: ")
+    assert "build/structs/<exe>/structs.json" in body and "outside a drive" in body
+
+
+def test_the_section_names_an_unreadable_file():
+    body = structs.section(structs.StructsError("made-up/structs.json: bad"), A, frozenset())
+    assert body.startswith("none: ") and "made-up/structs.json: bad" in body
+
+
+def test_the_section_shows_the_functions_own_fields_first():
+    many = [Field(4 * n, 4, "", (), (B,)) for n in range(structs.FIELDS_TOP + 3)]
+    many[-1] = Field(many[-1].offset, 4, "", (), (A, B))
+    shapes = Shapes("stub", (Shape("shape_long", (Base(ARG, B, 0),), tuple(many)),), rows=1,
+                    skipped=0, bases=1, links=0, refused=0)  # fmt: skip
+    body = structs.section(shapes, A, frozenset())
+    lines = [line for line in body.splitlines() if line.startswith("- +0x")]
+    assert len(lines) == structs.FIELDS_TOP
+    assert lines[-1] == f"- +0x{many[-1].offset:04X} 4 int (2 functions, this one)"
+    assert "+0x0000" in lines[0]
+
+
+def test_the_section_stays_small_at_its_worst():
+    """A required pack section: SHAPES_TOP shapes of FIELDS_TOP fields and BASES_TOP bases at
+    the longest line each can have stay under 2 KB, and every other shape is cut."""
+    name = "shape_" + "x" * 40
+    bases = tuple(Base(ARG, 0x100000 + n, 3) for n in range(structs.BASES_TOP + 2))
+    long = tuple(Field(0x1000 + n, 2, "", (8,), (A, B)) for n in range(structs.FIELDS_TOP + 5))
+    shapes = Shapes("ufo2p", tuple(Shape(f"{name}{n}", bases, long)
+                                   for n in range(structs.SHAPES_TOP + 2)),
+                    rows=1, skipped=0, bases=1, links=0, refused=0)  # fmt: skip
+    body = structs.section(shapes, A, frozenset({A}))
+    assert len(body.encode("utf-8")) < 2048
+    assert body.count("### ") == structs.SHAPES_TOP
 
 
 def test_the_section_cuts_long_field_lists():

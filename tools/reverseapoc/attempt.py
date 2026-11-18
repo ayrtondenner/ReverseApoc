@@ -1711,6 +1711,15 @@ def _optional_text(path: Path) -> str | None:
     return Path(path).read_text(encoding="utf-8") if Path(path).is_file() else None
 
 
+def _struct_shapes(repo: Path, stem: str) -> structs.Shapes | structs.StructsError | None:
+    """The shapes `reverseapoc structs` left, None when none were built, or the error of an
+    unreadable file: it costs the pack's section, which names it, never the pack."""
+    try:
+        return structs.load(repo, stem)
+    except structs.StructsError as exc:
+        return exc
+
+
 def make_pack(
     data: check.ExeInputs,
     row: FunctionRow,
@@ -1733,7 +1742,7 @@ def make_pack(
         draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
-        shapes=structs.load(roots.repo, data.stem),
+        shapes=_struct_shapes(roots.repo, data.stem),
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 

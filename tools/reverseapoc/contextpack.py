@@ -781,15 +781,16 @@ def gather(
     notes: str | Notes | None,
     calls: CallIndex | None = None,
     lookalike_floor: float = LOOKALIKE_FLOOR,
-    shapes: structs.Shapes | None = None,
+    shapes: structs.Shapes | structs.StructsError | None = None,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
     missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
     ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
-    functions. `shapes` are the EXE's struct shapes (structs.load; None when none were built),
-    of which the section shows the ones the row touches. ContextPackError for a status outside
+    functions. `shapes` are the EXE's struct shapes (structs.load; None when none were built,
+    the StructsError of an unreadable file), of which the section shows the ones the row
+    touches. ContextPackError for a status outside
     STATUSES (a typo would silently drop prototypes and look-alikes; review M-6). Unit texts
     should be read as bytes decoded as strict UTF-8, as check and configure read them, so a lone
     CR is refused, not translated."""

@@ -2776,6 +2776,25 @@ def _pack(attempt_dir: Path) -> bytes:
     return (attempt_dir / "context.md").read_bytes()
 
 
+def test_context_packs_the_struct_shapes_of_the_function(tree: attempt.Roots, monkeypatch,
+                                                        capsys, loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _struct_shapes(attempt_dir, monkeypatch)
+    code, out, err = _attempt(capsys, "context")
+    assert code == 0, err
+    assert "### shape_made_up: 2 fields, 1 function (0 matched)" in out
+
+
+def test_an_unreadable_struct_shapes_file_costs_the_section_only(
+    tree: attempt.Roots, monkeypatch, capsys, loads
+):
+    _claim_b_view(tree, monkeypatch)
+    _write(structs.shapes_path(attempt.ROOTS.repo, "ufo2p"), "{")
+    code, out, err = _attempt(capsys, "context")
+    assert code == 0, err
+    assert "## Struct shapes\n\nnone: " in out and "structs.json of format" in out
+
+
 def test_view_context_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkeypatch, capsys,
                                                      loads):  # fmt: skip
     attempt_dir = _claim_b_view(tree, monkeypatch)

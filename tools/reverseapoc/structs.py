@@ -54,24 +54,29 @@ from .status import MATCHED, read_status, status_path
 ARG, RESULT, POINTER, OBJECT = "arg", "result", "pointer", "object"
 KINDS = (OBJECT, POINTER, ARG, RESULT)  # the order a shape's bases are listed and named in
 WALKED_KINDS = (KIND_GAME, KIND_THUNK)  # the rows read, and the only callees joined
-MIN_FIELDS = 2  # distinct offsets a class needs to be a struct shape
+MIN_FIELDS = 2  # distinct offsets at 0 or above a class needs to be a struct shape
 SHAPES_PARTS = ("build", "structs")  # gitignored: the shapes are derived from the game
 HEADER_FILE = "structs.h"
 DATA_FILE = "structs.json"
 FORMAT = 1  # structs.json's format
-FIELDS_TOP = 16  # fields per shape in the pack section
-SHAPES_TOP = 3  # shapes in the pack section
-BASES_TOP = 4  # bases per shape in the pack section
+# The pack section is required (never cut), so these bound it: under 2 KB at its worst.
+FIELDS_TOP = 10  # fields per shape in the pack section
+SHAPES_TOP = 2  # shapes in the pack section
+BASES_TOP = 3  # bases per shape in the pack section
 NONE = "none"  # contextpack.NONE: the body of a section with nothing to show
 
 SIGNED, UNSIGNED, REAL = "s", "u", "f"
 _SIGN_NOTES = {SIGNED: "sign-extended", UNSIGNED: "zero-extended", REAL: "x87 real"}
 _SIGN_UNKNOWN = "sign unknown"
 _EXTENDS = {"movsx": SIGNED, "movzx": UNSIGNED}
-_X87 = "f"  # every x87 mnemonic starts with it
 _X87_INTEGER = "fi"  # fild, fist, fistp, fiadd, ficom...: a signed integer in memory
+_X87_REALS = frozenset({"fld", "fst", "fstp", "fcom", "fcomp", *lift.X87_ARITHMETIC})
+# Implicit operands, no field: string ops (capstone spells a rep prefix into the mnemonic,
+# `rep movsd`, so the last word is the op) and the x87 state and environment images.
 _STRING_OPS = frozenset(f"{op}{size}" for op in ("movs", "stos", "lods", "cmps", "scas")
                         for size in "bwd")  # fmt: skip
+_X87_STATE = frozenset({"fsave", "fnsave", "frstor", "fstenv", "fnstenv", "fldenv"})
+_NO_FIELD = frozenset({"lea", *_STRING_OPS, *_X87_STATE})
 _MOVES = frozenset({"add", "sub"})  # an immediate moves a held base's offset
 _SIGN_BIT = 1 << 31
 _WORD_MASK = (1 << 32) - 1
@@ -162,7 +167,7 @@ def _sign(mnemonic: str) -> str:
         return _EXTENDS[mnemonic]
     if mnemonic.startswith(_X87_INTEGER):
         return SIGNED
-    return REAL if mnemonic.startswith(_X87) else ""
+    return REAL if mnemonic in _X87_REALS else ""
 
 
 Held = tuple[Base, int]  # a base and the offset from it a register holds
@@ -261,7 +266,7 @@ class _Row:
         return self.lifter.fix.get(ci.address + offset) if offset else None
 
     def _accesses(self, ci: Any, state: State) -> Iterator[Access]:
-        if ci.mnemonic == "lea" or ci.mnemonic in _STRING_OPS:
+        if ci.mnemonic.split()[-1] in _NO_FIELD:
             return
         if self._fixup(ci, ci.disp_offset) is not None:
             return  # the displacement is an address: an array, not a field
@@ -360,7 +365,8 @@ class _Row:
                 held = state.get(reg)
                 if held is not None and held[1] == 0:
                     self.links.append((held[0], Base(ARG, target, k)))
-        return (("eax", (Base(RESULT, target), 0)),) if ci.mnemonic == "call" else ()
+        returns = ci.mnemonic == "call" and sig.returns
+        return (("eax", (Base(RESULT, target), 0)),) if returns else ()
 
     def _returned(self, state: State) -> None:
         """eax at a `ret` joins the row's result when its signature returns and some caller
@@ -488,7 +494,7 @@ def analyze(exe: Any) -> Shapes:
     shapes = []
     for bases in members.values():
         fields = _fields(a for base in bases for a in by_base.get(base, ()))
-        if len({f.offset for f in fields}) < MIN_FIELDS:
+        if len({f.offset for f in fields if f.offset >= 0}) < MIN_FIELDS:
             continue
         ordered = tuple(sorted(bases, key=Base.rank))
         shapes.append(Shape(_name(ordered[0], exe.symbols), ordered, fields))
@@ -611,7 +617,7 @@ def _touches(shape: Shape, start: int) -> bool:
 def _field_line(field: Field, start: int) -> str:
     count = _n(len(field.functions), "function")
     extra = [_SIGN_UNKNOWN] if _sign_unknown(field) else []
-    extra += [f"indexed, scale {stride}" for stride in field.strides]
+    extra += [f"index scale {stride}" for stride in field.strides]
     extra += ["this one"] if start in field.functions else []
     head = f"- {_offset(field.offset)} {field.width} {_type_text(field)}"
     return f"{head} ({', '.join([count, *extra])})"
@@ -623,27 +629,32 @@ def _shape_text(shape: Shape, start: int, matched: frozenset[int], stem: str) ->
         bases.append(f"... {len(shape.bases) - BASES_TOP} more")
     lines = [f"### {shape.name}: {_n(len(shape.fields), 'field')}, "
              f"{_counted(shape.functions, matched)}", f"bases: {', '.join(bases)}"]  # fmt: skip
-    lines += [_field_line(field, start) for field in shape.fields[:FIELDS_TOP]]
+    own_first = sorted(shape.fields, key=lambda f: start not in f.functions)  # stable
+    shown = sorted(own_first[:FIELDS_TOP], key=lambda f: (f.offset, f.width))
+    lines += [_field_line(field, start) for field in shown]
     if len(shape.fields) > FIELDS_TOP:
         more = len(shape.fields) - FIELDS_TOP
         lines.append(f"... {more} more fields in {_relative(stem, HEADER_FILE)}")
     return "\n".join(lines)
 
 
-def section(shapes: Shapes | None, start: int, matched: frozenset[int]) -> str:
+def section(shapes: Shapes | StructsError | None, start: int, matched: frozenset[int]) -> str:
     """The pack's struct shapes for the row at `start`: the shapes it reads or is a base of,
-    those it reads most first, at most SHAPES_TOP of them."""
+    those it reads most first, at most SHAPES_TOP of them, each with its fields the row reads
+    first (FIELDS_TOP). `shapes` is what `load` gave: None or a StructsError costs the
+    section, never the pack, and the section says why."""
+    if isinstance(shapes, StructsError):
+        return f"none: {shapes}"
     if shapes is None:
-        return (f"none: no {_relative('<exe>', DATA_FILE)} on this machine (build/ is never "
-                "committed); `uv run reverseapoc structs EXE` writes it")  # fmt: skip
+        return (f"none: no {_relative('<exe>', DATA_FILE)} was built on this machine (the "
+                "owner builds it with `reverseapoc structs EXE`, outside a drive)")  # fmt: skip
     touched = [shape for shape in shapes.shapes if _touches(shape, start)]
     if not touched:
         return NONE
     own = {shape.name: sum(start in f.functions for f in shape.fields) for shape in touched}
     ranked = sorted(touched, key=lambda shape: (-own[shape.name], shape.name))
-    parts = [f"Field accesses of the original code across functions (`reverseapoc structs "
-             f"{shapes.exe}`), offsets and widths in bytes; the C declarations are in "
-             f"{_relative(shapes.exe, HEADER_FILE)}."]  # fmt: skip
+    parts = [f"Field accesses of the original code across functions; offsets and widths in "
+             f"bytes; C in {_relative(shapes.exe, HEADER_FILE)}."]  # fmt: skip
     parts += [_shape_text(shape, start, matched, shapes.exe) for shape in ranked[:SHAPES_TOP]]
     if len(ranked) > SHAPES_TOP:
         parts.append(f"... {len(ranked) - SHAPES_TOP} more struct shapes in "
