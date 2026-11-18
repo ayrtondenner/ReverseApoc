@@ -681,6 +681,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "by_session": _split(v2, "session", len(v1)),
         "by_tier": _by_tier(counted, tiers),
         "comparison": None if arms is None else _comparison(matching, landed, sizes, arms, repo),
+        "environments": None if arms is None else _environments(records),
     }  # fmt: skip
     return Report(data)
 
@@ -806,6 +807,32 @@ def _comparison_lines(comparison: Mapping | None) -> list[str]:
     return lines
 
 
+def _environments(records: Sequence[Mapping]) -> list[dict]:
+    """Todo run-environment-digest (`stats --run`): each STARTED run record in log order (a run
+    id started twice is listed twice) with its environment and controls; both None for a
+    record from before them, controls None for a --land-held night."""
+    return [{"run": r["run"], "environment": r.get("environment"), "controls": r.get("controls")}
+            for r in records if r["kind"] == driver.KIND_RUN and r["event"] == driver.STARTED]
+
+
+def _environment_line(entry: Mapping) -> str:
+    env, controls = entry["environment"], entry["controls"]
+    if env is None:
+        return f"  {entry['run']}: no environment recorded"
+    cli = ", ".join(f"{h} {v or 'none'}" for h, v in env["cli"].items()) or "none"
+    image = env["image"].removeprefix("sha256:")[:12] if env["image"] else "unknown"
+    checked = (f"controls gold {controls['gold']}, null {controls['null']} "
+               f"({controls['null_percent']:g}%)" if controls else "no controls")  # fmt: skip
+    return (f"  {entry['run']}: digest {env['digest'][:12]}, head {env['head'][:12]}, image "
+            f"{image}, cli {cli}; {checked}")
+
+
+def _environment_lines(environments: Sequence[Mapping] | None) -> list[str]:
+    if environments is None:
+        return []
+    return ["environment per run:", *map(_environment_line, environments)]
+
+
 def _tier_lines(by_tier: Mapping | None) -> list[str]:
     if by_tier is None:
         return [f"per tier: no {MEMBERS_CSV}"]
@@ -836,6 +863,7 @@ class Report:
             *_arm_lines(d["by_arm"]),
             *_model_size_lines(d["by_model_size"]),
             *_comparison_lines(d["comparison"]),
+            *_environment_lines(d["environments"]),
             *_split_lines("per session kind", d["by_session"], d["by_session"]["kinds"]),
             *_tier_lines(d["by_tier"]),
         ])  # fmt: skip

@@ -111,7 +111,9 @@ INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped 
 RETIRED_KEY_ENVS = ("DEEPSEEK_API_KEY", "ZAI_API_KEY")
 # The owner's interactive tools' credentials (.mcp.json: the paper's Overleaf servers, Tavily),
 # user variables no drive session needs (the paper's final review, 2026-11-17)
-TOOL_SECRET_ENVS = ("OVERLEAF_SESSION", "OVERLEAF_GIT_TOKEN", "TAVILY_API_KEY")
+# and the driver's notifier command (driver.NOTIFY_ENV), which may hold a webhook token
+TOOL_SECRET_ENVS = ("OVERLEAF_SESSION", "OVERLEAF_GIT_TOKEN", "TAVILY_API_KEY",
+                    "REVERSEAPOC_NOTIFY")  # fmt: skip
 CLAUDE = HARNESSES[0]  # the Claude Code harness: hooks, its login or an Anthropic endpoint
 CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
 AGY = "agy"  # the Antigravity CLI harness (07.2-15, D-21)

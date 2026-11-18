@@ -131,6 +131,14 @@ def _never_argv(prompt: str, **values):
     raise AssertionError("a claude argv was built")
 
 
+def _passing_controls(options, seams, arms, log) -> dict:
+    """The checker controls of a healthy checker (tests/test_driver_run_env.py runs the real
+    driver.run_controls); the tmp repo holds no control unit."""
+    return {"exe": driver.CANARY_EXE, "unit": driver.CANARY_UNIT,
+            "function": driver.CANARY_FUNC, "gold": 0, "null": 1,
+            "null_percent": 72.5}  # fmt: skip
+
+
 @dataclass
 class Rig:
     """A tmp checkout plus the seams of one `drive` invocation."""
@@ -155,7 +163,7 @@ class Rig:
     def seams(self, **over) -> Seams:
         fields = dict(run=self.runner, git=self.git, world=lambda: _world(self.packs),
                       session=self.session, argv=self.argv, claude="claude",
-                      base_env=self.env)  # fmt: skip
+                      base_env=self.env, controls=_passing_controls)  # fmt: skip
         fields.update(over)
         return Seams(**fields)
 
