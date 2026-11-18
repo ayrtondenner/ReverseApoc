@@ -109,6 +109,9 @@ INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped 
 # The direct DeepSeek and z.ai keys: no arm names them since the owner's OpenRouter-only ruling
 # (2026-11-10), so the arm table no longer strips them; a key still set reaches no session.
 RETIRED_KEY_ENVS = ("DEEPSEEK_API_KEY", "ZAI_API_KEY")
+# The owner's interactive tools' credentials (.mcp.json: the paper's Overleaf servers, Tavily),
+# user variables no drive session needs (the paper's final review, 2026-11-17)
+TOOL_SECRET_ENVS = ("OVERLEAF_SESSION", "OVERLEAF_GIT_TOKEN", "TAVILY_API_KEY")
 CLAUDE = HARNESSES[0]  # the Claude Code harness: hooks, its login or an Anthropic endpoint
 CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
 AGY = "agy"  # the Antigravity CLI harness (07.2-15, D-21)
@@ -470,7 +473,8 @@ def _foreign(name: str, arm: Arm) -> bool:
 def session_env(arm: Arm, base_env: Mapping[str, str],
                 arms: Mapping[str, Arm] | None = None) -> dict[str, str]:  # fmt: skip
     """A session's environment (D-12): `base_env` without every arm's key variable (the
-    committed table's when `arms` is None), INHERITED and RETIRED_KEY_ENVS; then, for an arm
+    committed table's when `arms` is None), INHERITED, RETIRED_KEY_ENVS and TOOL_SECRET_ENVS
+    (case-insensitive, as Windows names are); then, for an arm
     with a base URL, the endpoint, its own key as ANTHROPIC_AUTH_TOKEN, an empty
     ANTHROPIC_API_KEY, no nonessential traffic and the default-model pins (RESEARCH Q7). Every
     session, whatever its harness, also loses every vendor routing and credential variable
@@ -480,7 +484,8 @@ def session_env(arm: Arm, base_env: Mapping[str, str],
     drop = {*INHERITED, *RETIRED_KEY_ENVS,
             *(a.key_env for a in (*table.values(), arm) if a.key_env)}  # fmt: skip
     env = {key: value for key, value in base_env.items()
-           if key not in drop and not _foreign(key, arm)}  # fmt: skip
+           if key not in drop and key.upper() not in TOOL_SECRET_ENVS
+           and not _foreign(key, arm)}  # fmt: skip
     if arm.backend != ANTHROPIC:  # D-10: the hook then denies its reads of orig/, third_party/
         env[EGRESS_ENV] = "1"
     if arm.base_url is None:
