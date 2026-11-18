@@ -7,13 +7,27 @@
     "superpowers@claude-plugins-official": true,
     "i-have-adhd@i-have-adhd": true,
     "clangd-lsp@claude-plugins-official": true,
-    "frontend-design@anthropic-plugin-directory": true
+    "frontend-design@anthropic-plugin-directory": true,
+    "academic-research-skills@academic-research-skills": true,
+    "humanizer@humanizer": true
   },
   "extraKnownMarketplaces": {
     "i-have-adhd": {
       "source": {
         "source": "github",
         "repo": "ayghri/i-have-adhd"
+      }
+    },
+    "academic-research-skills": {
+      "source": {
+        "source": "github",
+        "repo": "Imbad0202/academic-research-skills"
+      }
+    },
+    "humanizer": {
+      "source": {
+        "source": "github",
+        "repo": "blader/humanizer"
       }
     }
   },

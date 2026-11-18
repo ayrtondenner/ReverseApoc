@@ -98,6 +98,8 @@ Not rows in the report's table, but evaluated in the research notes. How they ar
 | claude-md-management | **Use** | Keeps CLAUDE.md accurate; run at the end of each phase | plugin at project scope | installed, project scope |
 | [retrokit](https://github.com/nemo22/retrokit) | **Skip** (not used, D-03; was the alternative LE loader and export) | Own LE loader, Watcom cspecs, library signatures, MCP; validated only on synthetic programs. The lastonesky loader loads both EXEs, so Phase 5 did not need it | n/a | skipped |
 | [unlazy](https://github.com/Leonxlnx/unlazy) | Not evaluated by the research | Completion-discipline skill already present in the repo | project skill under `.claude/skills/` | installed, project scope |
+| [academic-research-skills](https://github.com/Imbad0202/academic-research-skills) (added 2026-11-17) | **Use for the paper** (owner, 2026-11-17) | Outline, citation check, simulated peer review and AI disclosure for the project's arXiv paper; not used on code. Off in drive sessions (`config/driver/claude-settings.json`) | plugin at project scope (marketplace `Imbad0202/academic-research-skills`) | installed, project scope |
+| [humanizer](https://github.com/blader/humanizer) (added 2026-11-17, MIT, upstream `b48c832f`) | **Use for the paper's prose** (owner, 2026-11-17) | Rewrites AI-sounding prose against 26 Wikipedia signs-of-AI-writing patterns without changing its meaning. Off in drive sessions | plugin at project scope (marketplace `blader/humanizer`) | installed, project scope |
 
 ## Other candidates from the kickoff and notes
 

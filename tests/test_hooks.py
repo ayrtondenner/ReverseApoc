@@ -137,9 +137,16 @@ def test_project_settings_wire_the_always_layer():
         "i-have-adhd@i-have-adhd": True,
         "clangd-lsp@claude-plugins-official": True,
         "frontend-design@anthropic-plugin-directory": True,
+        # the paper's writing tools (owner, 2026-11-17); off in drive sessions
+        "academic-research-skills@academic-research-skills": True,
+        "humanizer@humanizer": True,
     }
     assert settings["extraKnownMarketplaces"] == {
-        "i-have-adhd": {"source": {"source": "github", "repo": "ayghri/i-have-adhd"}}
+        "i-have-adhd": {"source": {"source": "github", "repo": "ayghri/i-have-adhd"}},
+        "academic-research-skills": {
+            "source": {"source": "github", "repo": "Imbad0202/academic-research-skills"}
+        },
+        "humanizer": {"source": {"source": "github", "repo": "blader/humanizer"}},
     }
     assert set(settings) == {"enabledPlugins", "extraKnownMarketplaces", "hooks"}
     assert settings["hooks"] == {
