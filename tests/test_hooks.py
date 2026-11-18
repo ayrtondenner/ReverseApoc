@@ -2818,11 +2818,11 @@ def test_drive_guard_refuses_an_unreadable_nested_command_anywhere(live_drive, s
     ("Bash", "sed -n 1,20p tools/x.py"),
     ("PowerShell", "$p = Get-CimInstance Win32_Process; $p | Select-Object -First 1"),
     ("PowerShell", "foreach ($f in Get-ChildItem tools) { $f.Name }"),
-    ("PowerShell", "Copy-Item {scratch}\\a {scratch}\\b"),
+    ("PowerShell", "Copy-Item {scratch}{sep}a {scratch}{sep}b"),  # {sep}: the host's separator
 ])  # fmt: skip
 def test_drive_guard_still_allows_listed_reads(live_drive, scratch, name, command):
     text = command.replace("{scratch}", native(scratch) if name == "PowerShell"
-                           else scratch.as_posix())  # fmt: skip
+                           else scratch.as_posix()).replace("{sep}", os.sep)  # fmt: skip
     decision = guard(shell(name, text, live_drive), live_drive)
     assert not decision.deny, (text, decision.reason)
 
