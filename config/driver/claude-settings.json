@@ -8,6 +8,8 @@
     "i-have-adhd@i-have-adhd": false,
     "clangd-lsp@claude-plugins-official": false,
     "frontend-design@anthropic-plugin-directory": false,
+    "academic-research-skills@academic-research-skills": false,
+    "humanizer@humanizer": false,
     "agents-md@builtin": false,
     "telemetry@builtin": false,
     "plugin-authoring@builtin": false

@@ -253,6 +253,21 @@ def test_session_env_strips_the_retired_direct_provider_keys(name):
     assert [value for value in retired.values() if value in env.values()] == []
 
 
+@pytest.mark.parametrize("name", [OPUS, DEEPSEEK, "qwen-local", "gpt-6-luna", "gemini-flash",
+                                  "copilot-haiku-5-5"])  # fmt: skip
+def test_session_env_strips_the_owner_tool_credentials(name):
+    """The paper's final review (2026-11-17): the credentials of the owner's interactive tools
+    (the Overleaf MCP servers' session cookie and Git token, Tavily's key) are set as user
+    variables but no drive session needs them; none reaches a session of any harness, so a
+    stray `env` in a vendor's session cannot send them."""
+    arms = _arms()
+    names = ("OVERLEAF_SESSION", "OVERLEAF_GIT_TOKEN", "TAVILY_API_KEY")
+    tools = {key: f"made-up-tool-{n:04d}" for n, key in enumerate(names, 30)}
+    env = session_env(arms[name], {"PATH": "made-up", ROUTER_KEY: FAKE_DEEPSEEK, **tools}, arms)
+    assert sorted(set(env) & set(tools)) == []
+    assert [value for value in tools.values() if value in env.values()] == []
+
+
 def test_session_env_without_the_table_uses_the_committed_one():
     """RULINGS names session_env(arm, base_env): the table defaults to the committed one."""
     arms = _arms()
