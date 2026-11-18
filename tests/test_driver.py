@@ -692,6 +692,78 @@ def test_stop_classes_end_the_run(tmp_path, scenario, reason):
     assert night.kinds("attempt") == []
 
 
+@pytest.mark.parametrize(("scenario", "signal"), [
+    ("auth", "api_retry authentication_failed (status 401)"),
+    ("credits", "rate_limit_event rejected errorCode credits_required"),
+    ("not_logged_in", "result success: Not logged in - Please run /login"),
+])  # fmt: skip
+def test_a_stop_session_keeps_its_transcript(tmp_path, scenario, signal):
+    """E2E (keep-stop-session-transcript, run 20261115-claude-push): the session that ends the
+    night with a D-08 STOP keeps its transcript under build/driver/<run>/stop/, and the
+    STOPPED detail names that path, the arm, the attempt and the classified signal."""
+    night = Night(tmp_path, sessions=[Sess(scenario)])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "stop signal")
+    kept = night.repo / "build" / "driver" / RUN / "stop" / f"{EXE}__{FUNC}__attempt-1.jsonl"
+    assert kept.read_bytes() == (night.attempt_dir() / driver.TRANSCRIPT).read_bytes()
+    assert kept.stat().st_size > 0
+    assert kept.relative_to(night.repo).as_posix() in report.detail
+    assert signal in report.detail, report.detail
+    assert f"arm {OPUS_MODEL}" in report.detail and f"{FUNC} attempt 1" in report.detail
+    (stopped,) = [r for r in night.records() if r.get("event") == "STOPPED"]
+    assert stopped["detail"] == report.detail
+
+
+def test_a_signed_in_stop_names_its_streams_failure_text():
+    """The STOPPED detail of a Codex, agy or Copilot STOP names that stream's own failure text
+    (codexjson, agyjson, copilotjson.failure); a stream with no nameable signal says so."""
+    cases = {
+        "codex": [{"type": "turn.failed", "error": {"message": "made-up auth failure"}}],
+        "agy": [{"event": "result",
+                 "result": {"status": "FAILED", "error": "made-up auth failure"}}],
+        "copilot": [{"type": "session.error",
+                     "data": {"errorType": "authentication", "message": "made-up auth failure"}}],
+    }  # fmt: skip
+    for harness, events in cases.items():
+        assert "made-up auth failure" in driver.stop_signal(harness, events), harness
+    assert "no signal" in driver.stop_signal("claude", [{"type": "system", "subtype": "init"}])
+    assert "no signal" in driver.stop_signal("made-up", cases["codex"])  # never a KeyError
+
+
+def test_a_claude_stop_signal_is_one_capped_line_and_names_an_unknown_subtype():
+    """Stream text reaches the committed log: each signal is one line of at most _SIGNAL_CAP
+    characters. A result of a subtype classify does not know (a STOP even without is_error)
+    is named."""
+    long = "made-up\nerror " + "x" * 1000
+    shown = driver.stop_signal("claude", [{"type": "system", "subtype": "api_retry",
+                                           "error": long, "error_status": 400}])  # fmt: skip
+    assert "\n" not in shown and len(shown) <= driver._SIGNAL_CAP
+    odd = {"type": "result", "subtype": "made_up", "is_error": False, "result": "fine"}
+    assert "result made_up" in driver.stop_signal("claude", [odd])
+
+
+def test_a_linked_transcript_is_not_kept(tmp_path):
+    """A transcript.jsonl that is a link is never followed into build/driver/<run>/stop/."""
+    night = Night(tmp_path, sessions=[Sess("auth")])
+    outside = tmp_path / "outside.txt"
+    outside.write_text("made-up bytes outside the attempt dir\n", encoding="utf-8")
+    real = night._session
+
+    def linked(argv, *, transcript, **rest):
+        result = real(argv, transcript=transcript, **rest)
+        transcript.unlink()
+        try:
+            transcript.symlink_to(outside)
+        except OSError:
+            pytest.skip("no symlink privilege on this host")
+        return result
+
+    report = night.run(session=linked)
+    assert (report.event, report.reason) == ("STOPPED", "stop signal")
+    assert "no transcript to keep" in report.detail, report.detail
+    assert not (night.repo / "build" / "driver" / RUN / "stop").exists()
+
+
 def test_transient_retries_then_aborts(tmp_path):
     """AGT-03 empty, D-08 literally ("3 retries, then the attempt is aborted"): the first
     launch and 3 retries without a result -> one abort record with retries 3, no tri-state
@@ -1525,11 +1597,78 @@ def test_a_removal_that_never_finishes_still_fails_with_dockers_words(tmp_path, 
         _remove(tmp_path, docker)
 
 
-def test_any_other_removal_failure_fails_at_once_with_dockers_words(tmp_path, no_wait):
+_UNKILLED = (f"Error response from daemon: cannot remove container {_RACED_NAME}: could not kill "
+             "container: tried to kill container, but did not receive an exit event\n")
+
+
+def test_a_removal_that_fails_once_is_tried_again(tmp_path, no_wait):
+    """Run 20261116-fable-ab (about 30 sessions at once): `docker rm -f` failed once with
+    "did not receive an exit event" and the container went away moments later. Any failure is
+    tried again while the container is still listed, so one fault never stops the night."""
+    docker = _Docker([f"{_RACED_NAME}\n"], [(1, _UNKILLED), (0, "")])
+    _remove(tmp_path, docker)
+    assert docker.rm_calls == 2
+
+
+def test_a_container_gone_after_a_failed_removal_is_no_failure(tmp_path, no_wait):
+    docker = _Docker([f"{_RACED_NAME}\n", ""], [(1, _UNKILLED)])
+    _remove(tmp_path, docker)
+    assert docker.rm_calls == 1
+
+
+def test_a_container_gone_after_the_last_wait_is_no_failure(tmp_path, no_wait):
+    """Only a container still listed after the last try's wait stops the night."""
+    tries = driver.REMOVAL_TRIES
+    docker = _Docker([f"{_RACED_NAME}\n"] * tries + [""], [(1, _UNKILLED)])
+    _remove(tmp_path, docker)
+    assert docker.rm_calls == tries
+
+
+def test_any_removal_failure_that_persists_fails_with_dockers_words(tmp_path, no_wait):
     docker = _Docker([f"{_RACED_NAME}\n"], [(1, "Error response from daemon: made-up fault\n")])
     with pytest.raises(driver.DriverError, match="made-up fault"):
         _remove(tmp_path, docker)
-    assert docker.rm_calls == 1
+    assert docker.rm_calls == driver.REMOVAL_TRIES
+
+
+class _NightDocker:
+    """A made-up docker CLI for a whole night: `ps` lists one container of the prefix it is
+    filtered by until a `rm -f` succeeds; each `rm` gives the next of `removals`, the last
+    repeating."""
+
+    def __init__(self, removals: list[tuple[int, str]]):
+        self.removals, self.rm_calls, self.gone = removals, 0, False
+
+    def __call__(self, argv):
+        if argv[1] == "ps":
+            prefix = next(a[len("name="):] for a in argv if a.startswith("name="))
+            return subprocess.CompletedProcess(argv, 0, "" if self.gone else f"{prefix}0001\n", "")
+        self.rm_calls += 1
+        code, err = self.removals.pop(0) if len(self.removals) > 1 else self.removals[0]
+        self.gone = code == 0
+        return subprocess.CompletedProcess(argv, code, "", err)
+
+
+def test_a_night_whose_container_removal_fails_once_goes_on(tmp_path, no_wait):
+    """E2E (docker-container-removal-fault): the real remover under a night, docker failing
+    `rm -f` once then succeeding: no STOPPED record, the attempt recorded as usual."""
+    night = Night(tmp_path, sessions=[Sess()])
+    docker = _NightDocker([(1, _UNKILLED), (0, "")])
+    report = night.run(config={"attempts_per_function": 1},
+                       remove_containers=driver.container_remover(night.repo, docker))
+    assert docker.rm_calls == 2
+    assert report.event != "STOPPED", report.detail
+    assert len(night.kinds("attempt")) == 1
+
+
+def test_a_night_whose_container_never_goes_stops(tmp_path, no_wait):
+    """E2E: docker failing `rm -f` every time still stops the night, naming docker's words."""
+    night = Night(tmp_path, sessions=[Sess()])
+    docker = _NightDocker([(1, _UNKILLED)])
+    report = night.run(remove_containers=driver.container_remover(night.repo, docker))
+    assert docker.rm_calls == driver.REMOVAL_TRIES
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert "containers not removed" in report.detail and "exit event" in report.detail
 
 
 def test_a_pinned_file_replaced_by_a_junction_or_symlink_dir_comes_back(tmp_path):

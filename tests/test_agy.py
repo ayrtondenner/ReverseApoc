@@ -1040,6 +1040,20 @@ def test_agy_audit_flags(tmp_path, capsys, monkeypatch):
             assert (here / "outside" / "attempt-cache" / "x.json").is_file()
 
 
+def test_an_agy_stray_names_the_agy_audit(tmp_path, capsys, monkeypatch):
+    """The mark names agy, the harness that audited the session, and still keeps each reason
+    out of containment (the stray file quarantined, no reason handled as a path)."""
+    spec = Sess(write=None, files=(("x.txt", "made up\n"),))
+    rig, night, env = agy_night(tmp_path, monkeypatch, spec=spec)
+    _run_agy(capsys, rig, env)
+    (stopped,) = [r for r in night.kinds("run") if r["event"] == "STOPPED"]
+    detail = stopped["detail"]
+    assert "x.txt: not a file a session may leave in its attempt dir (agy audit)" in detail
+    assert "codex audit" not in detail
+    assert "not contained" not in detail and "not restored" not in detail, detail
+    assert list(night.quarantine.rglob("x.txt"))
+
+
 def test_agy_audit_clean_session(tmp_path, capsys, monkeypatch):
     """A session that ran only wrapper forms and wrote only its allowlisted files is clean: no
     guardrail stop, the attempt recorded."""

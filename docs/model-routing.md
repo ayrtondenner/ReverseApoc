@@ -864,6 +864,20 @@ need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an
   another stray or a containers note, a reset or check that fails or still finds a change, a
   night of one arm, a STOP from the stream (`streamjson.classify`), an init problem, a Codex or
   agy failure that is not a limit, an error, and Ctrl+C.
+- **Faults the drive rides out, and what a stop keeps.** A failed `docker rm -f` of an
+  attempt's containers is tried again, and only a container still listed after
+  `REMOVAL_TRIES` tries and their waits (about 5 s) is a containers note that stops the
+  night. The failures track concurrency: with about 30 sessions at once, docker could not kill
+  a container ("did not receive an exit event", run 20261116-fable-ab) that went away moments
+  later. A check killed mid-write leaves `checks/.<NNNN>.json.<16 hex>.tmp`, the wrapper's own
+  temp file. When the wrapper's ledger shows that check in flight (its `checks/NNNN.c`
+  ledgered, no `checks/NNNN.json`), the signed-in audit quarantines exactly that file without
+  stopping and says so on the console. Any other unseen file in `checks/` is still a stray. A
+  session that stops the night with a D-08 STOP has its transcript copied to
+  `build/driver/<run>/stop/<exe>__<function>__attempt-<n>.jsonl`, and the STOPPED detail
+  names that path, the arm, the attempt and the stream's signals (api_retry error and status,
+  rate_limit_event status and errorCode, error result text, or the Codex, agy or Copilot
+  failure text). Its stderr is the driver's console, so no stderr file exists to keep.
 - **Resuming a hold run.** Running the same `--hold --run <run>` drive again resumes it (owner
   approval 2026-11-10, `driver.hold_progress`): per arm, a function with a counted hold
   attempt in the committed log (no abort reason, or `timeout`) is skipped; one cut short (a
