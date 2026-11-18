@@ -1,0 +1,53 @@
+/*
+ * src/ufo2p/u_0009cedc.c: translation unit u_0009cedc of UFO2P.EXE, 0x0009CEDC..0x000A2BC0 (D-11).
+ *
+ * Scaffolded by `uv run reverseapoc units UFO2P.EXE --write-src u_0009cedc`, which never
+ * overwrites this file. Each INCLUDE_ASM marker stands for a function that is not matched
+ * yet (D-12); a matched function replaces its marker with its C.
+ */
+#include "common.h"
+
+INCLUDE_ASM(func_0009CEDC);
+INCLUDE_ASM(func_0009D1DB);
+INCLUDE_ASM(func_0009D1FC);
+INCLUDE_ASM(func_0009D21D);
+INCLUDE_ASM(func_0009D23E);
+INCLUDE_ASM(func_0009D25F);
+INCLUDE_ASM(func_0009D280);
+INCLUDE_ASM(func_0009D2A1);
+INCLUDE_ASM(func_0009D2C2);
+INCLUDE_ASM(func_0009D2E3);
+INCLUDE_ASM(func_0009D304);
+INCLUDE_ASM(func_0009D325);
+INCLUDE_ASM(func_0009D346);
+INCLUDE_ASM(func_0009D367);
+INCLUDE_ASM(func_0009D388);
+INCLUDE_ASM(func_0009D397);
+INCLUDE_ASM(func_0009D3AC);
+INCLUDE_ASM(func_0009D3DB);
+INCLUDE_ASM(func_0009DA90);
+INCLUDE_ASM(func_0009E0C0);
+INCLUDE_ASM(func_0009E3A0);
+INCLUDE_ASM(func_0009E890);
+INCLUDE_ASM(func_0009F630);
+INCLUDE_ASM(func_0009F820);
+INCLUDE_ASM(func_0009F880);
+INCLUDE_ASM(func_0009F8E0);
+INCLUDE_ASM(func_0009FA20);
+INCLUDE_ASM(func_0009FB60);
+INCLUDE_ASM(func_0009FDF0);
+extern int D_0012ED98;
+
+void func_000A0160(void)
+{
+    D_0012ED98 = 1;
+}
+INCLUDE_ASM(func_000A0170);
+INCLUDE_ASM(func_000A0880);
+INCLUDE_ASM(func_000A0A40);
+INCLUDE_ASM(func_000A12B0);
+INCLUDE_ASM(func_000A1990);
+INCLUDE_ASM(func_000A1B30);
+INCLUDE_ASM(func_000A1B60);
+INCLUDE_ASM(func_000A28C0);
+INCLUDE_ASM(func_000A2B80);
