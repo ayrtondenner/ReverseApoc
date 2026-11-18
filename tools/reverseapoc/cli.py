@@ -1,7 +1,8 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
-batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats, causes,
-requests, compare-objects, fetch-watcom, install-watcom, check-watcom."""
+batch, search, lift, target, land, gate, context, signatures, structs, attempt, drive, mechanics,
+flags, stats, causes, requests, meters, compare-objects, twins, cd-map, fetch-watcom,
+install-watcom, check-watcom."""
 
 from __future__ import annotations
 

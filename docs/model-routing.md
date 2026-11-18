@@ -882,8 +882,11 @@ need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an
   approval 2026-11-10, `driver.hold_progress`): per arm, a function with a counted hold
   attempt in the committed log (no abort reason, or `timeout`) is skipped; one cut short (a
   GAVE_UP guardrail or tool record, a transient abort, or no record) is attempted again, under
-  the next attempt number so its directory is fresh. Spike 012 resumed its drive this way after
-  each stop, dropping or adding `--arm` entries between runs.
+  the next attempt number so its directory is fresh. A Copilot session that ended GAVE_UP
+  guardrail on writes Copilot denied (owner ruling 2026-11-16; its record has a refused call,
+  hook_blocks > 0) is that arm's attempt and is not picked again, tonight or on resume. Spike
+  012 resumed its drive this way after each stop, dropping or adding `--arm` entries between
+  runs.
 - **Every per-arm gate still holds.** Each arm resolves through backends.toml. A Codex or agy
   arm needs its own canary PASS for the installed CLI. An arm that sends the pack off the
   machine needs its own `--allow-egress NAME`, and an `--allow-egress` naming an arm the night
@@ -1156,7 +1159,7 @@ tool itself, so this table can be re-measured without screenshots. Each reading 
 source, meter, used, limit or remaining, unit, window, `resets_at` when known, `read_at` (this
 read, UTC), `as_of` (when the source took the figure) and how it was read; a source that cannot
 be read gives a reading with an `error` instead. A drive sized to a budget calls
-`meters.read_all()`. Sources as found on 2026-11-13:
+`meters.budget_meter`. Sources as found on 2026-11-13:
 
 | Source | Read from | Notes |
 |---|---|---|
@@ -1187,8 +1190,17 @@ session with its source and date, and its measured matches per session. Re-measu
 - Mid-night, the driver asks a meter seam (`Deps.meter`) about each budgeted arm before each
   launch. Once the meter has moved by the budget since the night's first reading (a drop
   counts as a window that reset), that arm stops launching and the others go on. A reading in
-  another unit than the budget's is named once on the console and changes nothing. Until the usage meters are wired, the seam reads
-  nothing and the session cap is the only bound.
+  another unit than the budget's is named once on the console and changes nothing.
+- The seam is `meters.budget_meter`. Each quota.toml plan names its `meter`:
+  - `openrouter`: the credits API, the whole account's usage in `$`;
+  - `credits`: the arm's records' Copilot credits;
+  - `cost_usd`: the arm's records' API-equivalent cost at `usd_per_week_point`, $17.73 a point
+    of the Claude week on 2026-11-16.
+
+  A plan with `no_meter` instead (Codex runs `--ephemeral`, agy) is held by its session cap
+  alone, and the budget line says so. On a resumed `--hold --run`, each budget is sized less
+  what that arm's records under the run already spent, and the line names it: 'X spent earlier
+  by N sessions of run R, Y left'.
 
 ```
 reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=5%week \
