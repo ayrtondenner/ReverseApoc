@@ -24,5 +24,14 @@ int func_000C3A6D(int ch)
     }
     return ch;
 }
-INCLUDE_ASM(func_000C3A7B);
+#define CASE_UPPER_FIRST 0x41
+#define CASE_UPPER_LAST 0x5a
+
+int func_000C3A7B(int ch)
+{
+    if (ch >= CASE_UPPER_FIRST && ch <= CASE_UPPER_LAST) {
+        ch += CASE_SHIFT;
+    }
+    return ch;
+}
 INCLUDE_ASM(func_000C3A89);
