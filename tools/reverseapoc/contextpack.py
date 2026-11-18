@@ -6,9 +6,10 @@ A pack holds, in this fixed order (D-13): the target asm listing, its control-fl
 row of structure.MIN_SIZE bytes and up), the unit file, the owner's hint (config/hints/<exe>.toml),
 the callers and callees with their match status (and a matched one's C prototype), each callee's
 signature (its C prototype, else the whole-program signature table's), the `D_` externs the
-function touches, include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md
-idioms, the earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike
-functions with their C.
+function touches, the struct shapes it touches (structs.py, todo struct-shapes-across-functions),
+include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md idioms, the
+earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike functions with
+their C. The struct shapes are a required section, bounded by structs.section itself.
 
 Listings and drafts are game-derived, so a pack is written only under the gitignored
 build/driver/ (D-14, docs/legal.md "Generated files stay local") and never committed. Every
@@ -27,7 +28,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import asm, check, ghidra, structure
+from . import asm, check, ghidra, structs, structure
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
@@ -47,6 +48,7 @@ TITLE_UNIT = "Unit file"
 TITLE_CALLERS = "Callers"
 TITLE_CALLEES = "Callees"
 TITLE_EXTERNS = "D_ externs"
+TITLE_STRUCTS = "Struct shapes"  # todo struct-shapes-across-functions: structs.section
 TITLE_COMMON_H = "include/common.h"
 TITLE_DRAFT = "Ghidra draft"
 TITLE_BEST_C = "Earlier best C"  # 07.2-02 (999.5): the best earlier attempt's definition
@@ -70,8 +72,8 @@ TITLE_HINTS = "Owner hints"
 TITLE_SIGNATURES = "Callee signatures"
 TITLE_OUTLINE = "Control-flow outline"
 ORDER = (TITLE_LISTING, TITLE_OUTLINE, TITLE_UNIT, TITLE_HINTS, TITLE_CALLERS, TITLE_CALLEES,
-         TITLE_SIGNATURES, TITLE_EXTERNS, TITLE_COMMON_H, TITLE_DRAFT, TITLE_BEST_C,
-         TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES, TITLE_LOOKALIKES)  # fmt: skip
+         TITLE_SIGNATURES, TITLE_EXTERNS, TITLE_STRUCTS, TITLE_COMMON_H, TITLE_DRAFT,
+         TITLE_BEST_C, TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES, TITLE_LOOKALIKES)  # fmt: skip
 LOOKALIKE_FLOOR = 0.6  # research A10: a starting metric, tuned from attempts.jsonl later
 LOOKALIKE_TOP = 3  # D-13: up to 3 look-alikes
 
@@ -278,6 +280,7 @@ def build_pack(
     callers: Sequence[Neighbour],
     callees: Sequence[Neighbour],
     externs: Sequence[str],
+    struct_shapes: str,
     common_h: str | None,
     draft: str | None,
     idioms: str | None,
@@ -307,6 +310,7 @@ def build_pack(
         TITLE_UNIT: _fenced(unit_text, "c"),
         TITLE_CALLEES: _neighbours(callees),
         TITLE_EXTERNS: _lines([f"- {name}" for name in externs]),
+        TITLE_STRUCTS: struct_shapes,
         TITLE_COMMON_H: _fenced(common_h, "c"),
         TITLE_IDIOMS: _fenced(idioms, "markdown"),
         TITLE_HINTS: _fenced(hint, "text"),  # the owner's word: never cut
@@ -898,6 +902,7 @@ def gather(
     lookalike_floor: float = LOOKALIKE_FLOOR,
     hint: str | None = None,
     signatures: Table | None = None,
+    shapes: structs.Shapes | structs.StructsError | None = None,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
@@ -906,7 +911,9 @@ def gather(
     ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
     functions. `hint` is the owner's hint for the row (read_hints), shown verbatim; with
     `signatures` (the whole-program table, signatures.load) each callee gets a signature line;
-    a row of structure.MIN_SIZE bytes and up gets its control-flow outline. ContextPackError
+    a row of structure.MIN_SIZE bytes and up gets its control-flow outline. `shapes` are the
+    EXE's struct shapes (structs.load; None when none were built, the StructsError of an
+    unreadable file), of which the section shows the ones the row touches. ContextPackError
     for a status outside STATUSES (a typo would silently drop
     prototypes and look-alikes; review M-6). Unit texts should be read as bytes decoded as
     strict UTF-8, as check and configure read them, so a lone CR is refused, not translated."""
@@ -925,6 +932,8 @@ def gather(
         "callees": tuple(_neighbour(va, symbols, status, prototypes)
                          for va in calls.callees_of(row.start)),  # fmt: skip
         "externs": externs(row, fixups, symbols),
+        "struct_shapes": structs.section(shapes, row.start, frozenset(
+            va for va, state in status.items() if state == STATUS_MATCHED)),
         "common_h": common_h,
         "draft": _read(Path(draft_dir) / ghidra.draft_name(row.start)),
         "idioms": idioms,

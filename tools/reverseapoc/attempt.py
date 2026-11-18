@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, classify, contextpack, ghidra, lift, signatures, unitdefs
+from . import asm, check, classify, contextpack, ghidra, lift, signatures, structs, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -2044,6 +2044,15 @@ def _optional_text(path: Path) -> str | None:
     return Path(path).read_text(encoding="utf-8") if Path(path).is_file() else None
 
 
+def _struct_shapes(repo: Path, stem: str) -> structs.Shapes | structs.StructsError | None:
+    """The shapes `reverseapoc structs` left, None when none were built, or the error of an
+    unreadable file: it costs the pack's section, which names it, never the pack."""
+    try:
+        return structs.load(repo, stem)
+    except structs.StructsError as exc:
+        return exc
+
+
 def make_pack(
     data: check.ExeInputs,
     row: FunctionRow,
@@ -2056,8 +2065,9 @@ def make_pack(
 ) -> contextpack.Pack:
     """The D-13 pack of `row`: status from config/<exe>/status.csv, every unit text of the EXE,
     the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
-    idioms and earlier notes, the owner's hint from config/hints/<exe>.toml and the signature
-    table from build/signatures/<exe>.json (U10). Pass `calls` to reuse one CallIndex across
+    idioms and earlier notes, the owner's hint from config/hints/<exe>.toml, the signature
+    table from build/signatures/<exe>.json (U10) and the struct shapes `reverseapoc structs`
+    left under the repo's build/structs/<exe>/. Pass `calls` to reuse one CallIndex across
     functions."""
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
     starts = {other.start for other in data.rows if other.kind in CLAIMABLE_KINDS}
@@ -2071,6 +2081,7 @@ def make_pack(
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
         hint=hints.get(row.start), signatures=table,
+        shapes=_struct_shapes(roots.repo, data.stem),
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 
@@ -2150,7 +2161,8 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
         facts["notes"] = _notes_digest(claim)
         paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching,
                   contextpack.hints_path(ROOTS.config, claim.exe),
-                  signatures.table_path(ROOTS.repo, claim.exe)]  # fmt: skip
+                  signatures.table_path(ROOTS.repo, claim.exe),
+                  structs.shapes_path(ROOTS.repo, claim.exe)]  # fmt: skip
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
 
 

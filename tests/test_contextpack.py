@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record
-from reverseapoc import asm, contextpack
+from reverseapoc import asm, contextpack, structs
 from reverseapoc.contextpack import (
     PACK_CAP,
     ContextPackError,
@@ -32,6 +32,7 @@ ORDER = (
     "Callees",
     "Callee signatures",
     "D_ externs",
+    "Struct shapes",
     "include/common.h",
     "Ghidra draft",
     "Earlier best C",
@@ -50,6 +51,7 @@ def _inputs(**overrides):
         "callers": (Neighbour("func_00010000", "game", "matched", "void func_00010000(void)"),),
         "callees": (Neighbour("func_00010020", "game", "unmatched", None),),
         "externs": ("D_00020100",),
+        "struct_shapes": "none",
         "common_h": "#define INCLUDE_ASM(name) extern int INCLUDE_ASM_##name\n",
         "draft": "void func_00010010(void)\n{\n}\n",
         "idioms": "## Known idioms\n\nMade-up idiom text.\n",
@@ -277,6 +279,30 @@ def test_callers_and_callees_from_the_le(tmp_path: Path):
     assert inputs["draft"] is None  # no draft file: the section says none
     assert inputs["unit_text"] == UNIT_AB_TEXT
     build_pack(**inputs)  # gather's dict is exactly build_pack's keywords
+
+
+def test_struct_shapes_are_the_ones_the_row_touches(tmp_path: Path):
+    field = structs.Field
+    touched = structs.Shape(
+        "shape_made_up", (structs.Base(structs.ARG, FUNC_B, 0),),
+        (field(0, 4, "", (), (FUNC_A, FUNC_B)), field(8, 2, "s", (), (FUNC_A,))),
+    )  # fmt: skip
+    other = structs.Shape(
+        "shape_other", (structs.Base(structs.ARG, FUNC_C, 0),),
+        (field(0, 4, "", (), (FUNC_C,)), field(4, 4, "", (), (FUNC_C,))),
+    )  # fmt: skip
+    shapes = structs.Shapes("ufo2p", (touched, other), rows=3, skipped=0, bases=2, links=0,
+                            refused=0)
+    inputs = _gather(1, tmp_path, {FUNC_A: "matched"}, shapes=shapes)
+    assert inputs["struct_shapes"] == structs.section(shapes, FUNC_B, frozenset({FUNC_A}))
+    assert "shape_made_up: 2 fields, 2 functions (1 matched)" in inputs["struct_shapes"]
+    assert "shape_other" not in inputs["struct_shapes"]
+    body = {s.title: s.body for s in build_pack(**inputs).sections}
+    assert body["Struct shapes"] == inputs["struct_shapes"]
+
+
+def test_no_struct_shapes_says_how_to_make_them(tmp_path: Path):
+    assert "reverseapoc structs" in _gather(1, tmp_path, {})["struct_shapes"]
 
 
 def test_matched_callee_carries_its_prototype(tmp_path: Path):
