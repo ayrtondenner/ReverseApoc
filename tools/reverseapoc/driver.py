@@ -461,6 +461,11 @@ class DriveConfig:
     # todo near-miss-lane: the `arms` whose lanes take the near-miss queue (Deps.near_miss)
     # instead of the night's queue (`drive --near-miss-arm`); the other lanes skip its rows
     near_miss: tuple[str, ...] = ()
+    # Todos run-environment-digest and nightly-gold-null-controls: what the drive verb measured
+    # before the night (`environment`, `run_controls`), written into its STARTED record; None
+    # (a night built without the verb): the record has neither key.
+    environment: Mapping | None = None
+    controls: Mapping | None = None
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -592,6 +597,10 @@ class Deps:
     # Todo near-miss-lane: a builder of a fresh near-miss queue (picker.NearMissQueue), built
     # once a night and shared by the lanes of DriveConfig.near_miss; None: no near-miss lane.
     near_miss: Callable[[], NearMissQueue] | None = None
+    # Todo drive-stop-notification: (event, run id, one-line summary) once a STOPPED or ENDED
+    # night has nothing left to commit (_Night._notify); real_deps wires `notifier`
+    # (NOTIFY_ENV). It never raises.
+    notify: Callable[[str, str, str], None] = lambda event, run, text: None
 
 
 def _which(name: str) -> str:
@@ -1005,6 +1014,25 @@ RECORD_FIELDS_V3: dict[str, dict[str, Callable[[object], bool]]] = {
 # null when its usage file named none); no other record has the field, so the committed records
 # stay valid.
 _COPILOT_ATTEMPT_FIELDS = {"credits": _optional(_is_number)}
+# Todos run-environment-digest and nightly-gold-null-controls: a v3 STARTED record the drive
+# verb writes also carries the night's environment (`environment`) and its checker controls
+# (`run_controls`). Both keys or neither: a run record without them (every earlier one, and a
+# night built without the verb) stays valid, and `schema` stays 3 (D-23: no line is rewritten).
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")  # `docker image inspect --format {{.Id}}`
+_ENVIRONMENT = _shaped({
+    "digest": _matches(_SHA256),  # environment_digest of the other keys but head
+    "head": _matches(_SHA1),
+    "image": _optional(_matches(_IMAGE_ID)),  # null: not known
+    "cli": _mapping_of(_one_of(*HARNESSES), _optional(_is_text)),  # null: no version answered
+    "files": _mapping_of(_is_text, _optional(_matches(_SHA256))),  # null: no such file
+    "prompt": _matches(_SHA256),
+})  # fmt: skip
+_CONTROLS = _shaped({"exe": _CLAIM_FIELDS["exe"], "unit": _CLAIM_FIELDS["unit"],
+                     "function": _matches(_C_NAME), "gold": _is_int, "null": _is_int,
+                     "null_percent": _is_number})  # fmt: skip
+# controls null: a --land-held night, which runs no session check and so no control
+_STARTED_FIELDS = {"environment": _ENVIRONMENT, "controls": _optional(_CONTROLS)}
 
 
 def _strings(value: object) -> Iterable[str]:
@@ -1037,6 +1065,8 @@ def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
         raise RecordError(f"unknown {version} record kind {kind!r}")
     if version == "v3" and kind == KIND_ATTEMPT and obj.get("harness") == backends.COPILOT:
         return {**fields, **_COPILOT_ATTEMPT_FIELDS}
+    if version == "v3" and kind == KIND_RUN and not _STARTED_FIELDS.keys().isdisjoint(obj):
+        return {**fields, **_STARTED_FIELDS}
     return fields
 
 
@@ -1044,6 +1074,8 @@ def _run_problem(obj: dict) -> str | None:
     """A reason of the record's event (F30); a v2 record's totals null exactly on STARTED."""
     if obj["reason"] not in RUN_REASONS[obj["event"]]:
         return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
+    if "environment" in obj and obj["event"] != STARTED:
+        return f"run record: only a STARTED record names its environment, not {obj['event']}"
     if "schema" not in obj or (obj["totals"] is None) == (obj["event"] == STARTED):
         return None
     if obj["event"] == STARTED:
@@ -4008,6 +4040,7 @@ class _Night:
             why = _detail(type(exc).__name__ + self.interrupted)
             self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows(),
                              guard=False)  # fmt: skip  # nothing is committed after an interrupt
+            self._notify(STOPPED, INTERRUPTED, why)
             raise
         if self.arm_stops:  # owner ruling 2026-11-10: the run record names each stopped arm
             detail = _detail("; ".join([*([detail] if detail else []), *self.arm_stops]))
@@ -4017,10 +4050,16 @@ class _Night:
             detail = _detail("; ".join([*([detail] if detail else []), *found]))
         uncommitted = self._uncommitted_rows() if event == STOPPED else []
         self._record_run(event, reason, detail, checks_failed=failed, uncommitted=uncommitted)
-        if (
-            not self.breached
-        ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
-            self._commit_log(stopped=event == STOPPED)
+        try:
+            if (
+                not self.breached
+            ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
+                self._commit_log(stopped=event == STOPPED)
+        except Exception as exc:  # the owner hears of it too, then it propagates as before
+            self._notify(event, reason, _detail("; ".join([*([detail] if detail else []),
+                         f"the log commit failed: {type(exc).__name__}: {exc}"])))  # fmt: skip
+            raise
+        self._notify(event, reason, detail)
         with self.cond:  # after the drain: every worker's parks are in
             parked, over_cap = len(self.parked), len(self.over_caps)
         return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed),
@@ -6920,7 +6959,8 @@ class _Night:
                     checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
                     guard: bool = True, recovered: Sequence[Mapping] = ()) -> None:  # fmt: skip
         """A v3 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
-        and, on ENDED and STOPPED, the totals over the night's own records."""
+        and, on ENDED and STOPPED, the totals over the night's own records. STARTED also names
+        the verb's environment and controls when it measured them."""
         with self.gate_lock:  # the totals and the append see the same records
             totals = None if event == STARTED else self._night_totals()
             record = {"kind": KIND_RUN, "schema": SCHEMA_V3, "run": self.config.run_id,
@@ -6931,7 +6971,20 @@ class _Night:
                       "recovered": [{key: c[key] for key in ("exe", "unit", "run")}
                                     for c in recovered],
                       "totals": totals}  # fmt: skip
+            if event == STARTED and self.config.environment is not None:
+                record.update(environment=dict(self.config.environment),
+                              controls=None if self.config.controls is None
+                              else dict(self.config.controls))  # fmt: skip
             self._append(record, guard=guard)
+
+    def _notify(self, event: str, reason: str, detail: str | None) -> None:
+        """Todo drive-stop-notification: the night's end to Deps.notify, once nothing more is
+        committed (after the log commit, or the STOPPED interrupted record), so the owner is
+        never told while the driver still writes the checkout."""
+        shown = f": {detail}" if detail else ""
+        self.deps.notify(event, self.config.run_id,
+                         f"reverseapoc drive {self.config.run_id}: {event} {reason}: "
+                         f"{self.sessions} sessions, {self.matched} matched{shown}")
 
     def _night_totals(self) -> dict:
         """`_totals` over this night's attempt, abort and limit records: 07.2-16, those of every
@@ -7356,6 +7409,9 @@ class Seams:
     # Todo budget-runs-and-contributors: the night's meter seam (Deps.meter's); todo
     # budget-meter-wiring: default_seams wires meters.budget_meter here.
     meter: Callable[[str], MeterReading | None] = _no_meter
+    # Todo nightly-gold-null-controls: the checker controls a night runs before it starts,
+    # (options, seams, arms, log) -> the STARTED record's `controls`, Refused on a wrong one.
+    controls: Callable[..., Mapping] = lambda *args, **kwargs: run_controls(*args, **kwargs)
 
 
 def stamp(now: datetime) -> str:
@@ -7753,6 +7809,57 @@ def _near_miss_min(options: DriveOptions) -> float:
     return NEAR_MISS_MIN if options.near_miss is None else options.near_miss
 
 
+# Todo drive-stop-notification: the owner's notifier, a command line in this environment
+# variable of the driver's process (never in a tracked file; backends.TOOL_SECRET_ENVS keeps it
+# from every session). It runs through the OS shell once a STOPPED or ENDED night has nothing
+# left to commit, with the end in the three variables below and nothing of the night in its
+# command line.
+NOTIFY_ENV = "REVERSEAPOC_NOTIFY"
+NOTIFY_EVENT_ENV = "REVERSEAPOC_NOTIFY_EVENT"  # STOPPED or ENDED
+NOTIFY_RUN_ENV = "REVERSEAPOC_NOTIFY_RUN"  # the run id
+NOTIFY_TEXT_ENV = "REVERSEAPOC_NOTIFY_TEXT"  # one line: the event, reason, counts and detail
+NOTIFY_TIMEOUT_S = 60
+
+
+def notifier(command: str | None, env: Mapping[str, str],
+             say: Callable[[str], None]) -> Callable[[str, str, str], None]:  # fmt: skip
+    """Deps.notify for `command` (NOTIFY_ENV's value; None or blank: nothing runs). The command
+    runs through the shell with `env` plus the NOTIFY_*_ENV variables, no stdin and its output
+    discarded (no pipe a grandchild could hold open), as the root of its own process group;
+    after NOTIFY_TIMEOUT_S seconds its whole tree is killed (session.kill_tree). A failure is
+    one `say` line, never an exception, so a notifier cannot change how the night ends."""
+    if command is None or not command.strip():
+        return lambda event, run, text: None
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})  # fmt: skip  # session._group_options's
+
+    def notify(event: str, run: str, text: str) -> None:
+        values = {**env, NOTIFY_EVENT_ENV: event, NOTIFY_RUN_ENV: run, NOTIFY_TEXT_ENV: text}
+        try:  # the shell gets the owner's command line only; the night's text is in `values`
+            proc = subprocess.Popen(command, shell=True, env=values, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    **group)  # fmt: skip
+        except OSError as exc:
+            say(f"notifier ({NOTIFY_ENV}) did not start: {type(exc).__name__}: {exc}")
+            return
+        try:
+            code = proc.wait(timeout=NOTIFY_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=NOTIFY_TIMEOUT_S)
+                left = "was killed"
+            except subprocess.TimeoutExpired:
+                left = "could not be killed"
+            say(f"notifier ({NOTIFY_ENV}) ran longer than {NOTIFY_TIMEOUT_S} s; its process "
+                f"tree {left}")  # fmt: skip
+            return
+        if code != EXIT_OK:
+            say(f"notifier ({NOTIFY_ENV}) exit {code}")
+
+    return notify
+
+
 def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
               today: str | None = None) -> Deps:  # fmt: skip
     """The Deps a real night uses: the picker over both pools minus status.csv's matched and
@@ -7814,6 +7921,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
 
     near = (near_miss_source(config_root, worlds, _near_miss_min(options))
             if options.near_miss_arms else None)  # fmt: skip
+    base = seams.base_env if seams.base_env is not None else os.environ
+    notify = notifier(base.get(NOTIFY_ENV), base, say)  # todo drive-stop-notification
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees, near_miss=near,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
@@ -7828,7 +7937,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 rename_gate=lambda targets: _container_gate(seams.run, rename_gate_argv(targets)),
                 data_ranges=lambda exe: worlds[exe].data_ranges,
                 git=seams.git, today=lambda: day, say=say,
-                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir, say=say))  # fmt: skip
+                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir, say=say),
+                notify=notify)  # fmt: skip
 
 
 def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
@@ -8434,12 +8544,13 @@ class _Log:
         self._write(text)
         self.say(text.splitlines()[0])
 
-    def run(self, argv: Sequence[str]) -> subprocess.CompletedProcess:
+    def run(self, argv: Sequence[str],
+            env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:  # fmt: skip
         shown = f"$ {' '.join(argv)}"
         # Printed at the start so a long step is visible while it runs; its exit is in
         # preflight.log and the next stamped line dates its finish (quick 261026-9ue).
         self.say(shown)
-        done = self.seams.run(list(argv))
+        done = self.seams.run(list(argv)) if env is None else self.seams.run(list(argv), env=env)
         self._write(f"{shown}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
                     f"\n--- stderr\n{done.stderr or ''}")  # fmt: skip
         return done
@@ -8519,6 +8630,169 @@ def preflight(options: DriveOptions, seams: Seams, *, check_cli: bool,
     log.must(COMPILE, "compile", "compileall of tools/ and configure.py")
     for exe in EXE_ORDER:
         log.must([*HOST_CLI, "asm", exe, "--json"], "asm", f"the {exe} asm listings")
+
+
+# ---- the checker controls (todo nightly-gold-null-controls) ----
+#
+# Before a night starts, the attempt wrapper's check runs as a session runs it (the same argv,
+# claim environment, view of HEAD, plan and note) on the canary's matched function twice: its
+# committed C (gold) must exit 0, and the same unit with one volatile local added to that
+# function (null: compiled, but not the original bytes) must exit 1, measured below 100% in its
+# checks.jsonl. Anything else refuses the night, so a checker that calls everything exact, or
+# nothing, never judges a session. A --land-held night, which runs no session check, skips it.
+CONTROLS_RUN_DIR = "controls"  # build/driver/controls/<run>/<exe>/<func>/attempt-<n>/
+CONTROL_ATTEMPTS = {"gold": 1, "null": 2}  # each control's attempt number
+CONTROL_EXPECTED = {"gold": EXIT_OK, "null": EXIT_MISMATCH}
+# The first declaration of the null control's body: valid C89 there, and a stack store the
+# original function does not have (Watcom 10.6 -4r -s compiles it to other bytes).
+CONTROL_NULL_DECLARATION = "volatile int reverseapoc_null_control = 1;"
+CONTROL_NOTE_TEXT = json.dumps({"change": "control", "why": "control", "expect": "control"})
+_C_NOT_CODE = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*.*?\*/|//[^\n]*',
+                         re.DOTALL)  # fmt: skip
+
+
+def _code_only(text: str) -> str:
+    """`text` with every comment and literal blanked to spaces (line breaks kept), so each
+    offset is still the original's."""
+    return _C_NOT_CODE.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
+
+
+def null_control_unit(text: str, function: str) -> str:
+    """`text` with CONTROL_NULL_DECLARATION after the `{` of `function`'s one definition (a
+    mention in a comment or literal is not one); ValueError unless there is exactly one."""
+    pattern = re.compile(rf"\b{re.escape(function)}\s*\((?:[^()]|\([^()]*\))*\)\s*\{{")
+    found = list(pattern.finditer(_code_only(text)))
+    if len(found) != 1:
+        raise ValueError(f"{len(found) or 'no'} definitions of {function}, not one")
+    cut = found[0].end()
+    return f"{text[:cut]} {CONTROL_NULL_DECLARATION}{text[cut:]}"
+
+
+def run_controls(options: DriveOptions, seams: Seams, arms: Mapping[str, backends.Arm],
+                 log: _Log) -> dict:  # fmt: skip
+    """The gold and the null control (see above) under build/driver/controls/<run>/ (an earlier
+    start's directory of the same run is removed first): their exits and the null check's
+    percent as the STARTED record's `controls`, or Refused ("controls") when HEAD has no control
+    unit or row, the null unit cannot be built, an exit is not the expected one, or the null
+    check measured no percent or 100%."""
+    repo = Path(options.repo)
+    pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
+    probe = _probe(options, seams)
+    claims = {kind: _Claim(pick, options.run_id, repo, n, runs=DRIVER_DIR / CONTROLS_RUN_DIR)
+              for kind, n in CONTROL_ATTEMPTS.items()}  # fmt: skip
+    unit_rel = claims["gold"].unit_rel
+    if not _git_ok(probe._git, ["ls-tree", "--name-only", "HEAD", "--", unit_rel]).strip():
+        raise Refused("controls", f"HEAD has no {unit_rel}, the matched unit the checker "
+                                  "controls compile")  # fmt: skip
+    try:
+        size = _canary_size(repo, claims["gold"].attempt_dir)  # the plan's regions
+    except Refused as refused:
+        raise Refused("controls", refused.detail) from refused
+    earlier = repo / DRIVER_DIR / CONTROLS_RUN_DIR / options.run_id
+    if earlier.exists():  # a failure to remove it is the controls phase's refusal
+        shutil.rmtree(earlier)
+    base = seams.base_env if seams.base_env is not None else os.environ
+    exits = {}
+    for kind, claim in claims.items():
+        claim.attempt_dir.mkdir(parents=True)
+        probe._make_view(claim)
+        if kind == "null":
+            try:
+                text = null_control_unit(claim.view_unit.read_text(encoding="utf-8"), CANARY_FUNC)
+            except ValueError as exc:
+                raise Refused("controls", f"the null control of {unit_rel}: {exc}") from exc
+            write_atomic(claim.view_unit, text.encode("utf-8"))
+        write_atomic(claim.attempt_dir / hooks.PLAN_NAME, _canary_plan_text(size).encode("utf-8"))
+        write_atomic(claim.attempt_dir / hooks.CHECK_NOTE_NAME, CONTROL_NOTE_TEXT.encode("utf-8"))
+        done = log.run([*hooks.ATTEMPT_PREFIX, "check"], env=claim.env(base, arms))
+        exits[kind] = done.returncode
+    wrong = [f"the {kind} control exit {exits[kind]}, not {expected}"
+             for kind, expected in CONTROL_EXPECTED.items() if exits[kind] != expected]  # fmt: skip
+    # Exit 1 alone is also a unit that failed to compile: the null control must have been
+    # measured, below 100%, in the wrapper's own checks.jsonl.
+    null_percent = read_checks(claims["null"].attempt_dir).best_percent
+    if null_percent is None:
+        wrong.append(f"the null control has no measured percent in its {attempt.CHECK_LOG} "
+                     "(not compiled?)")  # fmt: skip
+    elif null_percent >= PERFECT:
+        wrong.append(f"the null control measured {null_percent:g}%")
+    if wrong:
+        raise Refused("controls", f"the checker failed its controls on {CANARY_EXE} {CANARY_FUNC}"
+                                  f": {'; '.join(wrong)} (see {PREFLIGHT_LOG}); no night runs "
+                                  "on a checker that misjudges a known answer")  # fmt: skip
+    return {"exe": CANARY_EXE, "unit": CANARY_UNIT, "function": CANARY_FUNC, **exits,
+            "null_percent": null_percent}  # fmt: skip
+
+
+# ---- the environment digest (todo run-environment-digest) ----
+
+BUILD_IMAGE = "reverseapoc-build:local"  # docker/compose.yaml's build image
+IMAGE_ID_ARGV = ("docker", "image", "inspect", "--format", "{{.Id}}", BUILD_IMAGE)
+# The repo-relative files whose sha256 the digest names (null: absent): the lock, the compiler
+# table and flags, the arms' prices and quota, and both session skills.
+ENVIRONMENT_FILES = ("uv.lock", "config/cflags.txt", "config/watcom.toml",
+                     "config/driver/backends.toml", "config/driver/quota.toml", SKILL,
+                     READABILITY_SKILL)  # fmt: skip
+_DIGEST_VIEW = "build/driver/digest/ufo2p/func_00000000/attempt-1/view/src/ufo2p/u_00000000.c"
+
+
+def _file_sha256(path: Path) -> str | None:
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def environment_digest(doc: Mapping) -> str:
+    """The sha256 of `doc` as sorted compact JSON: two nights compare one value."""
+    return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":"))
+                          .encode("utf-8")).hexdigest()  # fmt: skip
+
+
+def _prompt_sha256() -> str:
+    """The sha256 of every session prompt template, rendered for one made-up claim (the skill
+    text, hashed in `files`, left empty)."""
+    goal = goal_prompt("func_00000000", "u_00000000", "ufo2p", unit_path=_DIGEST_VIEW)
+    texts = [goal, readability_goal("u_00000000", "ufo2p", unit_path=_DIGEST_VIEW),
+             *(build(goal, "") for build in (codex_prompt, agy_prompt, copilot_prompt))]
+    return hashlib.sha256("\0".join(texts).encode("utf-8")).hexdigest()
+
+
+def _cli_versions(options: DriveOptions, seams: Seams,
+                  arms: Mapping[str, backends.Arm]) -> dict[str, str | None]:  # fmt: skip
+    """Each harness of the night's arms (refuse_arms' list) and its CLI's `--version` (null: it
+    named none), asked with the arm's stripped env; none on a --land-held night (no session)."""
+    if options.land_held:
+        return {}
+    clis = {backends.CLAUDE: seams.claude, backends.CODEX: seams.codex, backends.AGY: seams.agy,
+            backends.COPILOT: seams.copilot}  # fmt: skip
+    names = [name for name, _ in night_arms(options)] or list(
+        backends.routing_arms(options.routing)) or [MODEL]  # fmt: skip
+    found: dict[str, str | None] = {}
+    for arm in (arms[name] for name in names):
+        if arm.harness in found:
+            continue
+        if arm.harness == backends.CLAUDE:  # asked as the preflight asks it (_cli_version)
+            done = seams.run([seams.claude, "--version"])
+            shown = _VERSION_TEXT.search(done.stdout or "") if done.returncode == EXIT_OK else None
+            found[arm.harness] = shown.group(0) if shown else None
+            continue
+        found[arm.harness] = _installed_version(seams, clis[arm.harness],
+                                                cli_query_env(seams, arm, arms))
+    return found
+
+
+def environment(options: DriveOptions, seams: Seams, arms: Mapping[str, backends.Arm]) -> dict:
+    """The STARTED record's `environment`: HEAD, the build image's id (null: docker named
+    none), each harness's CLI version, the sha256 of each ENVIRONMENT_FILES file and of the
+    prompt templates, and `digest` over all of them but HEAD (a docs commit is the same
+    environment; the files and prompts that change a session are hashed on their own)."""
+    repo = Path(options.repo)
+    head = _git_text(seams, ["rev-parse", "HEAD"], "environment").strip()
+    image = (seams.run(list(IMAGE_ID_ARGV)).stdout or "").strip()
+    doc = {"head": head, "image": image if _IMAGE_ID.fullmatch(image) else None,
+           "cli": _cli_versions(options, seams, arms),
+           "files": {rel: _file_sha256(repo / rel) for rel in ENVIRONMENT_FILES},
+           "prompt": _prompt_sha256()}  # fmt: skip
+    return {"digest": environment_digest({k: v for k, v in doc.items() if k != "head"}),
+            **doc}  # fmt: skip
 
 
 def _missing_drafts(stdout: str) -> list[str] | None:
@@ -8788,6 +9062,10 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                                    sizings, len(near) if near_miss_on(options) else None)
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
+        with _phase("controls"):  # todo nightly-gold-null-controls: a session night only
+            controls = None if options.land_held else seams.controls(options, seams, arms, log)
+        with _phase("environment"):  # todo run-environment-digest
+            env_doc = environment(options, seams, arms)
     except Refused as refused:
         return _refusal(options, seams, refused)
     lanes = night_arms(options)  # 07.2-16 (D-22): the arms side by side, their workers summed
@@ -8809,7 +9087,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          arm_caps=options.arm_caps,
                          # todo resumed-held-run-budgets: what is left of each budget
                          budgets=tuple((sizing.arm, sizing.left) for sizing in sizings),
-                         near_miss=tuple(name for name, _ in options.near_miss_arms))  # fmt: skip
+                         near_miss=tuple(name for name, _ in options.near_miss_arms),
+                         environment=env_doc, controls=controls)  # fmt: skip
     for line in _budget_lines(options, sizings):  # todo budget-runs-and-contributors
         console(options, seams)(line)
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
