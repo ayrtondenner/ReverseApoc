@@ -409,10 +409,23 @@ def test_the_real_notifier_runs_the_owners_command_with_the_end_in_its_env(tmp_p
     out, command = _script(tmp_path)
     said: list[str] = []
     notify = driver.notifier(command, dict(os.environ), said.append)
-    notify("STOPPED", "night1", "reverseapoc drive night1: STOPPED guardrail: a & b | c")
+    notify("STOPPED", "night1", "reverseapoc drive night1: STOPPED guardrail: a-b c/d.e")
     assert out.read_text(encoding="utf-8") == (
-        "STOPPED|night1|reverseapoc drive night1: STOPPED guardrail: a & b | c\n")
+        "STOPPED|night1|reverseapoc drive night1: STOPPED guardrail: a-b c/d.e\n")
     assert said == []
+
+
+@pytest.mark.parametrize("text", ["a & b | c", "%PATH% !x! ^y", "<in >out", 'q"uote', "$(id) `id`",
+                                  "line1\nline2", "semi;colon"])  # fmt: skip
+def test_the_notifier_env_text_holds_no_shell_metacharacter(tmp_path, text):
+    # security review 2026-11-18: an owner command that expands the variable inline (cmd.exe
+    # %VAR%, sh $VAR unquoted) must not be able to run session-derived text
+    out, command = _script(tmp_path)
+    notify = driver.notifier(command, dict(os.environ), [].append)
+    notify("STOPPED", "night1", text)
+    got = out.read_text(encoding="utf-8").rstrip("\n").split("|", 2)[2]
+    assert set(got) <= set(driver.NOTIFY_SAFE_CHARS)
+    assert len(got) == len(text)
 
 
 def test_a_failing_notifier_is_named_and_never_raises(tmp_path):

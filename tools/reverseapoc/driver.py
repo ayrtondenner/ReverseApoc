@@ -7819,6 +7819,16 @@ NOTIFY_EVENT_ENV = "REVERSEAPOC_NOTIFY_EVENT"  # STOPPED or ENDED
 NOTIFY_RUN_ENV = "REVERSEAPOC_NOTIFY_RUN"  # the run id
 NOTIFY_TEXT_ENV = "REVERSEAPOC_NOTIFY_TEXT"  # one line: the event, reason, counts and detail
 NOTIFY_TIMEOUT_S = 60
+# Security review 2026-11-18: the text carries session-derived detail, and an owner command that
+# expands a variable inline (cmd.exe `%VAR%`, an unquoted sh `$VAR`) would let a shell parse it,
+# so every variable's value is cut to these characters; anything else becomes NOTIFY_STAND_IN.
+NOTIFY_SAFE_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:_/-")
+NOTIFY_STAND_IN = "_"
+
+
+def _notify_safe(value: str) -> str:
+    return "".join(ch if ch in NOTIFY_SAFE_CHARS else NOTIFY_STAND_IN for ch in value)
 
 
 def notifier(command: str | None, env: Mapping[str, str],
@@ -7834,7 +7844,8 @@ def notifier(command: str | None, env: Mapping[str, str],
              else {"start_new_session": True})  # fmt: skip  # session._group_options's
 
     def notify(event: str, run: str, text: str) -> None:
-        values = {**env, NOTIFY_EVENT_ENV: event, NOTIFY_RUN_ENV: run, NOTIFY_TEXT_ENV: text}
+        values = {**env, NOTIFY_EVENT_ENV: _notify_safe(event), NOTIFY_RUN_ENV: _notify_safe(run),
+                  NOTIFY_TEXT_ENV: _notify_safe(text)}  # fmt: skip
         try:  # the shell gets the owner's command line only; the night's text is in `values`
             proc = subprocess.Popen(command, shell=True, env=values, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
