@@ -463,6 +463,14 @@ def test_a_jump_over_a_shifted_body_is_no_run():
     assert runs(ours, theirs) == [("size", 1, 0)]
 
 
+def test_a_jump_to_the_start_of_inserted_code_is_no_extra_run():
+    """The original's jump lands on the instruction it inserted, ours on the one after: the
+    inserted run already shows that place, so the jumps land alike."""
+    ours = bytes.fromhex(f"7401 {INC_EAX} 41 c3")  # je over inc eax to inc ecx
+    theirs = bytes.fromhex(f"7401 {INC_EAX} {DEC_EAX} 41 c3")  # je to the inserted dec eax
+    assert runs(ours, theirs) == [("size", 0, 1)]
+
+
 def test_a_relocated_operand_is_no_run():
     ours, theirs = body(RELOCATED["ours"]), body(RELOCATED["theirs"])
     assert runs(ours, theirs, RELOCATED_FIELD) == []

@@ -3221,7 +3221,7 @@ def test_a_repeated_check_returns_the_cached_verdict(repo: Path, monkeypatch, ca
     assert _run(["attempt", "check"]) == 1
     capsys.readouterr()
     unit = attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c"
-    unit.write_bytes(UNIT_TEXT.replace(b"\n\n", b"\n  /* a comment */\n\n   ") + b"// tail\n")
+    unit.write_bytes(UNIT_TEXT.replace(b"\n\n", b"  /* a comment */\n\n   ")[:-1] + b" // tail\n")
     assert _run(["attempt", "check"], ready=False) == 1  # no plan or note needed: nothing runs
     out = capsys.readouterr().out.splitlines()
     assert len(runner.calls) == 1  # nothing compiled
@@ -3273,15 +3273,87 @@ def test_a_sweep_is_no_repeat_of_a_plain_check(repo: Path, monkeypatch, capsys):
     assert len(runner.calls) == 1 and attempt.repeat_count(repo) == 1
 
 
-def test_a_repeat_after_the_budget_still_answers(repo: Path, monkeypatch, capsys):
+def test_a_repeat_with_the_last_check_left_answers(repo: Path, monkeypatch, capsys):
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
-    _reserve(repo, attempt.CHECK_BUDGET - 1, log=True)
+    _reserve(repo, attempt.CHECK_BUDGET - 2, log=True)
     (attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c").write_bytes(UNIT_TEXT + b"int x;\n")
     assert _run(["attempt", "check"]) == 1
     capsys.readouterr()
     assert _run(["attempt", "check"]) == 1
     assert len(runner.calls) == 1
-    assert "no check used (0 left)" in capsys.readouterr().out.splitlines()[0]
+    assert "no check used (1 left)" in capsys.readouterr().out.splitlines()[0]
+
+
+def test_a_repeat_after_the_budget_is_refused_like_any_check(repo: Path, monkeypatch, capsys):
+    """A used budget still says stop: a repeat is no way around it."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    _reserve(repo, attempt.CHECK_BUDGET - 1, log=True)
+    (attempt.ROOTS.repo / "src" / "ufo2p" / "u_000a34f0.c").write_bytes(UNIT_TEXT + b"int x;\n")
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    assert _run(["attempt", "check"]) == 2
+    assert "check budget used" in capsys.readouterr().err
+    assert len(runner.calls) == 1 and attempt.repeat_count(repo) == 0
+
+
+def test_a_repeat_consumes_the_note(repo: Path, monkeypatch, capsys):
+    """The note was written for the repeated C: the next real check needs a new one (D-02)."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    _session_file(repo, "check-note.json", NOTE)
+    assert _run(["attempt", "check"], ready=False) == 1
+    assert "check-note.json was for this C: write a new one" in capsys.readouterr().out
+    assert not (repo / "check-note.json").exists()
+    _new_c("second")
+    assert _run(["attempt", "check"], ready=False) == 2
+    assert "check-note.json" in capsys.readouterr().err
+
+
+def test_attempt_diff_after_a_repeat_shows_the_repeated_check(diffed: Path, monkeypatch, capsys):
+    """The class line of a repeat names `attempt diff`, so it must print that run's diff."""
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    _new_c("second")
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc(differing=5)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    unit = attempt.ROOTS.src / "ufo2p" / f"{DIFF_UNIT}.c"
+    unit.write_bytes(DIFF_UNIT_TEXT)  # back to the first C: a repeat of 0001
+    assert _run(["attempt", "check"]) == 1
+    capsys.readouterr()
+    assert _run(["attempt", "diff"]) == 0
+    assert capsys.readouterr().out.startswith("attempt diff of check 0001 ")
+    _new_c("third")
+    _use(monkeypatch, FakeRunner(json.dumps(_diff_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1  # a plain run after the repeat is the latest again
+    capsys.readouterr()
+    assert _run(["attempt", "diff"]) == 0
+    assert capsys.readouterr().out.startswith("attempt diff of check 0003 ")
+
+
+def test_a_malformed_saved_diff_is_not_shown(repo: Path, monkeypatch, capsys):
+    """The class line only advises: a saved diff that does not read never makes a tool error."""
+    real = attempt._save_diff
+
+    def malformed(claim, roots, n, ran):
+        real(claim, roots, n, ran)
+        path = claim.attempt_dir / "checks" / f"{n:04d}.diff.json"
+        path.write_text(json.dumps({"class": "slot"}), encoding="utf-8")
+
+    monkeypatch.setattr(attempt, "_save_diff", malformed)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "    class: not shown (" in capsys.readouterr().out
+    assert _lines(repo)[0]["exit"] == 1
+
+
+def test_a_readability_check_saves_no_diff(readable: Path, monkeypatch, capsys):
+    """`attempt diff` is a matching form, so a readability summary never points at it."""
+    _readable_unit(readable, NAMED, renamed=True)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "    class" not in capsys.readouterr().out
+    assert not list((readable.parent / "checks").glob("*.diff.json"))
 
 
 def test_a_readability_check_is_never_cached(readable: Path, monkeypatch, capsys):
@@ -3296,9 +3368,15 @@ def test_a_readability_check_is_never_cached(readable: Path, monkeypatch, capsys
 @pytest.mark.parametrize(
     ("a", "b", "same"),
     [
-        ("int f(void){return 1;}", "int f(void){return 1;}  /* x */\n\n", True),
-        ("int f(void)\n{\n    return 1;\n}\n", "int f(void)\n{\n\treturn 1; // one\n}", True),
-        ("int a; /* multi\nline */ int b;", "int a;  int b;", True),
+        ("int f(void){return 1;}", "int f(void){return 1;}  /* x */", True),
+        ("int f(void)\n{\n    return 1;\n}\n", "int f(void)\r\n{\r\n\treturn 1; // one\n}\n", True),
+        ("int a; /* one\ntwo */ int b;", "int a;/* three\nfour */int b;", True),
+        ("int a; /* multi\nline */ int b;", "int a;  int b;", False),  # __LINE__ moves
+        ("int a;\nint b;", "int a;\n\nint b;", False),  # __LINE__ moves
+        ("#define A 1 /*\n*/ + 2", "#define A 1\n+ 2", False),  # the comment ends no directive
+        ("// try \\\nx = f();", "// try\nx = f();", False),  # the splice comments x out
+        ("a \\\n  b", "a \\\nb", False),  # spliced: `a b` against `ab`
+        ("a \\ \nb", "a \\\nb", False),  # a blank after the backslash: no splice
         ('char *s = "a  b";', 'char *s = "a b";', False),
         ('char *s = "/* x */";', 'char *s = "";', False),
         ("#define A 1\nint b;", "#define A 1 int b;", False),

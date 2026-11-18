@@ -39,11 +39,12 @@ After a plain run whose claimed function's bytes differ, the wrapper diffs the o
 compiled against the EXE on the host (classify.full_diff) and keeps it in checks/NNNN.diff.json:
 every differing run, ours beside the original's, each with its class. The summary prints the
 function's class and its runs per class; `attempt diff` (a matching session only) prints the
-latest plain check's runs in full, bounded by DIFF_LINES, with no check used. An object whose
-byte count is not the run's own is not shown. A matching check whose C, comments and blanks
-aside (`source_digest`), is that of an earlier plain run (or sweep, for a sweep) with exit 0 or
-1 gets that run's verdict and summary at once: no slot, no container, no plan or note read,
-one line in checks/repeats.jsonl (`repeat_count`, read by `reverseapoc stats`).
+runs of the plain check answered last in full, bounded by DIFF_LINES, with no check used. An
+object whose byte count is not the run's own is not shown. Within the budget, a matching check
+whose C, comments and blanks aside (`source_digest`), is that of an earlier plain run (or
+sweep, for a sweep) with exit 0 or 1 gets that run's verdict and summary at once: no slot, no
+container, no plan read, its check-note.json removed, one line in checks/repeats.jsonl
+(`repeat_count`, read by `reverseapoc stats`).
 
 In a readability session (REVERSEAPOC_SESSION_KIND=readability, 07-31; D-17, D-18, D-20) a
 plain `attempt check` also runs readlint on the host over the view unit, after the container
@@ -1147,6 +1148,9 @@ def _locked_check(
     checks = claim.attempt_dir / CHECKS_DIR
     checks.mkdir(exist_ok=True)
     n = _reserved(checks) + 1
+    if n > CHECK_BUDGET:
+        raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
+                           "(D-07); write notes.md and stop")  # fmt: skip
     unit = unit_path(claim, roots)
     try:
         text = unit.read_bytes()
@@ -1158,9 +1162,6 @@ def _locked_check(
                else _repeat_of(claim.attempt_dir, source_digest(text), sweep))  # fmt: skip
     if earlier is not None:
         return _repeat(claim, *earlier, used=n - 1)
-    if n > CHECK_BUDGET:
-        raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
-                           "(D-07); write notes.md and stop")  # fmt: skip
     note = _plan_and_note(claim, roots)  # D-01: refused here, no checks/NNNN.c exists yet
     default = _default_spec(claim, roots) if sweep else ""
     stem = f"{n:04d}"
@@ -1175,10 +1176,10 @@ def _locked_check(
         held.keep = True  # N7: fail closed from here until a removal succeeds
     removal: list[str] = []
     try:
-        if not sweep:
+        if not sweep and claim.kind != READABILITY:  # `attempt diff` is a matching form
             _save_diff(claim, roots, n, ran)  # before _record: the summary prints its class
         # 07-31: the readability half, in the same run and slot (one budget step).
-        lint =lint_view(claim) if claim.kind == READABILITY and not sweep else None
+        lint = lint_view(claim) if claim.kind == READABILITY and not sweep else None
         line, summary = _record(claim, ran, n, source, seconds, sweep=sweep, default=default,
                                 saved_path=checks / f"{stem}.json", log=log, lint=lint,
                                 note=note)  # fmt: skip
@@ -1322,18 +1323,23 @@ def _plural(count: int, word: str) -> str:
 
 def _class_lines(attempt_dir: Path, n: int) -> list[str]:
     """The class line `attempt check` prints after the claimed function's window: the function's
-    class and its runs per class, from run `n`'s saved diff (nothing when it saved none)."""
-    saved = _saved_diff(attempt_dir, n)
-    if saved is None:
-        return []
-    if "error" in saved:
-        return [f"    class: not shown ({saved['error']})"]
-    runs = saved["runs"]
-    if not runs:
-        return [f"    class {saved['class']}: no differing run in the decoded instructions"]
-    counts = ", ".join(f"{k} {v}" for k, v in Counter(run["class"] for run in runs).items())
-    return [f"    class {saved['class']}: {_plural(len(runs), 'differing run')} ({counts}); "
-            "`attempt diff` prints each in full"]  # fmt: skip
+    class and its runs per class, from run `n`'s saved diff (nothing when it saved none). A
+    saved diff that does not read is said in the line, as _board says its own faults: an error
+    escaping here would turn the run into a tool error."""
+    try:
+        saved = _saved_diff(attempt_dir, n)
+        if saved is None:
+            return []
+        if "error" in saved:
+            return [f"    class: not shown ({saved['error']})"]
+        runs = saved["runs"]
+        if not runs:
+            return [f"    class {saved['class']}: no differing run in the decoded instructions"]
+        counts = ", ".join(f"{k} {v}" for k, v in Counter(run["class"] for run in runs).items())
+        return [f"    class {saved['class']}: {_plural(len(runs), 'differing run')} ({counts}); "
+                "`attempt diff` prints each in full"]  # fmt: skip
+    except (OSError, KeyError, TypeError, AttributeError) as exc:
+        return [f"    class: not shown (the saved diff does not read: {type(exc).__name__})"]
 
 
 def _run_rows(run: Mapping[str, Any]) -> list[str]:
@@ -1368,14 +1374,27 @@ def diff_lines(claim: Claim, n: int, saved: Mapping[str, Any], path: Path) -> li
     return [head, *shown, f"saved {path.as_posix()}"]
 
 
+def _latest_plain(attempt_dir: Path) -> int | None:
+    """The plain run whose verdict the attempt gave last: its latest plain run in checks.jsonl,
+    or the earlier run a later plain repeat answered with (a repeat line records the slots used
+    when it ran, so a run after it has a higher number). None before any plain check."""
+    runs = list(_plain_runs(attempt_dir))
+    last = runs[-1] if runs else 0
+    answered = runs[-1] if runs else None
+    for entry in _repeats(attempt_dir):
+        of, used = entry.get("of"), entry.get("used")
+        if entry.get("sweep") is False and type(of) is int and type(used) is int and used >= last:
+            answered = of
+    return answered
+
+
 def cmd_diff() -> int:
-    """Print the full diff of the attempt's latest plain check, saved when it ran: no check
-    used, nothing compiled and no EXE read."""
+    """Print the full diff of the plain check the attempt answered last (_latest_plain), saved
+    when it ran: no check used, nothing compiled and no EXE read."""
     claim = Claim.from_env(os.environ, roots=ROOTS)
-    runs = list(_plain_runs(claim.attempt_dir))
-    if not runs:
+    n = _latest_plain(claim.attempt_dir)
+    if n is None:
         raise AttemptError("no plain check in this attempt yet: run `attempt check` first")
-    n = runs[-1]
     saved = _saved_diff(claim.attempt_dir, n)
     if saved is None:
         print(f"check {n:04d} saved no full diff: the claimed function's bytes matched, it was "
@@ -1390,20 +1409,41 @@ def cmd_diff() -> int:
 
 # ---- a repeated C (refuse-repeated-check): the earlier verdict, no check used ----
 
-# A string or character literal (kept as written), or a run of blanks and comments (one space,
-# C's own rule for a comment). A literal never spans a line; a block comment may.
+# A string or character literal (kept as written), or a run of blanks and comments. A literal
+# never spans a line; a block comment may, and a line comment does past a backslash-newline
+# (the splice comes before the comment, C's translation phases 2 and 3).
 _C_TEXT = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''
-                     r"|(?:[ \t\f\v\r]|/\*.*?\*/|//[^\n]*)+", re.DOTALL)  # fmt: skip
+                     r"|(?:[ \t\f\v\r]|/\*.*?\*/|//(?:\\.|[^\\\n])*)+", re.DOTALL)  # fmt: skip
+# A line break inside a comment. Outside a literal every other \r was a blank, now a space, so
+# the mark never stands for anything else, and it keeps the line count (__LINE__).
+_COMMENT_BREAK = "\r"
+_SPLICE = "\\"
+
+
+def _blanked(hit: re.Match[str]) -> str:
+    text = hit[0]
+    return text if text[0] in "\"'" else " " + _COMMENT_BREAK * text.count("\n")
+
+
+def _stripped(lines: Iterable[str]) -> Iterator[str]:
+    """Each line without its blank ends, but for the blank a splice joins to the line before,
+    or a blank after a backslash, which keeps that backslash from splicing."""
+    spliced = False
+    for line in lines:
+        line = line if spliced else line.lstrip(" ")
+        line = line if line.rstrip(" ").endswith(_SPLICE) else line.rstrip(" ")
+        spliced = line.endswith(_SPLICE)
+        yield line
 
 
 def source_digest(text: bytes) -> str:
-    """sha256 of the C with its comments and blanks normalized outside literals, each line
-    stripped and empty lines dropped. Line breaks stay, since a directive ends at one. Two
-    texts with one digest compile alike; the converse need not hold (`a+b` and `a + b`)."""
+    """sha256 of the C with every run of blanks and comments outside literals as one space
+    (C's own rule for a comment) and each line's blank ends stripped. Every line stays, since a
+    directive ends at one and __LINE__ counts them. Two texts with one digest compile alike;
+    the converse need not hold (`a+b` and `a + b`)."""
     code = text.decode("latin-1")  # every byte maps to one character and back
-    spaced = _C_TEXT.sub(lambda hit: hit[0] if hit[0][0] in "\"'" else " ", code)
-    lines = [line.strip(" ") for line in spaced.split("\n")]
-    return hashlib.sha256("\n".join(line for line in lines if line).encode("latin-1")).hexdigest()
+    lines = _stripped(_C_TEXT.sub(_blanked, code).split("\n"))
+    return hashlib.sha256("\n".join(lines).encode("latin-1")).hexdigest()
 
 
 def _logged_line(raw: str) -> CheckLogLine | None:
@@ -1451,24 +1491,36 @@ def _same_c_doc(attempt_dir: Path, source: str, digest: str) -> dict[str, Any] |
 
 def _repeat(claim: Claim, line: CheckLogLine, doc: dict[str, Any], *, used: int) -> tuple[int, str]:
     """Answer a repeat of `line`'s run with its verdict and summary, rebuilt from its saved
-    JSON, and log it in checks/repeats.jsonl. No slot is reserved and nothing runs, so neither
-    the budget nor plan.json and check-note.json are read."""
+    JSON, and log it in checks/repeats.jsonl with the `used` slots. No slot is reserved and
+    nothing runs, so plan.json is not read; a check-note.json, written for this C, is removed
+    unread, so the next real check needs a new one (D-02)."""
     log = claim.attempt_dir / CHECKS_DIR / REPEATS_LOG
     with log.open("a", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps({"of": line.n, "sweep": line.sweep}, sort_keys=True) + "\n")
+        fh.write(json.dumps({"of": line.n, "sweep": line.sweep, "used": used},
+                            sort_keys=True) + "\n")  # fmt: skip
     _ledgered(claim, log)
     summary = _summary(claim, line, doc, Ran(line.exit, "", ""), 0.0, repeat_used=used)
+    note = claim.attempt_dir / CHECK_NOTE_NAME
+    if note.is_file():
+        note.unlink()
+        summary += f"\n  {CHECK_NOTE_NAME} was for this C: write a new one for the next check"
     return line.exit, summary
+
+
+def _repeats(attempt_dir: Path) -> Iterator[dict[str, Any]]:
+    """The lines of the attempt's checks/repeats.jsonl, oldest first; others are skipped."""
+    log = Path(attempt_dir) / CHECKS_DIR / REPEATS_LOG
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+    for raw in lines:
+        entry = _parse(raw)
+        if entry is not None:
+            yield entry
 
 
 def repeat_count(attempt_dir: Path) -> int:
     """The checks an attempt answered as repeats: the lines of its checks/repeats.jsonl (read
     by `reverseapoc stats`)."""
-    log = Path(attempt_dir) / CHECKS_DIR / REPEATS_LOG
-    if not log.is_file():
-        return 0
-    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
-    return sum(_parse(raw) is not None for raw in lines)
+    return sum(1 for _ in _repeats(attempt_dir))
 
 
 CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for

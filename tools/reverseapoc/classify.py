@@ -301,14 +301,24 @@ def _run_class(a: _Side, b: _Side, span: Span) -> str:
     return klass or ("size" if i2 - i1 != j2 - j1 else "mixed")
 
 
-def _landings(a: _Side, b: _Side, opcodes: Sequence[Opcode]) -> dict[int, int]:
-    """Our instruction index -> the original's it aligns with: each pair of an equal block, the
-    start of every run (jumps to the same run land together) and the end of both sides."""
-    aligned = {len(a.insns): len(b.insns)}
-    for tag, i1, i2, j1, _ in opcodes:
-        aligned.setdefault(i1, j1)
+def _widen(aligned: dict[int, tuple[int, int]], i: int, low: int, high: int) -> None:
+    old_low, old_high = aligned.get(i, (low, high))
+    aligned[i] = (min(old_low, low), max(old_high, high))
+
+
+def _landings(a: _Side, b: _Side, opcodes: Sequence[Opcode]) -> dict[int, tuple[int, int]]:
+    """Our instruction index -> the span of the original's indexes a jump there lands alike on:
+    the pair of an equal instruction; inside a run or on its edges, the original's whole run
+    (the run already shows that place); the end of both sides."""
+    aligned: dict[int, tuple[int, int]] = {}
+    for tag, i1, i2, j1, j2 in opcodes:
         if tag == "equal":
-            aligned.update((i1 + k, j1 + k) for k in range(i2 - i1))
+            for k in range(i2 - i1):
+                _widen(aligned, i1 + k, j1 + k, j1 + k)
+            continue
+        for i in range(i1, i2 + 1):
+            _widen(aligned, i, j1, j2)
+    _widen(aligned, len(a.insns), len(b.insns), len(b.insns))
     return aligned
 
 
@@ -319,14 +329,16 @@ def _equal_pairs(opcodes: Sequence[Opcode]) -> Iterator[tuple[int, int]]:
 
 
 def _lands_alike(mine: Insn, other: Insn, indexes: tuple[dict[int, int], dict[int, int]],
-                 aligned: dict[int, int]) -> bool:  # fmt: skip
+                 aligned: dict[int, tuple[int, int]]) -> bool:  # fmt: skip
     """Whether two aligned jumps land alike: on aligned instructions (`indexes` are both sides'
-    _Side.index), or, outside the function, on the same address."""
+    _Side.index, `aligned` _landings'), or, outside the function, on the same address."""
     ours, theirs = indexes
     target = ours.get(mine.branch_target)
     if target is None:
         return mine.branch_target == other.branch_target
-    return aligned.get(target) == theirs.get(other.branch_target)
+    landed = theirs.get(other.branch_target)
+    low, high = aligned[target]
+    return landed is not None and low <= landed <= high
 
 
 def _strayed_jumps(a: _Side, b: _Side, opcodes: Sequence[Opcode]) -> Iterator[Span]:
