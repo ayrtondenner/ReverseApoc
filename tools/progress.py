@@ -47,7 +47,9 @@ DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the
 squarified treemap, EXE > unit > function), and DIR/index.html (the progress page, served at
 the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
 when --config sits in a git checkout, the progress-over-days charts of the three figures
-re-derived from its history; a shallow clone gets a note instead);
+re-derived from its history, and the provenance split of the matches from its commit trailers;
+a shallow clone gets a note instead; plus the hand-off board of config/handoff.csv and the
+newest cold-rebuild record of progress/verifications.jsonl, when they have rows);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -1590,6 +1592,173 @@ def build_provenance_doc(provenance: Provenance | None) -> dict[str, object] | N
 
 
 
+# ---- the cold-rebuild record (todo cold-rebuild-record) ----
+#
+# CI holds no game file and no compiler (both user-supplied), so the rebuild runs on the owner's
+# machine: after `ninja -t clean && ninja verify` in a fresh container passes, the owner appends
+# one JSON line per verified commit to progress/verifications.jsonl (no game bytes: a commit, a
+# date, the image digest and each rebuilt EXE's SHA-1). The page shows the last line, each
+# SHA-1 compared with config/targets.toml.
+
+VERIFICATIONS_JSONL = Path("progress") / "verifications.jsonl"
+TARGETS_TOML = "targets.toml"
+VERIFICATION_KEYS = ("commit", "date", "image", "sha1")
+_HEX40 = re.compile(r"[0-9a-f]{40}")  # a full commit id, a SHA-1
+_IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
+IMAGE_SHORT = len("sha256:") + 12  # the digest prefix the page shows
+SHA1_SHORT = 12
+
+
+@dataclass(frozen=True)
+class Verification:
+    """The newest record: its commit, date and image, (EXE, SHA-1, equal to targets.toml's) in
+    EXES order, and how many records the file holds."""
+
+    commit: str
+    date: str
+    image: str
+    sha1: tuple[tuple[str, str, bool], ...]
+    records: int
+
+
+def _is_date(cell: str) -> bool:
+    """Whether `cell` is a real YYYY-MM-DD date (month 13 is not)."""
+    if not _DATE.fullmatch(cell):
+        return False
+    try:
+        datetime.date.fromisoformat(cell)
+    except ValueError:
+        return False
+    return True
+
+
+def _record_problem(record: object) -> str | None:
+    """Why a verifications.jsonl record is malformed, None when it is not."""
+    if not isinstance(record, dict):
+        return "not an object"
+    keys = sorted(set(record) ^ set(VERIFICATION_KEYS))
+    if keys:
+        return f"key {keys[0]!r} is missing or unknown (keys: {', '.join(VERIFICATION_KEYS)})"
+    if not isinstance(record["commit"], str) or not _HEX40.fullmatch(record["commit"]):
+        return "commit is not a full lower-case commit id"
+    if not isinstance(record["date"], str) or not _is_date(record["date"]):
+        return "date is not YYYY-MM-DD"
+    if not isinstance(record["image"], str) or not _IMAGE.fullmatch(record["image"]):
+        return "image is not a sha256: digest"
+    sha1 = record["sha1"]
+    labels = [label for _stem, label in EXES]
+    if not isinstance(sha1, dict) or sorted(sha1) != sorted(labels) or not all(
+            isinstance(v, str) and _HEX40.fullmatch(v) for v in sha1.values()):
+        return f"sha1 does not map {' and '.join(labels)} to lower-case SHA-1s"
+    return None
+
+
+def _target_sha1s(config: Path) -> dict[str, str]:
+    """name -> sha1 of each [[targets]] of config/targets.toml."""
+    path = Path(config) / TARGETS_TOML
+    try:
+        data = tomllib.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ProgressError(f"{path}: cannot read ({exc})") from None
+    targets = data.get("targets", [])
+    if not isinstance(targets, list) or not all(isinstance(t, dict) for t in targets):
+        raise ProgressError(f"{path}: targets is not an array of tables")
+    return {t.get("name"): t.get("sha1") for t in targets}
+
+
+def read_verification(config: Path) -> Verification | None:
+    """The newest (last) record of progress/verifications.jsonl next to `config`, None without
+    the file; a blank line is skipped. A malformed line is a ProgressError naming it."""
+    path = Path(config).resolve().parent / VERIFICATIONS_JSONL
+    if not path.exists():
+        return None
+    records = []
+    for number, line in enumerate(_repo_text(path).splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ProgressError(f"{path}: line {number}: not JSON ({exc})") from None
+        problem = _record_problem(record)
+        if problem:
+            raise ProgressError(f"{path}: line {number}: {problem}")
+        records.append(record)
+    if not records:
+        return None
+    newest, targets = records[-1], _target_sha1s(config)
+    sha1 = tuple((label, newest["sha1"][label], newest["sha1"][label] == targets.get(label))
+                 for _stem, label in EXES)  # fmt: skip
+    return Verification(newest["commit"], newest["date"], newest["image"], sha1, len(records))
+
+
+def build_verification_doc(verification: Verification | None) -> dict[str, object] | None:
+    if verification is None:
+        return None
+    return {"commit": verification.commit, "date": verification.date,
+            "image": verification.image, "records": verification.records,
+            "sha1": {label: {"sha1": sha1, "identical": same}
+                     for label, sha1, same in verification.sha1}}  # fmt: skip
+
+
+# ---- the hand-off board (todo long-tail-handoff-board) ----
+#
+# config/handoff.csv lists the functions retired from agent queues (the picker skips them) for
+# the owner or a human contributor; the page lists it. A missing or header-only file lists none.
+
+HANDOFF_CSV = "handoff.csv"
+HANDOFF_COLUMNS = ("exe", "address", "reason", "retired_on", "return_rule")
+
+
+@dataclass(frozen=True)
+class HandoffRow:
+    """One board row joined with its function (status.csv's name, status and best percent)."""
+
+    stem: str
+    label: str
+    function: Function
+    reason: str
+    retired_on: str
+    return_rule: str
+
+
+def read_handoff(config: Path, progress: Progress) -> tuple[HandoffRow, ...]:
+    """The rows of config/handoff.csv in file order, each a game or thunk row of `progress`
+    (derive's output), once; () without the file. A wrong header, exe, address or date is a
+    ProgressError naming the row."""
+    path = Path(config) / HANDOFF_CSV
+    if not path.exists():
+        return ()
+    functions = {(exe.stem, f.start): (exe.label, f) for exe in progress.exes
+                 for f in exe.functions}  # fmt: skip
+    stems = [stem for stem, _label in EXES]
+    rows: list[HandoffRow] = []
+    for number, rec in enumerate(_records(path, HANDOFF_COLUMNS), start=1):
+        if rec["exe"] not in stems:
+            raise ProgressError(f"{path}: data row {number}: exe {rec['exe']!r} is not a "
+                                "config stem")  # fmt: skip
+        key = (rec["exe"], _address(path, number, "address", rec["address"]))
+        if not _is_date(rec["retired_on"]):
+            raise ProgressError(f"{path}: data row {number}: retired_on "
+                                f"{rec['retired_on']!r} is not YYYY-MM-DD")  # fmt: skip
+        if key not in functions:
+            raise ProgressError(f"{path}: data row {number}: the row at 0x{key[1]:08X} names no "
+                                f"game or thunk row of config/{key[0]}/{FUNCTIONS_CSV}")
+        if any((row.stem, row.function.start) == key for row in rows):
+            raise ProgressError(f"{path}: data row {number}: 0x{key[1]:08X} appears twice")
+        label, function = functions[key]
+        rows.append(HandoffRow(key[0], label, function, rec["reason"], rec["retired_on"],
+                               rec["return_rule"]))  # fmt: skip
+    return tuple(rows)
+
+
+def build_handoff_doc(rows: Iterable[HandoffRow]) -> list[dict[str, object]]:
+    return [{"exe": r.stem, "address": f"0x{r.function.start:08X}", "name": r.function.name,
+             "status": r.function.status, "best_percent": r.function.best_percent,
+             "reason": r.reason, "retired_on": r.retired_on, "return_rule": r.return_rule}
+            for r in rows]  # fmt: skip
+
+
 def render(doc: object) -> bytes:
     """JSON bytes: indent 2, ASCII, LF, trailing newline."""
     return (json.dumps(doc, indent=2) + "\n").encode("ascii")
@@ -1667,9 +1836,12 @@ def build_mechanics(mechanics: Mechanics | None) -> dict[str, object] | None:
 
 def build_progress(progress: Progress, commit: str | None = None,
                    mechanics: Mechanics | None = None, *,
-                   provenance: Provenance | None = None) -> dict[str, object]:  # fmt: skip
+                   provenance: Provenance | None = None,
+                   verification: Verification | None = None,
+                   handoff: Iterable[HandoffRow] = ()) -> dict[str, object]:  # fmt: skip
     """progress.json: per EXE and combined counts, the percent, the mechanics coverage view
-    (null without mechanics.toml), the provenance split (null outside a checkout) and the notes
+    (null without mechanics.toml), the provenance split (null outside a checkout), the newest
+    cold-rebuild record (null without one), the hand-off board ([] without rows) and the notes
     (D-26, D-50, DEC-05)."""
     return {
         "version": PROGRESS_VERSION,
@@ -1679,6 +1851,8 @@ def build_progress(progress: Progress, commit: str | None = None,
         "combined": _totals_doc(progress.combined),
         "mechanics": build_mechanics(mechanics),
         "provenance": build_provenance_doc(provenance),
+        "verification": build_verification_doc(verification),
+        "handoff": build_handoff_doc(handoff),
         "notes": list(NOTES),
     }
 
@@ -1726,9 +1900,12 @@ def build_exe_figure_shield(exe: ExeProgress, figure: str) -> dict[str, object]:
 
 def write_progress_json(progress: Progress, path: Path, commit: str | None = None,
                         mechanics: Mechanics | None = None, *,
-                        provenance: Provenance | None = None) -> None:  # fmt: skip
+                        provenance: Provenance | None = None,
+                        verification: Verification | None = None,
+                        handoff: Iterable[HandoffRow] = ()) -> None:  # fmt: skip
     _write_atomic(path, render(build_progress(progress, commit, mechanics,
-                                              provenance=provenance)))  # fmt: skip
+                                              provenance=provenance, verification=verification,
+                                              handoff=handoff)))  # fmt: skip
 
 
 def write_shield(progress: Progress, path: Path) -> None:
@@ -2913,10 +3090,49 @@ def _provenance_html(provenance: Provenance | None) -> list[str]:
             "</section>"]  # fmt: skip
 
 
+def _verification_html(verification: Verification | None) -> list[str]:
+    """The newest cold-rebuild record in one meta line, linked to its commit; none without."""
+    if verification is None:
+        return []
+    exes = ", ".join(f"{label} SHA-1 {sha1[:SHA1_SHORT]} "
+                     f"{'identical to' if same else 'differs from'} the original"
+                     for label, sha1, same in verification.sha1)  # fmt: skip
+    url = COMMIT_URL + verification.commit
+    return [f'<p class="meta">Cold rebuild verified at commit <a href="{_xml(url)}">'
+            f"{_xml(verification.commit[:COMMIT_SHORT])}</a> on {_xml(verification.date)} in "
+            f"image {_xml(verification.image[:IMAGE_SHORT])}: {_xml(exes)}.</p>"]  # fmt: skip
+
+
+HANDOFF_HEADING = "Hand-off board"
+HANDOFF_CAPTION = (
+    "Functions retired from the agent queues after several models failed on them, left for the "
+    "owner or a human contributor. Each row gives the best objdiff score so far, the day it was "
+    "retired, why, and the rule for when it goes back to the agents (config/handoff.csv).")
+HANDOFF_COLUMNS_SHOWN = ("Function", "EXE", "Best", "Retired", "Why", "Returns when")
+
+
+def _handoff_html(rows: Sequence[HandoffRow]) -> list[str]:
+    """The `Hand-off board` section, one table row per board row in file order; nothing when
+    the board is empty or absent."""
+    if not rows:
+        return []
+    head = "".join(f'<th scope="col">{name}</th>' for name in HANDOFF_COLUMNS_SHOWN)
+    body = ["<tr>" + "".join(f"<td>{_xml(cell)}</td>" for cell in (
+                r.function.name, r.label, shield_message(r.function.best_percent), r.retired_on,
+                r.reason, r.return_rule)) + "</tr>" for r in rows]  # fmt: skip
+    return ['<section class="handoff" aria-labelledby="handoff">',
+            f'<h2 id="handoff">{HANDOFF_HEADING}</h2>',
+            f'<p class="caption">{_xml(HANDOFF_CAPTION)}</p>', '<table class="split">',
+            f"<thead><tr>{head}</tr></thead>", "<tbody>", *body, "</tbody>", "</table>",
+            "</section>"]  # fmt: skip
+
+
 def render_html(progress: Progress, commit: str | None = None,
                 mechanics: Mechanics | None = None,
                 timeline: Timeline | None = None, *,
-                provenance: Provenance | None = None) -> str:  # fmt: skip
+                provenance: Provenance | None = None,
+                verification: Verification | None = None,
+                handoff: Sequence[HandoffRow] = ()) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, the three figures (strict, functions, fuzzy: todo progress-three-figures), a
     percent bar, the figures in text and the function strip (one tick per game and
@@ -2932,7 +3148,9 @@ def render_html(progress: Progress, commit: str | None = None,
     give the same bytes; without a commit only the "Updated from commit" line is missing. Given
     `mechanics` (derive_mechanics), the `Mechanics coverage` section follows the strip's key;
     without it the page has no such section and no rule of it. Given `provenance`
-    (load_provenance), the `Who made the matches` section comes first after the keys. Signed asm
+    (load_provenance), the `Who made the matches` section comes first after the keys, then the
+    `Hand-off board` when `handoff` (read_handoff) has rows; `verification`
+    (read_verification) adds the newest cold-rebuild record under the commit line. Signed asm
     rows that exclude_assembler moved out are stated per EXE, drawn as assembler ticks and
     library cells, and keyed under the strip's key (D-23)."""
     assembler = any(exe.assembler_rows for exe in progress.exes)
@@ -2942,16 +3160,18 @@ def render_html(progress: Progress, commit: str | None = None,
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
              _page_css(coverage=mechanics is not None, assembler=assembler,
                        timeline=timeline is not None and bool(timeline.days),
-                       split=provenance is not None and bool(provenance.exes)), "</style>",
+                       split=bool(handoff or (provenance and provenance.exes))), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
                      f"{_xml(commit[:COMMIT_SHORT])}</a></p>")  # fmt: skip
+    lines += _verification_html(verification)
     for exe in progress.exes:
         lines += _exe_html(exe)
     lines += [STRIP_KEY,
               *([ASSEMBLER_KEY] if assembler else []),
               *_provenance_html(provenance),
+              *_handoff_html(handoff),
               *_mechanics_html(mechanics),
               *_timeline_html(timeline),
               "<h2>The mosaic</h2>",
@@ -2966,9 +3186,12 @@ def render_html(progress: Progress, commit: str | None = None,
 def write_html(progress: Progress, path: Path, commit: str | None = None,
                mechanics: Mechanics | None = None,
                timeline: Timeline | None = None, *,
-               provenance: Provenance | None = None) -> None:  # fmt: skip
+               provenance: Provenance | None = None,
+               verification: Verification | None = None,
+               handoff: Sequence[HandoffRow] = ()) -> None:  # fmt: skip
     _write_atomic(path, render_html(progress, commit, mechanics, timeline,
-                                    provenance=provenance).encode("utf-8"))  # fmt: skip
+                                    provenance=provenance, verification=verification,
+                                    handoff=handoff).encode("utf-8"))  # fmt: skip
 
 
 # ---- command line ----
@@ -3000,6 +3223,8 @@ class _Derived:
     mechanics: Mechanics | None
     timeline: Timeline | None = None
     provenance: Provenance | None = None
+    verification: Verification | None = None
+    handoff: tuple[HandoffRow, ...] = ()
 
 
 Writer = Callable[[_Derived, Path], None]
@@ -3023,7 +3248,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda d, path: write_progress_json(
-            d.shown, path, args.commit, d.mechanics, provenance=d.provenance)
+            d.shown, path, args.commit, d.mechanics, provenance=d.provenance,
+            verification=d.verification, handoff=d.handoff)
         yield args.out / SHIELD_JSON, _on_shown(write_shield)
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
@@ -3031,7 +3257,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         yield from _figure_shield_writes(args.out)
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
-            d.shown, path, args.commit, d.mechanics, d.timeline, provenance=d.provenance)
+            d.shown, path, args.commit, d.mechanics, d.timeline, provenance=d.provenance,
+            verification=d.verification, handoff=d.handoff)
     if args.report is not None:
         yield args.report, _on_shown(write_report)
     if args.decomphub is not None:
@@ -3080,8 +3307,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         found = derive_mechanics(args.config, progress)
         shown = exclude_assembler(progress, found.assembler) if found else progress
         timeline = _timeline(args.config, found) if args.out is not None else None
-        provenance = _provenance(args.config, shown) if args.out is not None else None
-        derived = _Derived(progress, shown, found, timeline, provenance)
+        derived = _Derived(progress, shown, found, timeline)
+        if args.out is not None:
+            derived = dataclasses.replace(
+                derived, provenance=_provenance(args.config, shown),
+                verification=read_verification(args.config),
+                handoff=read_handoff(args.config, progress))  # fmt: skip
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
             write(derived, path)

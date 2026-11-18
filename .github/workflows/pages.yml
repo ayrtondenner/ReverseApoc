@@ -8,7 +8,9 @@ name: Pages
 # progress-shield-fuzzy.json and progress-shield-{functions,fuzzy}-<stem>.json), progress.svg and
 # index.html (the progress page, served at the site root the README links); build/report.json
 # goes to recomp.fyi as one artifact. Only derived counts and names leave CI, never game bytes:
-# no game file exists in a checkout of this repository.
+# no game file exists in a checkout of this repository. CI cannot rebuild the EXEs (the game and
+# the Watcom compiler are user-supplied), so the page shows the newest cold-rebuild record the
+# owner appended to progress/verifications.jsonl after a clean `ninja verify`.
 
 on:
   push:
@@ -20,6 +22,8 @@ on:
       - "config/mechanics.toml"
       - "config/mechanics-members.csv"
       - "config/asm-functions.csv"
+      - "config/handoff.csv"
+      - "progress/verifications.jsonl"
       - "tools/progress.py"
       - "decomphub.progress.json"
       - ".github/workflows/pages.yml"
