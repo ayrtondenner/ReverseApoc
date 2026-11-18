@@ -24,7 +24,31 @@ INCLUDE_ASM(func_0005F180);
 INCLUDE_ASM(func_0005F230);
 INCLUDE_ASM(func_0005F290);
 INCLUDE_ASM(func_0005F320);
-INCLUDE_ASM(func_0005F3B0);
+struct unk_0008 {
+    /* 0x00 */ s16 f_00;
+    /* 0x02 */ u8 data[0x06];
+};
+extern struct unk_0008 D_00143F88[];
+
+struct unk_0008 *func_0005F3B0(void)
+{
+    struct unk_0008 *p;
+    s16 i;
+
+    p = D_00143F88;
+    i = 0;
+    do {
+        if (p->f_00 == 0) {
+            break;
+        }
+        i++;
+        p++;
+    } while (i < 50);
+    if (i == 50) {
+        p = 0;
+    }
+    return p;
+}
 INCLUDE_ASM(func_0005F3E0);
 INCLUDE_ASM(func_0005F410);
 INCLUDE_ASM(func_0005F460);
