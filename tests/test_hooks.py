@@ -2481,3 +2481,252 @@ def test_egress_session_keeps_scoped_searches(repo):
                     tool("Read", repo,
                          file_path=native(repo / "docs" / "matching.md"))):  # fmt: skip
         assert not matching(payload, egress).deny, payload["tool_input"]
+
+
+# --- the drive write guard (todo drive-write-guard) -------------------------------------------
+# While a `reverseapoc drive` holds build/driver/drive.lock (a live OS lock), the always layer
+# refuses edits under that checkout and shell commands that write there or run tests, uv or the
+# CLI from it. A lock file no process holds is stale and blocks nothing. The locks are held by a
+# child process in a temp checkout, never in this one.
+
+HOLDER = """
+import sys
+from reverseapoc.locks import ProcessLock
+lock = ProcessLock(sys.argv[1])
+print("held" if lock.try_acquire() else "busy", flush=True)
+sys.stdin.readline()
+"""
+
+
+@pytest.fixture
+def live_drive(repo):
+    """`repo` while a child process holds its build/driver/drive.lock, as a running drive does."""
+    lock = repo / "build" / "driver" / "drive.lock"
+    child = subprocess.Popen([sys.executable, "-c", HOLDER, str(lock)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)  # fmt: skip
+    try:
+        assert child.stdout.readline().strip() == "held"
+        yield repo
+    finally:
+        child.stdin.close()
+        child.wait(timeout=60)
+
+
+@pytest.fixture
+def stale_drive(repo):
+    """`repo` with the lock file a finished drive leaves behind, held by nobody."""
+    lock = repo / "build" / "driver" / "drive.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_bytes(b"")
+    return repo
+
+
+@pytest.fixture
+def scratch(tmp_path):
+    """A directory outside the checkout, as the scratchpad clone is."""
+    path = tmp_path / "scratch"
+    path.mkdir()
+    return path
+
+
+def guard(payload: dict, repo: Path, env: dict | None = None) -> hooks.Decision:
+    """The always layer as the coordinator's session runs it: its project dir is `repo`."""
+    return always(payload, {hooks.PROJECT_ENV: str(repo), **(env or {})})
+
+
+def _edit_payload(repo: Path, rel: str, cwd: Path) -> dict:
+    return {**write(native(repo / rel)), "cwd": str(cwd)}
+
+
+@pytest.mark.parametrize("rel", ["tools/reverseapoc/driver.py", "tests/test_x.py",
+                                 "docs/notes.md", ".planning/todos/pending/x.md",
+                                 ".claude/worktrees/agent-x/tools/reverseapoc/x.py"])  # fmt: skip
+def test_drive_guard_refuses_edits_under_the_checkout(live_drive, rel):
+    decision = guard(_edit_payload(live_drive, rel, live_drive), live_drive)
+    assert decision.deny, rel
+    assert "drive.lock" in decision.reason
+    assert "clone" in decision.reason  # it names the scratchpad-clone route
+
+
+def test_drive_guard_refuses_every_edit_tool(live_drive):
+    target = native(live_drive / "tools" / "x.py")
+    notebook = tool("NotebookEdit", live_drive, notebook_path=native(live_drive / "n.ipynb"),
+                    new_source="x")  # fmt: skip
+    for payload in (edit(target, "a", "b"), {**edit(target, "a", "b"), "tool_name": "MultiEdit"},
+                    notebook):  # fmt: skip
+        assert guard({**payload, "cwd": str(live_drive)}, live_drive).deny, payload["tool_name"]
+
+
+def test_drive_guard_allows_edits_outside_the_checkout(live_drive, scratch):
+    payload = {**write(native(scratch / "clone" / "tools" / "x.py")), "cwd": str(live_drive)}
+    assert not guard(payload, live_drive).deny
+
+
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+def test_drive_guard_allows_edits_without_a_live_drive(state, request):
+    repo = request.getfixturevalue(state)
+    assert not guard(_edit_payload(repo, "tools/reverseapoc/x.py", repo), repo).deny
+
+
+REFUSED_BASH = [
+    "uv run pytest -q tests/test_hooks.py",
+    "uv run --frozen pytest",
+    "uv sync --locked",
+    "uv run --frozen reverseapoc gate --all",
+    "uv run --no-project pytest",
+    "uv run --no-project python -m pytest",
+    "pytest -q",
+    "python -m pytest tests",
+    "ruff check .",
+    "ninja verify",
+    "docker compose run --rm test",
+    "git status",
+    "git -C . status --short",
+    "git commit -m x",
+    "git add tools/x.py",
+    "git checkout main",
+    "git merge worktree-x",
+    "git --no-optional-locks commit -m x",
+    "git log --output=x.txt",
+    "echo x > tools/x.py",
+    "cat a >> docs/notes.md",
+    "rm -rf build/driver/x",
+    "cp /tmp/x tools/x.py",
+    "cp tools/x.py /tmp/x.py",  # every word of a writer counts: copy out with cat and >
+    "sed -i s/a/b/ tools/x.py",
+    "cd tools && pytest",
+    "true; uv run pytest",
+    "FOO=1 uv run pytest",
+    "env FOO=1 pytest",
+    "echo $(uv run pytest)",
+    "bash -c 'uv run pytest'",
+    'powershell -Command "uv run pytest"',
+]
+
+
+@pytest.mark.parametrize("command", REFUSED_BASH)
+def test_drive_guard_refuses_bash_writes_and_runs(live_drive, command):
+    decision = guard(shell("Bash", command, live_drive), live_drive)
+    assert decision.deny, command
+    assert "drive.lock" in decision.reason
+
+
+REFUSED_POWERSHELL = [
+    "uv run pytest",
+    "& uv.exe run --frozen pytest -q",
+    "Start-Process uv -ArgumentList 'run','pytest' -Wait",
+    "Set-Content tools\\x.py 'y'",
+    "'x' | Out-File docs\\x.md",
+    "Remove-Item -Recurse tools\\x",
+    "New-Item -ItemType File tools\\y.py",
+    "git status",
+    "Set-Location tools; pytest",
+    "echo x > tools\\x.py",
+]
+
+
+@pytest.mark.parametrize("command", REFUSED_POWERSHELL)
+def test_drive_guard_refuses_powershell_writes_and_runs(live_drive, command):
+    decision = guard(shell("PowerShell", command, live_drive), live_drive)
+    assert decision.deny, command
+    assert "drive.lock" in decision.reason
+
+
+ALLOWED_BASH = [
+    "git --no-optional-locks status",
+    "git --no-optional-locks status --short",
+    "git --no-optional-locks log --oneline -5",
+    "git --no-optional-locks diff HEAD~1",
+    "git log -3",
+    "git show HEAD:tools/reverseapoc/driver.py",
+    "git rev-parse HEAD",
+    "git --no-optional-locks branch --show-current",
+    "git worktree list",
+    "cat tools/reverseapoc/driver.py",
+    "ls build/driver 2>/dev/null",
+    "ls build/driver 2>&1 | head -5",
+    "grep -n drive tools/reverseapoc/driver.py > /dev/null",
+    "tail -n 20 build/driver/run/log.txt",
+    "echo pytest",
+    "cat tools/x.py > {scratch}/x.py",
+    "uv run --no-project python -I {scratch}/probe.py",
+    "cd {scratch}/clone && uv run pytest -q",
+    "cd {scratch}/clone && git commit -m x",
+    "git -C {scratch}/clone commit -m x",
+    "echo x > {scratch}/out.txt",
+    "rm -rf {scratch}/old",
+]
+
+
+@pytest.mark.parametrize("command", ALLOWED_BASH)
+def test_drive_guard_allows_reads_and_work_outside(live_drive, scratch, command):
+    text = command.replace("{scratch}", scratch.as_posix())
+    decision = guard(shell("Bash", text, live_drive), live_drive)
+    assert not decision.deny, (text, decision.reason)
+
+
+ALLOWED_POWERSHELL = [
+    "git --no-optional-locks log -3",
+    "Get-Content build\\driver\\x\\log.txt -Tail 20",
+    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'reverseapoc\\s+drive' }",
+    "ls build 2>&1",
+    "Get-ChildItem tools > $null",
+    "Set-Location {scratch}; uv run pytest",
+]
+
+
+@pytest.mark.parametrize("command", ALLOWED_POWERSHELL)
+def test_drive_guard_allows_powershell_reads(live_drive, scratch, command):
+    text = command.replace("{scratch}", native(scratch))
+    decision = guard(shell("PowerShell", text, live_drive), live_drive)
+    assert not decision.deny, (text, decision.reason)
+
+
+@pytest.mark.parametrize("name,command", [("Bash", "uv run pytest -q"), ("Bash", "git status"),
+                                          ("PowerShell", "Set-Content tools\\x.py y"),
+                                          ("Bash", "echo x > tools/x.py")])  # fmt: skip
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+def test_drive_guard_allows_shell_without_a_live_drive(state, name, command, request):
+    repo = request.getfixturevalue(state)
+    assert not guard(shell(name, command, repo), repo).deny
+
+
+def test_drive_guard_spares_the_drives_own_sessions(live_drive):
+    """A driver session carries its claim (REVERSEAPOC_CLAIM): the matching layer binds it, and
+    the project settings' always hook must not refuse its wrapper runs or its edits."""
+    env = {hooks.CLAIM_ENV: "ufo2p/func_00012345"}
+    assert not guard(shell("Bash", f"{WRAPPER} check", live_drive), live_drive, env).deny
+    assert not guard(_edit_payload(live_drive, "tools/x.py", live_drive), live_drive, env).deny
+
+
+def test_drive_guard_finds_the_main_checkouts_drive_from_a_worktree(live_drive):
+    """A worktree under .claude/worktrees/ lies inside the main checkout, so its drive guards it."""
+    worktree = live_drive / ".claude" / "worktrees" / "agent-x"
+    (worktree / "tools").mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: ../../../.git/worktrees/agent-x\n", encoding="utf-8")
+    assert guard(shell("Bash", "uv run pytest", worktree), worktree).deny
+    assert guard(_edit_payload(worktree, "tools/x.py", worktree), worktree).deny
+
+
+def _entry_decision(payload: dict, project: Path) -> str:
+    env = _Env({**os.environ, hooks.PROJECT_ENV: str(project)})
+    env.pop(hooks.CLAIM_ENV, None)
+    done = subprocess.run(
+        [sys.executable, "-I", "-m", "reverseapoc.hooks", "pre-tool-use", "--layer", "always"],
+        input=json.dumps(payload).encode("utf-8"), capture_output=True, env=env, timeout=60,
+        check=False,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    if not done.stdout:
+        return "none"
+    return json.loads(done.stdout)["hookSpecificOutput"]["permissionDecision"]
+
+
+def test_drive_guard_entry_point_end_to_end(live_drive):
+    edited = _edit_payload(live_drive, "tools/x.py", live_drive)
+    assert _entry_decision(edited, live_drive) == "deny"
+    assert _entry_decision(shell("Bash", "uv run pytest", live_drive), live_drive) == "deny"
+    allowed = shell("Bash", "git --no-optional-locks log -1", live_drive)
+    assert _entry_decision(allowed, live_drive) == "none"
+    read = tool("Read", live_drive, file_path=native(live_drive / "x"))
+    assert _entry_decision(read, live_drive) == "none"

@@ -25,6 +25,13 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   every command in it has a listed shape, judged on its words as the shell resolves them
   (261112-fdw: a plain interpreter and a plain script path, the uv forms, listed git
   subcommands, read and print commands, assignments). Every other shell call gets no opinion.
+  The drive write guard (todo drive-write-guard): while a live process holds a checkout's
+  build/driver/drive.lock (locks.is_held; a stale lock file blocks nothing), a session without
+  the driver's claim may not edit under that checkout, worktrees included, nor run a shell
+  command that writes there (a redirection, a writer such as rm or Set-Content) or runs from it
+  pytest, ruff, ninja, docker, the CLI, uv other than `uv run --no-project`, or git other than
+  reads and `--no-optional-locks` status/diff; cd and `git -C` move where a command runs, so
+  the scratchpad-clone route the denial names stays open.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
@@ -77,9 +84,11 @@ import shlex
 import sys
 import tokenize
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from .locks import DRIVE_LOCK, is_held
 
 EXIT_OK = 0
 _GIT_TIMEOUT = 30  # seconds for `git ls-files`; each handler's own timeout is 120
@@ -654,7 +663,8 @@ def _source_problem(
 def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
     tool = payload.get("tool_name")
     if tool in SHELL_TOOLS:
-        return _worktree_command(payload)
+        decision = _worktree_command(payload)
+        return decision if decision.deny else _drive_command(payload, env)
     if tool not in EDIT_TOOLS:
         return NO_OPINION
     raw, tool_input = _target(payload)
@@ -673,7 +683,7 @@ def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
         scanned = scanned or view or any(_under(rel, d) for d in _SCANNED_DIRS)
     problem = _source_problem(tool, tool_input, paths[0], asm_rule=_ALWAYS_ASM_RULE,
                               any_pragma_aux=False) if scanned else ""  # fmt: skip
-    return _deny(problem) if problem else NO_OPINION
+    return _deny(problem) if problem else _drive_edit(tool, raw, paths, env)
 
 
 def decide(
@@ -1431,6 +1441,284 @@ def _worktree_command(payload: Mapping) -> Decision:
     judged = (_allowlist_denial(tool, content, cwd, name, nested=True) for content in contents)
     reason = reason or next((found for found in judged if found), "")
     return _deny(reason) if reason else NO_OPINION
+
+
+# --- the drive write guard (todo drive-write-guard) ------------------------------------------
+
+# Programs that write under the directory they run in (caches, the venv, the container's bind
+# mount) or run the tests or the CLI there; `python -m` of these modules counts the same.
+_DRIVE_PROGRAMS = frozenset({
+    "pytest", "py.test", "ruff", "ninja", "docker", "docker-compose", "reverseapoc",
+    "reverseapoc-attempt", "uvx", "npx", "npm", "pip", "pip3", "make",
+})  # fmt: skip
+_DRIVE_MODULES = frozenset({"pytest", "reverseapoc", "ruff", "pip"})
+_PYTHONS = frozenset({"python", "python3", "py"})
+_UV_NO_PROJECT = "--no-project"  # `uv run --no-project` neither syncs nor builds the checkout
+# Commands that remove, create or change the files they name, beside _WRITERS.
+_REMOVERS = frozenset({
+    "rm", "rmdir", "mkdir", "md", "del", "erase", "rd", "ri", "remove-item", "rename-item", "rni",
+    "ren", "unlink", "clear-content", "clc", "chmod", "truncate", "patch",
+})  # fmt: skip
+_SED_IN_PLACE = ("-i", "--in-place")
+# Words that run the command after them (with their own options and env's assignments).
+_WRAPPERS = frozenset({"!", "env", "command", "exec", "time", "nohup", "xargs", "start-process",
+                       "start", "saps"})  # fmt: skip
+_NESTED_SHELLS = {"bash": "Bash", "sh": "Bash", "pwsh": "PowerShell", "powershell": "PowerShell"}
+_COMMAND_FLAGS = frozenset({"-c", "-command"})
+_MOVES = frozenset({"cd", "pushd", "chdir", "set-location", "sl", "push-location"})
+_RETURNS = frozenset({"popd", "pop-location"})  # back to a directory the hook does not track
+_NULL_DEVICES = frozenset({"/dev/null", "nul", "$null"})
+_UNPLACED = re.compile(r"[$`%]|^~")  # a variable, escape or home: the hook cannot place the path
+# git subcommands that never write; the refreshing ones update the index unless told not to.
+_GIT_READS = frozenset({
+    "blame", "cat-file", "check-ignore", "for-each-ref", "log", "ls-files", "ls-tree",
+    "merge-base", "rev-list", "rev-parse", "shortlog", "show", "show-ref", "version",
+})  # fmt: skip
+_GIT_REFRESHES = frozenset({"status", "diff", "describe"})
+_GIT_NO_LOCKS = "--no-optional-locks"
+_GIT_GLOBALS = frozenset({_GIT_NO_LOCKS, "--no-pager", "-P"})
+
+
+def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
+    """Each of `starts` and every ancestor of it, once."""
+    seen: set[str] = set()
+    for start in starts:
+        for directory in (start, *start.parents):
+            key = directory.as_posix().casefold()
+            if key not in seen:
+                seen.add(key)
+                yield directory
+
+
+def _live_drives(starts: Iterable[Path]) -> tuple[str, ...]:
+    """The checkouts among `starts` and their ancestors whose build/driver/drive.lock a live
+    process holds (locks.is_held; a lock file left behind by an exited drive is stale and does
+    not count), as forward-slash forms."""
+    return tuple(d.as_posix() for d in _ancestors(starts) if is_held(d / DRIVE_LOCK))
+
+
+def _drive_denial(root: str, what: str) -> Decision:
+    return _deny(f"a reverseapoc drive holds {root}/{DRIVE_LOCK.as_posix()}, so {what} is "
+                 "refused: nothing may write under that checkout, nor run tests, uv, docker or "
+                 "the CLI there, until the drive process exits (CLAUDE.md, Drives: its audit "
+                 "restores such writes and stops the night). Reads stay open (git with "
+                 f"{_GIT_NO_LOCKS}); for a change, clone outside the checkout (git clone "
+                 "--no-hardlinks <checkout> <scratchpad>/<name>) and edit, test and commit in "
+                 "the clone")  # fmt: skip
+
+
+def _drive_edit(tool: str, raw: str, paths: Sequence[str], env: Mapping[str, str]) -> Decision:
+    """An edit is refused while a live drive holds the lock of a checkout above its target. The
+    driver's own sessions carry their claim and are bound by the matching layer instead."""
+    if _claim(env) is not None:
+        return NO_OPINION
+    live = _live_drives(Path(path).parent for path in paths)
+    return _drive_denial(live[0], f"the {tool} of {raw!r}") if live else NO_OPINION
+
+
+def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
+    """A Bash or PowerShell call is refused while a live drive holds the lock of the checkout
+    its cwd or the session's project lies in, when it writes under that checkout or runs a
+    refused program from it (_drive_offender). Any other call, and every call with no live
+    drive, gets no opinion, decided before the command is parsed."""
+    if _claim(env) is not None:
+        return NO_OPINION
+    here = candidates(_cwd(payload))  # _worktree_command refused a payload without a cwd
+    project = project_roots(env) if env.get(PROJECT_ENV) else ()
+    live = _live_drives(Path(form) for form in (*here, *project))
+    if not live:
+        return NO_OPINION
+    tool = payload["tool_name"]
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
+    if not isinstance(command, str):
+        raise HookError(f"the {tool} payload has no command string")
+    offender = _drive_offender(tool, command, here[0], live)
+    return _drive_denial(live[0], f"the {tool} command's {offender!r}") if offender else NO_OPINION
+
+
+def _drive_offender(tool: str, command: str, here: str | None, live: tuple[str, ...]) -> str:
+    """The first word of `command`, or of a substitution in it, that writes under a live
+    drive's checkout or runs a refused program there; ''. `here` is the directory the shell
+    starts in (None: unknown, judged as inside); each cd moves it for the later commands."""
+    text = command.translate(_POWERSHELL_QUOTES) if tool == "PowerShell" else command
+    for part in (text, *_substitutions(tool, text)):
+        moved = here
+        for segment in _simple_commands(tool, part):
+            moved, found = _drive_segment(tool, segment, moved, live)
+            if found:
+                return found
+    return ""
+
+
+def _redirected(tool: str, segment: Sequence[tuple[str, bool]]) -> tuple[list[str], list[str]]:
+    """One simple command's words (detection forms) and the files its output redirections
+    write; an input redirection's file, a duplicated descriptor (`2>&1`) and PowerShell's
+    `N>&M` are neither."""
+    words, written, pending = [], [], None
+    for text, op in segment:
+        if op:
+            takes = tool == "Bash" or not text[-1].isdigit()
+            pending = (">" in text, text.endswith("&")) if takes else None
+            continue
+        word = _plain(tool, text)
+        if pending is None:
+            words.append(word)
+            continue
+        (output, duplicate), pending = pending, None
+        if output and not (duplicate and (word.isdigit() or word == "-")):
+            written.append(word)
+    return words, written
+
+
+def _past_options(words: Sequence[str], index: int) -> int:
+    """The index of the first word from `index` that is no option and no assignment."""
+    while index < len(words) and (words[index].startswith("-") or "=" in words[index]):
+        index += 1
+    return index
+
+
+def _program_words(tool: str, words: Sequence[str]) -> Sequence[str]:
+    """`words` from the program that runs: Bash assignments and wrappers (env, Start-Process)
+    with their options skipped."""
+    index = 0
+    if tool == "Bash":
+        while index < len(words) and _BASH_ASSIGNMENT.match(words[index]):
+            index += 1
+    while index < len(words) and _command_name(words[index]) in _WRAPPERS:
+        index = _past_options(words, index + 1)
+    return words[index:]
+
+
+def _drive_segment(
+    tool: str, segment: Sequence[tuple[str, bool]], here: str | None, live: tuple[str, ...]
+) -> tuple[str | None, str]:
+    """(where the shell is after one simple command, its offending word or '')."""
+    words, written = _redirected(tool, segment)
+    found = _first(written, lambda word: _guarded(word, here, live))
+    if found:
+        return here, found
+    words = _program_words(tool, words)
+    if not words:
+        return here, ""
+    name, rest = _command_name(words[0]), words[1:]
+    if name in _MOVES:
+        return _moved(rest, here), ""
+    if name in _RETURNS:
+        return None, ""
+    return here, _program_offender(name, rest, here, live)
+
+
+def _program_offender(name: str, rest: Sequence[str], here: str | None,
+                      live: tuple[str, ...]) -> str:  # fmt: skip
+    if name in _NESTED_SHELLS:
+        return _nested_offender(name, rest, here, live)
+    if name == "git":
+        return _git_drive_offender(rest, here, live)
+    if _writes(name, rest):
+        return _first(list(_operands(rest)), lambda word: _guarded(word, here, live))
+    if not _guarded_dir(here, live):
+        return ""
+    refused = name in _DRIVE_PROGRAMS or (name in _PYTHONS and _runs_module(rest))
+    return name if refused or (name == "uv" and _uv_refused(rest)) else ""
+
+
+def _writes(name: str, rest: Sequence[str]) -> bool:
+    in_place = name == "sed" and any(word.startswith(_SED_IN_PLACE) for word in rest)
+    return name in _WRITERS or name in _REMOVERS or in_place
+
+
+def _operands(rest: Sequence[str]) -> Iterator[str]:
+    """A writer's operands: every word but an option, and the value of an `--opt=value`."""
+    for word in rest:
+        if not word.startswith("-"):
+            yield word
+        elif "=" in word:
+            yield word.split("=", 1)[1]
+
+
+def _runs_module(words: Sequence[str]) -> bool:
+    return any(flag == "-m" and module.split(".")[0] in _DRIVE_MODULES
+               for flag, module in itertools.pairwise(words))  # fmt: skip
+
+
+def _uv_refused(rest: Sequence[str]) -> bool:
+    """Every uv call but `uv run --no-project ...` syncs or builds the checkout, and that one
+    still may not run a refused program."""
+    options = itertools.takewhile(lambda word: word.startswith("-"), rest[1:])
+    if rest[:1] != ["run"] or _UV_NO_PROJECT not in options:
+        return True
+    programs = (word for word in rest[1:] if not word.startswith("-"))
+    return any(_command_name(word) in _DRIVE_PROGRAMS for word in programs) or _runs_module(rest)
+
+
+def _nested_offender(name: str, rest: Sequence[str], here: str | None,
+                     live: tuple[str, ...]) -> str:  # fmt: skip
+    """`bash -c '<command>'` and `powershell -Command <command>` are judged as that command."""
+    flag = next((i for i, word in enumerate(rest) if word.casefold() in _COMMAND_FLAGS), None)
+    if flag is None:
+        return ""
+    return _drive_offender(_NESTED_SHELLS[name], " ".join(rest[flag + 1 :]), here, live)
+
+
+def _git_drive_offender(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> str:
+    """git in a live drive's checkout runs only a subcommand that never writes there: a read, a
+    listing, or status, diff and describe with --no-optional-locks (plain `git status` takes
+    the index lock); `-C <dir>` moves it."""
+    index, no_locks, unknown = 0, False, ""
+    while index < len(rest) and rest[index].startswith("-"):
+        word = rest[index]
+        index += 1
+        if word == "-C" and index < len(rest):
+            here, index = _moved(rest[index : index + 1], here), index + 1
+            continue
+        no_locks = no_locks or word == _GIT_NO_LOCKS
+        unknown = unknown or ("" if word in _GIT_GLOBALS else word)
+    if not _guarded_dir(here, live):
+        return ""
+    if unknown or index == len(rest):
+        return unknown or "git"
+    sub, args = rest[index], rest[index + 1 :]
+    if sub in _GIT_READS or (sub in _GIT_REFRESHES and no_locks):
+        return _first(args, _git_refused)
+    if sub == "grep":
+        return _first(args, _git_grep_refused)
+    if sub == "branch":
+        return _git_branch_offender(args)
+    if sub in _GIT_LISTINGS and args[:1] == ["list"]:
+        return _first(args[1:], _git_refused)
+    return sub
+
+
+def _moved(rest: Sequence[str], here: str | None) -> str | None:
+    """Where cd, Set-Location or `git -C` leaves the shell: its first operand resolved against
+    `here`, or None (unknown, judged as inside) for none, `-`, a variable or a path that cannot
+    be placed."""
+    target = next((word for word in rest if not word.startswith("-")), None)
+    if target is None or _UNPLACED.search(target):
+        return None
+    try:
+        return candidates(target, here or "")[0]
+    except HookError:
+        return None
+
+
+def _guarded(word: str, here: str | None, live: tuple[str, ...]) -> bool:
+    """Whether the file `word` names (relative to `here`) may lie under a live drive's checkout:
+    a null device never does, a path the hook cannot place always may."""
+    if word.casefold() in _NULL_DEVICES:
+        return False
+    if _UNPLACED.search(word):
+        return True
+    try:
+        paths = candidates(word, here or "")
+    except HookError:
+        return True
+    return any(_inside(path, live) is not None for path in paths)
+
+
+def _guarded_dir(here: str | None, live: tuple[str, ...]) -> bool:
+    return here is None or _inside(here, live) is not None
 
 
 # --- the matching-session layer (D-17, D-18, D-44, D-45, DI-07) ------------------------------

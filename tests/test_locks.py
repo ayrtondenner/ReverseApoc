@@ -83,3 +83,55 @@ def test_process_lock_freed_on_exit(tmp_path):
         if child.poll() is None:
             child.kill()
             child.wait(timeout=60)
+
+
+# --- is_held: the drive write guard's liveness probe (todo drive-write-guard) ----------------
+
+
+def test_is_held_is_false_for_a_missing_file_and_never_creates_it(tmp_path):
+    from reverseapoc.locks import is_held
+
+    path = tmp_path / "build" / "driver" / "drive.lock"
+    assert not is_held(path)
+    assert not path.exists() and not path.parent.exists()
+
+
+def test_is_held_is_false_for_a_stale_file_and_frees_it_again(tmp_path):
+    """A lock file left behind by a drive that exited is not a live drive, and the probe gives
+    the lock straight back, so the next drive can take it."""
+    from reverseapoc.locks import ProcessLock, is_held
+
+    path = tmp_path / "drive.lock"
+    path.write_bytes(b"")
+    assert not is_held(path)
+    assert path.read_bytes() == b""
+    with ProcessLock(path) as lock:
+        assert lock.held
+
+
+def test_is_held_while_another_handle_holds_it(tmp_path):
+    from reverseapoc.locks import ProcessLock, is_held
+
+    path = tmp_path / "drive.lock"
+    with ProcessLock(path):
+        assert is_held(path)
+    assert not is_held(path)
+
+
+def test_is_held_follows_a_holding_child_process(tmp_path):
+    from reverseapoc.locks import is_held
+
+    path = tmp_path / "drive.lock"
+    child = subprocess.Popen([sys.executable, "-c", CHILD, str(path)], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)  # fmt: skip
+    try:
+        assert child.stdout.readline().strip() == "held"
+        assert is_held(path)
+        child.stdin.close()  # the child exits without releasing
+        assert child.wait(timeout=60) == 0
+        assert not is_held(path)  # the file stays behind, stale
+        assert path.is_file()
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(timeout=60)

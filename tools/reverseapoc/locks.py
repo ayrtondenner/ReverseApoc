@@ -8,6 +8,9 @@ frees the lock when its holder exits, however it exits, so holding the lock prov
 earlier holder is dead. No process id is ever probed: on Windows the os module's kill with
 signal 0 terminates the process it names (D-24).
 
+`is_held(path)` asks the same question without keeping the answer: the hooks' drive write guard
+uses it, so a lock file left behind by an exited drive does not count as a running one.
+
 Two ProcessLock objects on one path conflict even inside one process: each opens its own
 handle (Windows locks a byte range per handle, flock locks per open file description).
 """
@@ -60,6 +63,22 @@ else:
 
     def _unlock(fh) -> None:
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def is_held(path: Path) -> bool:
+    """Whether some live holder has the lock on `path` (todo drive-write-guard): one
+    non-blocking try, given straight back when it succeeds. A missing file, or one left behind
+    by a holder that exited, is not held. The file is opened for reading only, so the probe
+    never creates or writes it."""
+    try:
+        fh = open(path, "rb")  # noqa: SIM115 - closed below, after the unlock
+    except FileNotFoundError:
+        return False
+    with fh:
+        if not _try(fh):
+            return True
+        _unlock(fh)
+        return False
 
 
 class ProcessLock:
