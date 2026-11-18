@@ -47,7 +47,9 @@ DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the
 squarified treemap, EXE > unit > function), and DIR/index.html (the progress page, served at
 the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
 when --config sits in a git checkout, the progress-over-days charts of the three figures
-re-derived from its history; a shallow clone gets a note instead);
+re-derived from its history, and the provenance split of the matches from its commit trailers;
+a shallow clone gets a note instead; plus the hand-off board of config/handoff.csv and the
+newest cold-rebuild record of progress/verifications.jsonl, when they have rows);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -911,8 +913,8 @@ _FLAGS_TEXT = " under approved flags "
 TOOLING_TYPES = ("feat", "fix", "refactor", "perf", "test", "build", "ci", "style")
 PLAN_TYPES = ("docs",)
 CO_AUTHOR, MATCHED_BY = "co-authored-by", "matched-by"
-CREDIT_NAMES = 2  # a match with more co-authors than this is credited to their count
 MATCHED_BY_TOOL = "reverseapoc "  # Matched-By: reverseapoc drive / lift name the tool, no model
+MATCHED_BY_DRIVE = MATCHED_BY_TOOL + "drive"  # the driver ran the session; the model wrote the C
 RUN_KIND, RUN_FINAL = "run", ("ENDED", "STOPPED")  # STARTED alone is a run still going
 _GIT_SAFE = ("-c", "safe.directory=*")
 _RECORD, _UNIT_SEP, _TRAILER_SEP = "\x1e", "\x1f", "\x1d"
@@ -1100,17 +1102,21 @@ def _match_size(rest: str) -> int:
 
 
 def _credit(trailers: Iterable[tuple[str, str]]) -> str:
-    """Who a match is credited to: its Co-Authored-By name (two joined by "and", more counted),
-    else the model a Matched-By names, else "no co-author"."""
+    """Who a match is credited to (owner ruling 2026-11-18): the reverseapoc tool other than
+    the driver a Matched-By names (`reverseapoc lift`, the converter, wrote the C); without the
+    driver's Matched-By, the author another Matched-By names (a batch landing's, 07-48c: the
+    commit hook's Co-Authored-By is the approving session's); else the first Co-Authored-By
+    name (a landing from a hold run lists its own model first, then one line per other arm that
+    held the function exact; a flags landing lists every model that wrote a matching candidate,
+    the earliest pass first); else the model a Matched-By names; else "no co-author"."""
     pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
-    names = sorted({value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR})
-    if len(names) > CREDIT_NAMES:
-        return f"{len(names)} co-authors"
-    if names:
-        return " and ".join(names)
+    tools = [value for key, value in pairs if key == MATCHED_BY
+             and value.startswith(MATCHED_BY_TOOL) and value != MATCHED_BY_DRIVE]  # fmt: skip
+    names = [value.split(" <", 1)[0] for key, value in pairs if key == CO_AUTHOR]
     models = [value for key, value in pairs
               if key == MATCHED_BY and not value.startswith(MATCHED_BY_TOOL)]  # fmt: skip
-    return models[0] if models else "no co-author"
+    authors = [] if (MATCHED_BY, MATCHED_BY_DRIVE) in pairs else models
+    return next(iter(tools + authors + names + models), "no co-author")
 
 
 def _flag_ranges(ids: Iterable[int]) -> str:
@@ -1177,17 +1183,28 @@ def _most(counts: Mapping[str, int]) -> tuple[str, int]:
     return min(counts.items(), key=lambda item: (-item[1], item[0]))
 
 
+def _matches_driver(log: _DayLog) -> str:
+    """The match group that drove the day: the model (credit) with the most matches outside
+    approved flags, "N models: K matches each" when N tie for the most (owner ruling
+    2026-11-18), or the flagged matches together when they outnumber that; "" without one."""
+    top = max(log.unflagged.values(), default=0)
+    if log.flagged > top:
+        return f"flags {_flag_ranges(log.flags)}: {_plural(log.flagged, 'match', 'matches')}"
+    if not top:
+        return ""
+    tied = [name for name, size in log.unflagged.items() if size == top]
+    if len(tied) > 1:
+        return f"{len(tied)} models: {_plural(top, 'match', 'matches')} each"
+    return f"{tied[0]}: {_plural(top, 'match', 'matches')}"
+
+
 def _driver(log: _DayLog) -> str:
-    """The day's biggest driver: the largest match group (the flagged matches together, else
-    each credit), else the last merge that changed the tables, its largest drive run, its top
-    tooling scope, its plans, its other commits, its merges or its learnings; "" for a day with
-    nothing logged."""
-    groups = dict(log.unflagged)
-    if log.flagged:
-        groups[f"flags {_flag_ranges(log.flags)}"] = log.flagged
-    if groups:
-        name, size = _most(groups)
-        return f"{name}: {_plural(size, 'match', 'matches')}"
+    """The day's biggest driver: its match group (_matches_driver), else the last merge that
+    changed the tables, its largest drive run, its top tooling scope, its plans, its other
+    commits, its merges or its learnings; "" for a day with nothing logged."""
+    matches = _matches_driver(log)
+    if matches:
+        return matches
     if log.table_merges:
         return f"merge: {log.table_merges[-1]}"
     if log.runs:
@@ -1382,6 +1399,12 @@ def _snapshots(repo: Path) -> list[Snapshot]:
     return out
 
 
+def _trailer_pairs(text: str) -> tuple[tuple[str, str], ...]:
+    """(key, value) of each trailer of a `%(trailers:...,separator=%x1d)` field."""
+    return tuple((key.strip(), value.strip()) for key, sep, value
+                 in (t.partition(":") for t in text.split(_TRAILER_SEP)) if sep)  # fmt: skip
+
+
 def _logged_commits(repo: Path) -> list[LoggedCommit]:
     """Every commit of HEAD, oldest first, with its subject and trailers; a commit with more
     than one parent is a merge."""
@@ -1391,9 +1414,8 @@ def _logged_commits(repo: Path) -> list[LoggedCommit]:
     out = []
     for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
         sha, parents, day, subject, trailers = chunk.rstrip("\n").split(_UNIT_SEP, 4)
-        pairs = tuple((key.strip(), value.strip()) for key, sep, value
-                      in (t.partition(":") for t in trailers.split(_TRAILER_SEP)) if sep)
-        out.append(LoggedCommit(sha, day, subject, pairs, len(parents.split()) > 1))
+        out.append(LoggedCommit(sha, day, subject, _trailer_pairs(trailers),
+                                len(parents.split()) > 1))  # fmt: skip
     return out
 
 
@@ -1418,6 +1440,335 @@ def load_timeline(repo: Path, asm: Iterable[tuple[str, int]]) -> Timeline | None
                           parse_runs(_repo_text(repo / ATTEMPTS_JSONL), ATTEMPTS_JSONL),
                           parse_learnings(_repo_text(repo / LEARNINGS_MD)), asm)  # fmt: skip
 
+
+# ---- the provenance split (todo progress-provenance-split) ----
+#
+# Who made each match, from committed trailers only, as `reverseapoc stats` classes it (DEC-07):
+# walking the non-merge commits that change a status.csv in topological order, a start that
+# becomes `matched` is a match event, classed by its commit's trailers (stats.classify's rule,
+# pinned by tests/test_progress_provenance.py) and credited by _credit, the timeline's rule. A
+# function counts once, by its latest event; one status.csv calls matched with no event (a
+# history cut short) is unclassed, so the classes and unclassed add up to the matched count.
+
+PROVENANCE_CLASSES = ("unattended", "human-hints", "human-written")  # stats.CLASSES
+UNATTENDED, HUMAN_HINTS, HUMAN_WRITTEN = PROVENANCE_CLASSES
+MATCH_HINTS, FLAGS_APPROVED_BY = "match-hints", "flags-approved-by"
+STATUS_PATHS = {f"config/{stem}/{STATUS_CSV}": stem for stem, _label in EXES}
+_NO_BLOB = re.compile(r"0+")  # --raw's id of the side a commit adds or deletes
+PROVENANCE_SHALLOW_NOTE = ("This checkout is a shallow clone, so the commits that made the "
+                           "matches are cut; the split is left out.")  # fmt: skip
+
+
+@dataclass(frozen=True)
+class MatchEvent:
+    """A start that became matched in a commit: its class, flag approval and credit."""
+
+    stem: str
+    start: int
+    cls: str  # one of PROVENANCE_CLASSES
+    flagged: bool  # the commit carries Flags-Approved-By (stats' flag-approved subset)
+    credit: str  # _credit of the commit's trailers
+
+
+@dataclass(frozen=True)
+class ExeProvenance:
+    """One EXE: its matched function count and the latest event of each that has one."""
+
+    stem: str
+    label: str
+    matched: int
+    events: tuple[MatchEvent, ...]
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Every EXE in EXES order; no EXE and a note when the history cannot be read."""
+
+    exes: tuple[ExeProvenance, ...] = ()
+    note: str = ""
+
+
+def provenance_class(trailers: Iterable[tuple[str, str]]) -> tuple[str, bool]:
+    """A match commit's class and whether it is flag-approved (stats.classify's rule): the
+    driver's Matched-By without Match-Hints is unattended, with it human-hints, no driver
+    Matched-By human-written."""
+    pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
+    keys = {key for key, _value in pairs}
+    flagged = FLAGS_APPROVED_BY in keys
+    if (MATCHED_BY, MATCHED_BY_DRIVE) not in pairs:
+        return HUMAN_WRITTEN, flagged
+    return (HUMAN_HINTS if MATCH_HINTS in keys else UNATTENDED), flagged
+
+
+def build_provenance(events: Iterable[MatchEvent], progress: Progress) -> Provenance:
+    """Per EXE, the latest of `events` (oldest first) for each function `progress` calls
+    matched; events of functions no longer matched are left out."""
+    latest = {(e.stem, e.start): e for e in events}
+    out = []
+    for exe in progress.exes:
+        matched = [f.start for f in exe.functions if f.status == MATCHED]
+        found = tuple(latest[(exe.stem, s)] for s in matched if (exe.stem, s) in latest)
+        out.append(ExeProvenance(exe.stem, exe.label, len(matched), found))
+    return Provenance(tuple(out))
+
+
+def _matched_starts(text: str | None) -> frozenset[int]:
+    """The starts of a status.csv text's matched rows, read loosely (driver.matched_starts'
+    rule: any column order, `#` lines skipped), since a past table only needs start and status."""
+    out = set()
+    lines = (line for line in (text or "").splitlines() if line and not line.startswith(_COMMENT))
+    for rec in csv.DictReader(lines):
+        start = rec.get("start")
+        if rec.get("status") != MATCHED or not isinstance(start, str):
+            continue
+        try:
+            out.add(int(start, 16))
+        except ValueError:  # not a start: driver.matched_starts skips it too
+            continue
+    return frozenset(out)
+
+
+def _status_commits(repo: Path) -> list[tuple[tuple[tuple[str, str], ...], list[tuple]]]:
+    """(trailers, [(stem, old blob or None, new blob or None)]) of every non-merge commit that
+    changed a status.csv, parents first (topological order, as stats walks them)."""
+    # --no-renames: a table moved into place is an add, as stats' ls-tree comparison sees it.
+    raw = _git(repo, ["log", "--reverse", "--topo-order", "--no-merges", "--raw", "--no-abbrev",
+                      "--no-renames",
+                      f"--format={_RECORD}%(trailers:only,unfold,separator=%x1d)", "HEAD", "--",
+                      *STATUS_PATHS])  # fmt: skip
+    out = []
+    for chunk in raw.decode("utf-8", "replace").split(_RECORD)[1:]:
+        head, *lines = chunk.split("\n")
+        changes = []
+        for line in lines:
+            meta, _tab, path = line.partition("\t")
+            if not line.startswith(":") or path not in STATUS_PATHS:
+                continue
+            old, new = meta.split()[2:4]
+            changes.append((STATUS_PATHS[path], None if _NO_BLOB.fullmatch(old) else old,
+                            None if _NO_BLOB.fullmatch(new) else new))  # fmt: skip
+        out.append((_trailer_pairs(head), changes))
+    return out
+
+
+def load_provenance(repo: Path, progress: Progress) -> Provenance | None:
+    """The split of the checkout at `repo` for the matched functions of `progress`: None when
+    it is no checkout, no EXE and PROVENANCE_SHALLOW_NOTE in a shallow clone. Each status.csv
+    blob is read once. A git failure is a ProgressError."""
+    repo = Path(repo)
+    if not (repo / ".git").exists():
+        return None
+    if _git(repo, ["rev-parse", "--is-shallow-repository"]).strip() == b"true":
+        return Provenance(note=PROVENANCE_SHALLOW_NOTE)
+    commits = _status_commits(repo)
+    blobs = sorted({blob for _t, changes in commits for _s, *pair in changes for blob in pair
+                    if blob is not None})  # fmt: skip
+    matched = dict(zip(blobs, map(_matched_starts, _cat_files(repo, blobs)), strict=True))
+    events = []
+    for trailers, changes in commits:
+        cls, flagged = provenance_class(trailers)
+        credit = _credit(trailers)
+        for stem, old, new in changes:
+            gained = matched.get(new, frozenset()) - matched.get(old, frozenset())
+            events += [MatchEvent(stem, start, cls, flagged, credit) for start in sorted(gained)]
+    return build_provenance(events, progress)
+
+
+def _split_doc(matched: int, events: Sequence[MatchEvent]) -> dict[str, object]:
+    def one(cls: str) -> dict[str, object]:
+        mine = [e for e in events if e.cls == cls]
+        credits: dict[str, int] = {}
+        for e in mine:
+            credits[e.credit] = credits.get(e.credit, 0) + 1
+        return {"functions": len(mine), "flags_approved": sum(e.flagged for e in mine),
+                "by_credit": dict(_by_count(credits))}  # fmt: skip
+
+    return {"matched": matched, "classes": {cls: one(cls) for cls in PROVENANCE_CLASSES},
+            "unclassed": matched - len(events)}  # fmt: skip
+
+
+def build_provenance_doc(provenance: Provenance | None) -> dict[str, object] | None:
+    """progress.json's "provenance": per EXE and combined, the matched count, per class its
+    functions, flag-approved subset and credits (most first), and the unclassed count; None
+    outside a checkout."""
+    if provenance is None:
+        return None
+    exes = {e.stem: {"label": e.label, **_split_doc(e.matched, e.events)}
+            for e in provenance.exes}  # fmt: skip
+    combined = _split_doc(sum(e.matched for e in provenance.exes),
+                          [ev for e in provenance.exes for ev in e.events]) if exes else None
+    return {"note": provenance.note, "exes": exes, "combined": combined}
+
+
+
+# ---- the cold-rebuild record (todo cold-rebuild-record) ----
+#
+# CI holds no game file and no compiler (both user-supplied), so the rebuild runs on the owner's
+# machine: after `ninja -t clean && ninja verify` in a fresh container passes, the owner appends
+# one JSON line per verified commit to progress/verifications.jsonl (no game bytes: a commit, a
+# date, the image digest and each rebuilt EXE's SHA-1). The page shows the last line, each
+# SHA-1 compared with config/targets.toml.
+
+VERIFICATIONS_JSONL = Path("progress") / "verifications.jsonl"
+TARGETS_TOML = "targets.toml"
+VERIFICATION_KEYS = ("commit", "date", "image", "sha1")
+_HEX40 = re.compile(r"[0-9a-f]{40}")  # a full commit id, a SHA-1
+_IMAGE = re.compile(r"sha256:[0-9a-f]{64}")
+IMAGE_SHORT = len("sha256:") + 12  # the digest prefix the page shows
+SHA1_SHORT = 12
+
+
+@dataclass(frozen=True)
+class Verification:
+    """The newest record: its commit, date and image, (EXE, SHA-1, equal to targets.toml's) in
+    EXES order, and how many records the file holds."""
+
+    commit: str
+    date: str
+    image: str
+    sha1: tuple[tuple[str, str, bool], ...]
+    records: int
+
+
+def _is_date(cell: str) -> bool:
+    """Whether `cell` is a real YYYY-MM-DD date (month 13 is not)."""
+    if not _DATE.fullmatch(cell):
+        return False
+    try:
+        datetime.date.fromisoformat(cell)
+    except ValueError:
+        return False
+    return True
+
+
+def _record_problem(record: object) -> str | None:
+    """Why a verifications.jsonl record is malformed, None when it is not."""
+    if not isinstance(record, dict):
+        return "not an object"
+    keys = sorted(set(record) ^ set(VERIFICATION_KEYS))
+    if keys:
+        return f"key {keys[0]!r} is missing or unknown (keys: {', '.join(VERIFICATION_KEYS)})"
+    if not isinstance(record["commit"], str) or not _HEX40.fullmatch(record["commit"]):
+        return "commit is not a full lower-case commit id"
+    if not isinstance(record["date"], str) or not _is_date(record["date"]):
+        return "date is not YYYY-MM-DD"
+    if not isinstance(record["image"], str) or not _IMAGE.fullmatch(record["image"]):
+        return "image is not a sha256: digest"
+    sha1 = record["sha1"]
+    labels = [label for _stem, label in EXES]
+    if not isinstance(sha1, dict) or sorted(sha1) != sorted(labels) or not all(
+            isinstance(v, str) and _HEX40.fullmatch(v) for v in sha1.values()):
+        return f"sha1 does not map {' and '.join(labels)} to lower-case SHA-1s"
+    return None
+
+
+def _target_sha1s(config: Path) -> dict[str, str]:
+    """name -> sha1 of each [[targets]] of config/targets.toml."""
+    path = Path(config) / TARGETS_TOML
+    try:
+        data = tomllib.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ProgressError(f"{path}: cannot read ({exc})") from None
+    targets = data.get("targets", [])
+    if not isinstance(targets, list) or not all(isinstance(t, dict) for t in targets):
+        raise ProgressError(f"{path}: targets is not an array of tables")
+    return {t.get("name"): t.get("sha1") for t in targets}
+
+
+def read_verification(config: Path) -> Verification | None:
+    """The newest (last) record of progress/verifications.jsonl next to `config`, None without
+    the file; a blank line is skipped. A malformed line is a ProgressError naming it."""
+    path = Path(config).resolve().parent / VERIFICATIONS_JSONL
+    if not path.exists():
+        return None
+    records = []
+    for number, line in enumerate(_repo_text(path).splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ProgressError(f"{path}: line {number}: not JSON ({exc})") from None
+        problem = _record_problem(record)
+        if problem:
+            raise ProgressError(f"{path}: line {number}: {problem}")
+        records.append(record)
+    if not records:
+        return None
+    newest, targets = records[-1], _target_sha1s(config)
+    sha1 = tuple((label, newest["sha1"][label], newest["sha1"][label] == targets.get(label))
+                 for _stem, label in EXES)  # fmt: skip
+    return Verification(newest["commit"], newest["date"], newest["image"], sha1, len(records))
+
+
+def build_verification_doc(verification: Verification | None) -> dict[str, object] | None:
+    if verification is None:
+        return None
+    return {"commit": verification.commit, "date": verification.date,
+            "image": verification.image, "records": verification.records,
+            "sha1": {label: {"sha1": sha1, "identical": same}
+                     for label, sha1, same in verification.sha1}}  # fmt: skip
+
+
+# ---- the hand-off board (todo long-tail-handoff-board) ----
+#
+# config/handoff.csv lists the functions retired from agent queues (the picker's side of the todo
+# skips them) for the owner or a human contributor; the page lists it. A missing or header-only
+# file lists none.
+
+HANDOFF_CSV = "handoff.csv"
+HANDOFF_COLUMNS = ("exe", "address", "reason", "retired_on", "return_rule")
+
+
+@dataclass(frozen=True)
+class HandoffRow:
+    """One board row joined with its function (status.csv's name, status and best percent)."""
+
+    stem: str
+    label: str
+    function: Function
+    reason: str
+    retired_on: str
+    return_rule: str
+
+
+def read_handoff(config: Path, progress: Progress) -> tuple[HandoffRow, ...]:
+    """The rows of config/handoff.csv in file order, each a game or thunk row of `progress`
+    (derive's output), once; () without the file. A wrong header, exe, address or date is a
+    ProgressError naming the row."""
+    path = Path(config) / HANDOFF_CSV
+    if not path.exists():
+        return ()
+    functions = {(exe.stem, f.start): (exe.label, f) for exe in progress.exes
+                 for f in exe.functions}  # fmt: skip
+    stems = [stem for stem, _label in EXES]
+    rows: list[HandoffRow] = []
+    seen: set[tuple[str, int]] = set()
+    for number, rec in enumerate(_records(path, HANDOFF_COLUMNS), start=1):
+        if rec["exe"] not in stems:
+            raise ProgressError(f"{path}: data row {number}: exe {rec['exe']!r} is not a "
+                                "config stem")  # fmt: skip
+        key = (rec["exe"], _address(path, number, "address", rec["address"]))
+        if not _is_date(rec["retired_on"]):
+            raise ProgressError(f"{path}: data row {number}: retired_on "
+                                f"{rec['retired_on']!r} is not YYYY-MM-DD")  # fmt: skip
+        if key not in functions:
+            raise ProgressError(f"{path}: data row {number}: the row at 0x{key[1]:08X} names no "
+                                f"game or thunk row of config/{key[0]}/{FUNCTIONS_CSV}")
+        if key in seen:
+            raise ProgressError(f"{path}: data row {number}: 0x{key[1]:08X} appears twice")
+        seen.add(key)
+        label, function = functions[key]
+        rows.append(HandoffRow(key[0], label, function, rec["reason"], rec["retired_on"],
+                               rec["return_rule"]))  # fmt: skip
+    return tuple(rows)
+
+
+def build_handoff_doc(rows: Iterable[HandoffRow]) -> list[dict[str, object]]:
+    return [{"exe": r.stem, "address": f"0x{r.function.start:08X}", "name": r.function.name,
+             "status": r.function.status, "best_percent": r.function.best_percent,
+             "reason": r.reason, "retired_on": r.retired_on, "return_rule": r.return_rule}
+            for r in rows]  # fmt: skip
 
 
 def render(doc: object) -> bytes:
@@ -1496,9 +1847,14 @@ def build_mechanics(mechanics: Mechanics | None) -> dict[str, object] | None:
 
 
 def build_progress(progress: Progress, commit: str | None = None,
-                   mechanics: Mechanics | None = None) -> dict[str, object]:  # fmt: skip
+                   mechanics: Mechanics | None = None, *,
+                   provenance: Provenance | None = None,
+                   verification: Verification | None = None,
+                   handoff: Iterable[HandoffRow] = ()) -> dict[str, object]:  # fmt: skip
     """progress.json: per EXE and combined counts, the percent, the mechanics coverage view
-    (null without mechanics.toml) and the notes (D-26, D-50, DEC-05)."""
+    (null without mechanics.toml), the provenance split (null outside a checkout), the newest
+    cold-rebuild record (null without one), the hand-off board ([] without rows) and the notes
+    (D-26, D-50, DEC-05)."""
     return {
         "version": PROGRESS_VERSION,
         "commit": commit,
@@ -1506,6 +1862,9 @@ def build_progress(progress: Progress, commit: str | None = None,
                  for exe in progress.exes},  # fmt: skip
         "combined": _totals_doc(progress.combined),
         "mechanics": build_mechanics(mechanics),
+        "provenance": build_provenance_doc(provenance),
+        "verification": build_verification_doc(verification),
+        "handoff": build_handoff_doc(handoff),
         "notes": list(NOTES),
     }
 
@@ -1552,8 +1911,13 @@ def build_exe_figure_shield(exe: ExeProgress, figure: str) -> dict[str, object]:
 
 
 def write_progress_json(progress: Progress, path: Path, commit: str | None = None,
-                        mechanics: Mechanics | None = None) -> None:  # fmt: skip
-    _write_atomic(path, render(build_progress(progress, commit, mechanics)))
+                        mechanics: Mechanics | None = None, *,
+                        provenance: Provenance | None = None,
+                        verification: Verification | None = None,
+                        handoff: Iterable[HandoffRow] = ()) -> None:  # fmt: skip
+    _write_atomic(path, render(build_progress(progress, commit, mechanics,
+                                              provenance=provenance, verification=verification,
+                                              handoff=handoff)))  # fmt: skip
 
 
 def write_shield(progress: Progress, path: Path) -> None:
@@ -2169,10 +2533,11 @@ def _assembler_css() -> list[str]:
             f"margin-top:{TICK_HEIGHT - TICK_SHORT}px}}"]  # fmt: skip
 
 
-def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False) -> str:
+def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = False,
+              split: bool = False) -> str:  # fmt: skip
     """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
-    section's, the assembler tick's and the timeline charts' rules only when the page has
-    them."""
+    section's, the assembler tick's, the timeline charts' and the provenance split's rules
+    only when the page has them."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
         "color-scheme:light dark}",
@@ -2223,6 +2588,7 @@ def _page_css(coverage: bool = False, assembler: bool = False, timeline: bool = 
           for attr, token, var in MOSAIC_PAINTS),
         *(_coverage_css() if coverage else []),
         *(_timeline_css() if timeline else []),
+        *(_provenance_css() if split else []),
         "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
         ".exe h2{margin-bottom:.5rem}.mosaic svg{min-width:48rem}}",
     ])
@@ -2649,9 +3015,11 @@ TIMELINE_CAPTION = (
     "of each day since the first commit, re-derived from the history of each EXE's status, "
     "functions and units tables the way the figures above are (a change counts on the day it "
     "reached main), so each line ends at today's figure. Each marker's tooltip and the table "
-    "name the day's biggest driver; each table cell gives strict with its change, then "
-    "functions and fuzzy, and the table also sums what the day did: match commits by "
-    "co-author, flags approvals, drive runs, tooling and plan commits, and learnings.")
+    "name the day's biggest driver (the model with the most matches that day, or how many "
+    "models tie for the most); each table cell gives strict with its change, then functions "
+    "and fuzzy, and the table also sums what the day did: match commits by the model that made "
+    "them (its first co-author, or the converter), flags approvals, drive runs, tooling and "
+    "plan commits, and learnings.")
 
 
 def _timeline_html(timeline: Timeline | None) -> list[str]:
@@ -2674,9 +3042,109 @@ def _timeline_html(timeline: Timeline | None) -> list[str]:
             *_days_table_html(timeline), "</section>"]  # fmt: skip
 
 
+PROVENANCE_HEADING = "Who made the matches"
+PROVENANCE_CAPTION = (
+    "Every function matched in status.csv, by the commit that last matched it, classed from its "
+    "trailers the way reverseapoc stats classes it. Unattended: the driver ran the session "
+    "(Matched-By: reverseapoc drive) and no human hint went in. Human-hints: the driver ran the "
+    "session with the owner's notes (Match-Hints). "
+    "Human-written: no driver session, so a person in an AI-assisted session, a converter "
+    "(reverseapoc lift) or a spike wrote it. Each match is credited to the model that made it "
+    "(the commit's first co-author) or to the converter. Under approved flags: the owner "
+    "approved compiler flags for the match's unit (Flags-Approved-By), a subset of its class.")
+# The table's class rows: (row header, its number in one _split_doc), each class then its
+# flag-approved subset.
+_PROVENANCE_ROWS: tuple[tuple[str, Callable[[Mapping], int]], ...] = tuple(
+    row for cls in PROVENANCE_CLASSES for row in (
+        (cls, lambda d, c=cls: d["classes"][c]["functions"]),
+        (f"{cls}, under approved flags", lambda d, c=cls: d["classes"][c]["flags_approved"])))
+UNCLASSED_ROW = "no match commit in the history"
+MATCHED_ROW = "matched in status.csv"
+
+
+def _provenance_css() -> list[str]:
+    return [".split{border-collapse:collapse;margin-top:.5rem;font-size:.875rem;"
+            "font-variant-numeric:tabular-nums}",
+            ".split th,.split td{padding:0 1rem .25rem 0;text-align:left;vertical-align:top}",
+            ".split thead th{font-weight:600}",
+            ".split tbody th{font-weight:400}",
+            ".credits{max-width:70ch;margin:.75rem 0 0;padding-left:1.25rem;font-size:.875rem;"
+            "overflow-wrap:anywhere}"]  # fmt: skip
+
+
+def _provenance_html(provenance: Provenance | None) -> list[str]:
+    """The `Who made the matches` section: a table of the classes per EXE and both, the
+    unclassed row only when a matched function has no match commit, then each class's credits
+    over both EXEs; the note alone in a shallow clone; nothing outside a checkout."""
+    if provenance is None:
+        return []
+    lines = ['<section class="provenance" aria-labelledby="provenance">',
+             f'<h2 id="provenance">{PROVENANCE_HEADING}</h2>']
+    doc = build_provenance_doc(provenance)
+    if not doc["exes"]:
+        return [*lines, f'<p class="caption">{_xml(provenance.note)}</p>', "</section>"]
+    docs = [*doc["exes"].values(), doc["combined"]]
+    head = "".join(f'<th scope="col">{_xml(e.label)}</th>' for e in provenance.exes)
+    rows = list(_PROVENANCE_ROWS)
+    if doc["combined"]["unclassed"]:
+        rows.append((UNCLASSED_ROW, lambda d: d["unclassed"]))
+    rows.append((MATCHED_ROW, lambda d: d["matched"]))
+    body = [f'<tr><th scope="row">{_xml(name)}</th>{"".join(f"<td>{get(d)}</td>" for d in docs)}'
+            "</tr>" for name, get in rows]  # fmt: skip
+    credits = [f"<li>{_xml(cls)}: {_xml(', '.join(f'{n} {k}' for n, k in by.items()))}</li>"
+               for cls in PROVENANCE_CLASSES
+               if (by := doc["combined"]["classes"][cls]["by_credit"])]  # fmt: skip
+    return [*lines, f'<p class="caption">{_xml(PROVENANCE_CAPTION)}</p>',
+            '<table class="split">',
+            f'<thead><tr><th scope="col">Class</th>{head}<th scope="col">Both</th></tr></thead>',
+            "<tbody>", *body, "</tbody>", "</table>",
+            *(['<ul class="credits">', *credits, "</ul>"] if credits else []),
+            "</section>"]  # fmt: skip
+
+
+def _verification_html(verification: Verification | None) -> list[str]:
+    """The newest cold-rebuild record in one meta line, linked to its commit; none without."""
+    if verification is None:
+        return []
+    exes = ", ".join(f"{label} SHA-1 {sha1[:SHA1_SHORT]} "
+                     f"{'identical to' if same else 'differs from'} the original"
+                     for label, sha1, same in verification.sha1)  # fmt: skip
+    url = COMMIT_URL + verification.commit
+    return [f'<p class="meta">Cold rebuild verified at commit <a href="{_xml(url)}">'
+            f"{_xml(verification.commit[:COMMIT_SHORT])}</a> on {_xml(verification.date)} in "
+            f"image {_xml(verification.image[:IMAGE_SHORT])}: {_xml(exes)}.</p>"]  # fmt: skip
+
+
+HANDOFF_HEADING = "Hand-off board"
+HANDOFF_CAPTION = (
+    "Functions retired from the agent queues after several models failed on them, left for the "
+    "owner or a human contributor. Each row gives the best objdiff score so far, the day it was "
+    "retired, why, and the rule for when it goes back to the agents (config/handoff.csv).")
+HANDOFF_COLUMNS_SHOWN = ("Function", "EXE", "Best", "Retired", "Why", "Returns when")
+
+
+def _handoff_html(rows: Sequence[HandoffRow]) -> list[str]:
+    """The `Hand-off board` section, one table row per board row in file order; nothing when
+    the board is empty or absent."""
+    if not rows:
+        return []
+    head = "".join(f'<th scope="col">{name}</th>' for name in HANDOFF_COLUMNS_SHOWN)
+    body = ["<tr>" + "".join(f"<td>{_xml(cell)}</td>" for cell in (
+                r.function.name, r.label, shield_message(r.function.best_percent), r.retired_on,
+                r.reason, r.return_rule)) + "</tr>" for r in rows]  # fmt: skip
+    return ['<section class="handoff" aria-labelledby="handoff">',
+            f'<h2 id="handoff">{HANDOFF_HEADING}</h2>',
+            f'<p class="caption">{_xml(HANDOFF_CAPTION)}</p>', '<table class="split">',
+            f"<thead><tr>{head}</tr></thead>", "<tbody>", *body, "</tbody>", "</table>",
+            "</section>"]  # fmt: skip
+
+
 def render_html(progress: Progress, commit: str | None = None,
                 mechanics: Mechanics | None = None,
-                timeline: Timeline | None = None) -> str:  # fmt: skip
+                timeline: Timeline | None = None, *,
+                provenance: Provenance | None = None,
+                verification: Verification | None = None,
+                handoff: Sequence[HandoffRow] = ()) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, the three figures (strict, functions, fuzzy: todo progress-three-figures), a
     percent bar, the figures in text and the function strip (one tick per game and
@@ -2691,24 +3159,31 @@ def render_html(progress: Progress, commit: str | None = None,
     no external request: every link is relative or to the repository. The same CSVs and commit
     give the same bytes; without a commit only the "Updated from commit" line is missing. Given
     `mechanics` (derive_mechanics), the `Mechanics coverage` section follows the strip's key;
-    without it the page has no such section and no rule of it. Signed asm rows that
-    exclude_assembler moved out are stated per EXE, drawn as assembler ticks and library cells,
-    and keyed under the strip's key (D-23)."""
+    without it the page has no such section and no rule of it. Given `provenance`
+    (load_provenance), the `Who made the matches` section comes first after the keys, then the
+    `Hand-off board` when `handoff` (read_handoff) has rows; `verification`
+    (read_verification) adds the newest cold-rebuild record under the commit line. Signed asm
+    rows that exclude_assembler moved out are stated per EXE, drawn as assembler ticks and
+    library cells, and keyed under the strip's key (D-23)."""
     assembler = any(exe.assembler_rows for exe in progress.exes)
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
              _page_css(coverage=mechanics is not None, assembler=assembler,
-                       timeline=timeline is not None and bool(timeline.days)), "</style>",
+                       timeline=timeline is not None and bool(timeline.days),
+                       split=bool(handoff or (provenance and provenance.exes))), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
                      f"{_xml(commit[:COMMIT_SHORT])}</a></p>")  # fmt: skip
+    lines += _verification_html(verification)
     for exe in progress.exes:
         lines += _exe_html(exe)
     lines += [STRIP_KEY,
               *([ASSEMBLER_KEY] if assembler else []),
+              *_provenance_html(provenance),
+              *_handoff_html(handoff),
               *_mechanics_html(mechanics),
               *_timeline_html(timeline),
               "<h2>The mosaic</h2>",
@@ -2722,8 +3197,13 @@ def render_html(progress: Progress, commit: str | None = None,
 
 def write_html(progress: Progress, path: Path, commit: str | None = None,
                mechanics: Mechanics | None = None,
-               timeline: Timeline | None = None) -> None:  # fmt: skip
-    _write_atomic(path, render_html(progress, commit, mechanics, timeline).encode("utf-8"))
+               timeline: Timeline | None = None, *,
+               provenance: Provenance | None = None,
+               verification: Verification | None = None,
+               handoff: Sequence[HandoffRow] = ()) -> None:  # fmt: skip
+    _write_atomic(path, render_html(progress, commit, mechanics, timeline,
+                                    provenance=provenance, verification=verification,
+                                    handoff=handoff).encode("utf-8"))  # fmt: skip
 
 
 # ---- command line ----
@@ -2754,6 +3234,9 @@ class _Derived:
     shown: Progress
     mechanics: Mechanics | None
     timeline: Timeline | None = None
+    provenance: Provenance | None = None
+    verification: Verification | None = None
+    handoff: tuple[HandoffRow, ...] = ()
 
 
 Writer = Callable[[_Derived, Path], None]
@@ -2777,7 +3260,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda d, path: write_progress_json(
-            d.shown, path, args.commit, d.mechanics)
+            d.shown, path, args.commit, d.mechanics, provenance=d.provenance,
+            verification=d.verification, handoff=d.handoff)
         yield args.out / SHIELD_JSON, _on_shown(write_shield)
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
@@ -2785,7 +3269,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         yield from _figure_shield_writes(args.out)
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
-            d.shown, path, args.commit, d.mechanics, d.timeline)
+            d.shown, path, args.commit, d.mechanics, d.timeline, provenance=d.provenance,
+            verification=d.verification, handoff=d.handoff)
     if args.report is not None:
         yield args.report, _on_shown(write_report)
     if args.decomphub is not None:
@@ -2793,6 +3278,8 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
         yield args.decomphub, lambda d, path: write_decomphub(d.progress, path)
 
 
+HISTORY_SPLIT_NOTE = ("The split is left out: the repository history could not be read; the log "
+                      "of the run that built this page says why.")  # fmt: skip
 HISTORY_FAILED_NOTE = ("The chart is left out: the repository history could not be read; the "
                        "log of the run that built this page says why.")  # fmt: skip
 
@@ -2809,6 +3296,16 @@ def _timeline(config: Path, mechanics: Mechanics | None) -> Timeline | None:
         return Timeline(tuple(label for _stem, label in EXES), note=HISTORY_FAILED_NOTE)
 
 
+def _provenance(config: Path, shown: Progress) -> Provenance | None:
+    """The provenance split of the checkout holding `config`; a history the walk cannot read
+    leaves it out with a note on the page and a warning on stderr, like the timeline."""
+    try:
+        return load_provenance(Path(config).resolve().parent, shown)
+    except ProgressError as exc:
+        print(f"progress.py: warning: the provenance split is left out: {exc}", file=sys.stderr)
+        return Provenance(note=HISTORY_SPLIT_NOTE)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
@@ -2823,6 +3320,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         shown = exclude_assembler(progress, found.assembler) if found else progress
         timeline = _timeline(args.config, found) if args.out is not None else None
         derived = _Derived(progress, shown, found, timeline)
+        if args.out is not None:
+            derived = dataclasses.replace(
+                derived, provenance=_provenance(args.config, shown),
+                verification=read_verification(args.config),
+                handoff=read_handoff(args.config, progress))  # fmt: skip
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
             write(derived, path)
