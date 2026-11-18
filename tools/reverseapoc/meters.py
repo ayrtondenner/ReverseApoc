@@ -32,8 +32,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from . import backends
-from .driver import AGY_EXE, AGY_USAGE, agy_quota
+from . import backends, quota
+from .driver import AGY_EXE, AGY_USAGE, ATTEMPT_LOG, agy_quota, is_arm_attempt
 
 SOURCES = ("openrouter", "codex", "copilot", "agy", "claude-code")
 
@@ -332,6 +332,46 @@ def read(source: str, seams: Seams | None = None) -> list[Reading]:
 def read_all(sources: Iterable[str] = SOURCES, seams: Seams | None = None) -> list[Reading]:
     seams = seams or default_seams()
     return [reading for source in sources for reading in read(source, seams)]
+
+
+# ---- the drive's meter seam (todo budget-meter-wiring) ----
+
+
+@dataclass(frozen=True)
+class BudgetReading:
+    """What the drive's meter seam returns (driver.MeterReading): a running total `used` in a
+    budget unit (quota.UNITS)."""
+
+    used: float
+    unit: str
+
+
+def budget_meter(repo: Path, seams: Seams | None = None) -> Callable[[str], BudgetReading | None]:
+    """The drive's meter seam (driver.Seams.meter) on checkout `repo`: an arm's reading from its
+    plan's quota.toml `meter` (quota.METER_UNITS), read live between launches. `openrouter`: the
+    credits API's total usage in dollars (a failed read is no reading); `credits` and
+    `cost_usd`: what the arm's attempt records in `repo`'s attempts.jsonl spent (quota.spend:
+    their credits, or their cost_usd at the plan's usd_per_week_point), which the night appends
+    as each session ends. None for a plan with `no_meter` (no source moves during a night) and
+    an arm with no quota or backends entry: the budget's session cap alone holds it."""
+    seams = seams or default_seams()
+    log = Path(repo) / ATTEMPT_LOG
+
+    def meter(arm: str) -> BudgetReading | None:
+        entry = quota.load_quota().get(arm)
+        if entry is None or entry.plan.meter is None:
+            return None
+        unit = quota.METER_UNITS[entry.plan.meter]
+        if entry.plan.meter == quota.METER_OPENROUTER:
+            found = [r for r in read("openrouter", seams) if r.meter == "credits" and not r.error]
+            return BudgetReading(found[0].used, unit) if found else None
+        table = backends.load_arms()
+        if arm not in table:
+            return None
+        records = [r for r in _jsonl(log) if is_arm_attempt(r, table[arm])] if log.is_file() else []
+        return BudgetReading(float(quota.spend(entry, unit, records)), unit)
+
+    return meter
 
 
 # ---- the text report ----

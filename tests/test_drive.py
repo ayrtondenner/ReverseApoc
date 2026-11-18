@@ -2716,6 +2716,60 @@ def test_budget_caps_and_budgets_reach_the_night(tmp_path, capsys, monkeypatch):
     assert "--max-sessions" not in err  # 533 budgeted sessions fit under 533
 
 
+def _haiku_record(run: str, start: int, cost: float, **extra) -> dict:
+    """A committed hold-run attempt record of the HAIKU arm (claude, anthropic)."""
+    from test_attempts_schema import _attempt_v3
+
+    record = _attempt_v3()
+    record.update(run=run, start=f"0x{start:08X}", function=f"func_{start:08X}", hold_run=True,
+                  outcome="PARTIAL", model_requested=HAIKU, cost_usd=cost)  # fmt: skip
+    record.update(extra)
+    return record
+
+
+def test_a_resumed_hold_run_budgets_only_what_is_left(tmp_path, capsys, monkeypatch):
+    """Todo resumed-held-run-budgets: `--hold --run night1` launched again with
+    `--arm-budget claude-haiku-5-5=1%week`, whose two earlier sessions under that run cost
+    $8.865 of cost_usd (0.5%week at $17.73 a point): the night's cap is the 50 sessions the
+    other 0.5%week buys, the meter holds it to 0.5%week, and the budget line names the earlier
+    spend. Another arm's record and another run's record count nothing; a fresh run is sized
+    as before."""
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rig = Rig(tmp_path)
+    log = rig.repo / driver.ATTEMPT_LOG
+    log.parent.mkdir(parents=True, exist_ok=True)
+    records = [_haiku_record(RUN, 0x10010, 4.4325), _haiku_record(RUN, 0x10020, 4.4325),
+               _haiku_record("night0", 0x10030, 100.0),
+               _haiku_record(RUN, 0x10040, 100.0, model_requested="claude-sonnet-5-5")]
+    log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    rig.git(["add", driver.ATTEMPT_LOG.as_posix()])
+    rig.git(["commit", "-q", "-m", "made-up hold-run records"])
+    budgets = _budgets((HAIKU, "1%week"))
+    code, _, err = rig.drive(capsys, night_model=HAIKU, arm_budgets=budgets, hold=True)
+    assert code == 0, err
+    assert seen[-1].arm_caps == ((HAIKU, 50),)
+    assert seen[-1].budgets == _budgets((HAIKU, "0.5%week"))
+    line = next(line for line in err.splitlines() if f"budget {HAIKU}:" in line)
+    assert "0.5%week spent earlier by 2 sessions of run night1" in line, line
+    assert "0.5%week left" in line and "50 sessions" in line, line
+    code, out, _ = rig.drive(capsys, night_model=HAIKU, arm_budgets=budgets, hold=True,
+                             dry_run=True, json=True)  # fmt: skip
+    assert code == 0
+    (doc,) = json.loads(out)["budgets"]
+    assert (doc["sessions"], doc["spent"]["amount"], doc["spent"]["left"]) == (50, "0.5", "0.5")
+    code, _, err = rig.drive(capsys, night_model=HAIKU, arm_budgets=budgets, hold=True,
+                             run_id="night2")  # fmt: skip
+    assert code == 0, err
+    assert seen[-1].arm_caps == ((HAIKU, 100),) and seen[-1].budgets == budgets
+    assert "spent earlier" not in err
+
+
 def test_a_cascade_budget_joins_the_arm_caps(tmp_path, capsys, monkeypatch):
     """With --cascade, a budget is one more arm cap beside --arm-cap's, shown on the cascade
     line."""

@@ -120,6 +120,7 @@ def test_the_copilot_entry_is_measured_and_needs_no_backends_arm():
 _GOOD = """\
 [plans.p]
 name = "Plan P"
+no_meter = "made up"
 
 [arms.a]
 plan = "p"
@@ -144,9 +145,16 @@ read = 2026-11-13
     (_GOOD + "colour = 'red'\n", "colour"),
     (_GOOD.replace('name = "Plan P"', 'name = "Plan P"\ncredit_usd = -1'), "credit_usd"),
     (_GOOD.replace('name = "Plan P"', ""), "name"),
+    (_GOOD.replace('no_meter = "made up"', ""), "meter"),
+    (_GOOD.replace('no_meter = "made up"', 'no_meter = "x"\nmeter = "credits"'), "meter"),
+    (_GOOD.replace('no_meter = "made up"', 'meter = "bar"'), "bar"),
+    (_GOOD.replace('no_meter = "made up"', 'meter = "cost_usd"'), "usd_per_week_point"),
+    (_GOOD.replace('no_meter = "made up"', 'no_meter = "x"\nusd_per_week_point = 2'),
+     "point_source"),
 ], ids=["no-arms", "stray-table", "unknown-plan", "zero", "bool", "no-quota", "no-source",
         "bad-date", "rate-above", "rate-half", "rate-no-source", "stray-key", "bad-credit",
-        "no-plan-name"])  # fmt: skip
+        "no-plan-name", "no-meter", "two-meters", "unknown-meter", "cost-no-point",
+        "point-no-source"])  # fmt: skip
 def test_a_malformed_table_names_the_problem(tmp_path, text, words):
     path = tmp_path / "quota.toml"
     path.write_text(text, encoding="utf-8")
@@ -242,9 +250,100 @@ def test_the_doc_carries_every_figure():
                    "estimate": False, "sessions": 500, "by_budget": 500,
                    "bound": quota.BY_BUDGET, "max_sessions": None,
                    "expected_matches": "35.3", "rate": [22, 312],
-                   "rate_source": load_quota()[HAIKU].rate_source}  # fmt: skip
+                   "rate_source": load_quota()[HAIKU].rate_source,
+                   "meter": "between launches the meter reads the arm's records' cost_usd at "
+                            "$17.73 a point of the week",
+                   "spent": None}  # fmt: skip
 
 
 def test_the_path_is_committed():
     assert quota.QUOTA_TOML == backends.REPO_ROOT / "config" / "driver" / "quota.toml"
     assert Path(quota.QUOTA_TOML).is_file()
+
+
+# ---- todo budget-meter-wiring: each plan's meter, and the Claude week by cost_usd ----
+
+
+def test_every_committed_plan_names_its_meter_or_why_none_reads_live():
+    """The plans map to a live meter (OpenRouter's credits API, a Copilot session's credits,
+    a Claude session's cost_usd at the calibrated $17.73 a point of the week, 2026-11-16) or
+    say why none moves during a night (Codex drive sessions run --ephemeral; agy prints no
+    machine-readable usage)."""
+    table = load_quota()
+    plans = {entry.plan.id: entry.plan for entry in table.values()}
+    claude = plans["claude-ultra"]
+    assert (claude.meter, claude.usd_per_week_point) == ("cost_usd", Decimal("17.73"))
+    assert "$354.59" in claude.point_source and "20 points" in claude.point_source
+    assert plans["copilot-pro"].meter == "credits"
+    assert plans["openrouter"].meter == "openrouter"
+    assert plans["chatgpt-plus"].meter is None and "--ephemeral" in plans["chatgpt-plus"].no_meter
+    assert plans["google-ai-plus"].meter is None and plans["google-ai-plus"].no_meter
+    assert quota.METER_UNITS == {"openrouter": quota.USD, "credits": quota.CREDITS,
+                                 "cost_usd": quota.WEEK}  # fmt: skip
+
+
+def test_the_budget_line_names_the_meter_or_the_cap_alone():
+    """A budget whose plan has a live meter in its unit says what the night reads between
+    launches; one with none (Codex), or a meter in another unit, says the session cap alone
+    holds it."""
+    table = load_quota()
+    haiku = size(HAIKU, parse_budget("5%week"), table, max_sessions=None).line()
+    assert "cost_usd at $17.73 a point" in haiku and "cap alone" not in haiku
+    terra = size(TERRA, parse_budget("100%5h"), table, max_sessions=None).line()
+    assert "no live meter" in terra and "--ephemeral" in terra and "cap alone" in terra
+    dollars = size(COPILOT, parse_budget("$1"), table, max_sessions=None).line()
+    assert "reads credits" in dollars and "cap alone" in dollars
+
+
+# ---- todo resumed-held-run-budgets: what the run's records already spent ----
+
+
+def _rec(cost: float = 0.0, **extra) -> dict:
+    """The fields of an attempt record quota.spent reads."""
+    return {"cost_usd": cost, **extra}
+
+
+def test_spent_reads_each_records_figure_in_the_budgets_unit():
+    """Credits from a Copilot record's own `credits` (null: the per-session figure), dollars
+    through the plan's credit_usd, the Claude week from cost_usd at $17.73 a point, and a unit
+    no record measures (Codex %5h) at the per-session figure."""
+    table = load_quota()
+    copilot = [_rec(credits=3.0), _rec(credits=2.0), _rec(credits=None)]
+    spent = quota.spent(table[COPILOT], quota.CREDITS, copilot, "r1")
+    assert (spent.run, spent.sessions, spent.amount) == ("r1", 3, Decimal("7.2"))
+    assert "2 by their credits" in spent.how and "1 at 2.2credits per session" in spent.how
+    assert quota.spent(table[COPILOT], quota.USD, copilot, "r1").amount == Decimal("0.072")
+    week = quota.spent(table[HAIKU], quota.WEEK, [_rec(17.73), _rec(35.46)], "r1")
+    assert week.amount == Decimal("3") and "cost_usd at $17.73 a point" in week.how
+    terra = quota.spent(table[TERRA], quota.FIVE_HOUR, [_rec(), _rec()], "r1")
+    assert terra.amount == Decimal("2.70") and terra.how == "2 at 1.35%5h per session"
+    assert quota.spent(table[DEEPSEEK], quota.USD, [_rec(0.25)], "r1").amount == Decimal("0.25")
+    assert quota.spent(table[COPILOT], quota.CREDITS, [], "r1") is None
+
+
+def test_a_resumed_budget_buys_only_what_is_left_and_says_so():
+    """100 credits on Copilot Haiku with 50.6 already spent by the run's 23 sessions: 49.4 left
+    buy 22 sessions, and the line and the doc name the earlier spend."""
+    table = load_quota()
+    spent = quota.spent(table[COPILOT], quota.CREDITS, [_rec(credits=2.2)] * 23, "r1-x")
+    sizing = size(COPILOT, parse_budget("100credits"), table, max_sessions=None, spent=spent)
+    assert (sizing.sessions, sizing.by_budget) == (22, 22)
+    assert sizing.left == Budget(Decimal("49.4"), quota.CREDITS)
+    line = sizing.line()
+    for words in ("100credits", "50.6credits spent earlier by 23 sessions of run r1-x",
+                  "49.4credits left", "22 sessions"):
+        assert words in line, (words, line)
+    doc = sizing.doc()
+    assert doc["spent"] == {"run": "r1-x", "sessions": 23, "amount": "50.6",
+                            "how": spent.how, "left": "49.4"}  # fmt: skip
+    fresh = size(COPILOT, parse_budget("100credits"), table, max_sessions=None)
+    assert fresh.left == parse_budget("100credits") and fresh.doc()["spent"] is None
+    assert "spent earlier" not in fresh.line()
+
+
+def test_a_budget_the_run_already_spent_is_refused():
+    table = load_quota()
+    spent = quota.spent(table[COPILOT], quota.CREDITS, [_rec(credits=30.0)] * 4, "r1")
+    with pytest.raises(QuotaError) as exc:
+        size(COPILOT, parse_budget("100credits"), table, max_sessions=None, spent=spent)
+    assert "0 sessions" in str(exc.value) and "120credits spent earlier" in str(exc.value)

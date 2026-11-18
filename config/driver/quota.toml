@@ -6,7 +6,17 @@
 #
 # [plans.<id>]: a plan a contributor pays for, named here and nowhere in the code. `name` is
 # what the dry run prints; `credit_usd` (optional) is the dollar value of one plan credit, so a
-# `$` budget and a `credits` budget convert into each other on that plan.
+# `$` budget and a `credits` budget convert into each other on that plan. Each plan names
+# either the `meter` a night holds a budget against between launches (todo budget-meter-wiring;
+# `reverseapoc meters` reads the same sources) or, in `no_meter`, why none moves during a night:
+#   meter = "openrouter"  the OpenRouter credits API's total usage, in `$` (the whole account)
+#   meter = "credits"     the arm's records' `credits` (each Copilot session's usage file)
+#   meter = "cost_usd"    the arm's records' API-equivalent `cost_usd` over `usd_per_week_point`
+#                         (dollars per point of the weekly meter, from `point_source`), in `%week`
+# A budget in another unit than its plan's meter, or on a plan with no meter, is held by its
+# session cap alone, and the budget line says so. A resumed `--hold --run` (todo
+# resumed-held-run-budgets) sizes each budget less what that arm's records under the run spent,
+# counted the same way (a unit no record measures: at the arm's quota per session).
 #
 # [arms.<name>]: an arm's quota per session on its `plan`, in any of the budget units:
 #   week_percent       percent of the plan's weekly meter one session moves (`<p>%week`)
@@ -25,19 +35,26 @@
 
 [plans."claude-ultra"]
 name = "Claude Code Ultra"
+meter = "cost_usd"
+usd_per_week_point = 17.73
+point_source = "runs 20261114-opus-sonnet to 20261115-claude-push2: $354.59 of the records' cost_usd moved the owner's weekly bar 20 points (2026-11-16, docs/model-comparison.md); re-calibrate from a before and after reading of a run that had the bar to itself"
 
 [plans."chatgpt-plus"]
 name = "ChatGPT Plus (Codex CLI)"
+no_meter = "Codex drive sessions run --ephemeral and write no rollout, so ~/.codex's rate limits date from the last interactive session"
 
 [plans."google-ai-plus"]
 name = "Google AI Plus (Antigravity CLI, agy)"
+no_meter = "`agy -p /usage` prints nothing machine-readable (spike 012)"
 
 [plans."openrouter"]
 name = "OpenRouter credits"
+meter = "openrouter"
 
 [plans."copilot-pro"]
 name = "GitHub Copilot Pro (AI credits)"
 credit_usd = 0.01
+meter = "credits"
 
 [arms."claude-haiku-5-5"]
 plan = "claude-ultra"

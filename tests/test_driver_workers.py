@@ -1774,6 +1774,70 @@ def test_a_finished_hold_run_resumes_to_nothing(tmp_path):
     assert len(night.launched) == before
 
 
+def test_a_copilot_denied_write_is_its_arms_attempt_on_a_hold_run(tmp_path, capsys, monkeypatch):
+    """Todo held-run-denied-write-repick (owner ruling 2026-11-16): a Copilot session whose only
+    strays are writes Copilot's rules denied ends GAVE_UP guardrail and its arm goes on; on a
+    hold run that session is the arm's one attempt of the function, so the same hold drive
+    launched again picks nothing (run 20261116-fable-ab re-picked it three times)."""
+    from test_copilot import HAIKU as COPILOT_HAIKU
+    from test_copilot import copilot_night, write_pass
+
+    rig, night, env = copilot_night(tmp_path, monkeypatch, scenario="denied_steps")
+    write_pass(rig.repo, COPILOT_HAIKU)
+    for _ in range(2):
+        code, _, err = rig.drive(capsys, seams={"base_env": env}, night_model=COPILOT_HAIKU,
+                                 allow_egress=(COPILOT_HAIKU,), workers=1, hold=True)  # fmt: skip
+        assert code == 0, err
+    (only,) = night.kinds("attempt")
+    assert (only["outcome"], only["abort_reason"], only["hold_run"]) == (
+        "GAVE_UP", "guardrail", True)  # fmt: skip
+    assert len(night.launched) == 1
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+
+
+def test_a_copilot_denied_write_leaves_the_near_miss_queue_on_a_hold_run(tmp_path, capsys,
+                                                                         monkeypatch):  # fmt: skip
+    """In the night too: on a hold near-miss lane (a tier queue, as run 20261116-fable-ab's) the
+    function whose Copilot session ended on a denied write is not offered again tonight."""
+    from test_copilot import HAIKU as COPILOT_HAIKU
+    from test_copilot import REAL_DRIVE, copilot_night, fake_copilot_argv, write_pass
+
+    rig, night, env = copilot_night(tmp_path, monkeypatch, scenario="denied_steps")
+    write_pass(rig.repo, COPILOT_HAIKU)
+
+    def drive(config, deps, *, lock=None):
+        moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
+                        attempts_per_function=1, arms=((COPILOT_HAIKU, 1),),
+                        near_miss=(COPILOT_HAIKU,), max_sessions=4)  # fmt: skip
+        return REAL_DRIVE(moved, night.deps(copilot_argv=fake_copilot_argv, say=deps.say,
+                                            near_miss=_near_miss(night.picks, [95.0])))
+
+    monkeypatch.setattr(driver, "drive", drive)
+    code, _, err = rig.drive(capsys, seams={"base_env": env}, night_model=COPILOT_HAIKU,
+                             allow_egress=(COPILOT_HAIKU,), workers=1, hold=True)  # fmt: skip
+    assert code == 0, err
+    assert len(night.launched) == 1, [r["abort_reason"] for r in night.kinds("attempt")]
+
+
+def test_hold_progress_counts_a_copilot_guardrail_record(tmp_path):
+    """A Copilot GAVE_UP guardrail hold record is its session's own end (the denied-write
+    ruling; a session another arm's stop or an interrupt cut short leaves no record), so it
+    counts; a Claude arm's GAVE_UP guardrail record (its arm stopped) and a tool record are
+    still attempted again."""
+    from test_driver_pick import _hold_record
+    from test_driver_records import _log
+
+    copilot, claude, tool = 0x00010010, 0x00010020, 0x00010030
+    records = [{**_hold_record(RUN, copilot), "outcome": "GAVE_UP", "abort_reason": "guardrail",
+                "harness": "copilot", "backend": "github", "credits": 25.0},
+               {**_hold_record(RUN, claude), "outcome": "GAVE_UP", "abort_reason": "guardrail"},
+               {**_hold_record(RUN, tool), "outcome": "GAVE_UP", "abort_reason": "tool",
+                "harness": "copilot", "backend": "github", "credits": None}]  # fmt: skip
+    done, last = driver.hold_progress(_log(tmp_path, records), RUN)
+    assert done == {("ufo2p", copilot)}
+    assert last == {("ufo2p", s): 1 for s in (copilot, claude, tool)}
+
+
 GEMINI = "gemini-flash"  # an agy arm (07.2-15)
 AGY_DENIED_PATH = "C:\\made-up\\tools\\x.py"  # soft_denied_write's write, agy refused it
 
@@ -2953,6 +3017,24 @@ def test_a_window_that_resets_still_counts_against_the_budget(tmp_path):
     assert report.event == "ENDED", report.detail
     assert _runs_launched(night, _arm_run(HAIKU)) == 2  # baseline 40, then 45, 2, 6 (spent)
     assert any("budget 10%5h spent" in line and "11%5h" in line for line in lines), lines
+
+
+def test_the_budget_meter_stops_a_claude_arm_on_its_own_records(tmp_path):
+    """Todo budget-meter-wiring, through the real seam (meters.budget_meter): each HAIKU session
+    records cost_usd $0.25, 0.0141%week at $17.73 a point, so a 0.02%week budget is read
+    spent before HAIKU's third launch; SONNET goes on."""
+    from reverseapoc import meters
+
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    lines: list[str] = []
+    budget = driver.quota.parse_budget("0.02%week")
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "budgets": ((HAIKU, budget),)},
+                       meter=meters.budget_meter(night.repo), say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert {r["cost_usd"] for r in night.kinds("attempt")} == {0.25}
+    assert _runs_launched(night, _arm_run(HAIKU)) == 2
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+    assert any("budget 0.02%week spent" in line and HAIKU in line for line in lines), lines
 
 
 def test_a_spent_budget_passes_the_cascade_attempt_on(tmp_path):
