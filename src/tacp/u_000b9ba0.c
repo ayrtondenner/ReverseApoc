@@ -8,7 +8,12 @@
 #include "common.h"
 
 INCLUDE_ASM(func_000B9BA0);
-INCLUDE_ASM(func_000B9F40);
+extern int D_002B0014;
+
+void func_000B9F40(void)
+{
+    D_002B0014 = 1;
+}
 INCLUDE_ASM(func_000B9F50);
 INCLUDE_ASM(func_000B9F70);
 INCLUDE_ASM(func_000BA060);
