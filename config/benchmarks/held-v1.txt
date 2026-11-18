@@ -1,0 +1,73 @@
+# held-v1: the frozen held benchmark (todo held-benchmark-statistics, 2026-11-18). A
+# reverseapoc drive --picks file (driver.read_picks); never edit it: a new set is held-v2.
+# Population: the partial rows of config/ufo2p/status.csv and config/tacp/status.csv at
+# commit e93afb69, split into driver.STRATA groups by that commit's functions.csv sizes:
+# under 64 B 49 rows, 64 to 255 B 245 rows, 256 B and up 346 rows.
+# Sample: one Python random.Random(seed 20261118) draws sample(sorted(group), 20) from each group
+# in STRATA order; the picks are listed in that order (tests/test_stats.py reproduces it).
+# Use: run each arm over this file as a hold run (--hold), then compare two arms with
+# reverseapoc stats --compare RUN_A RUN_B (Wilson 95% intervals, exact McNemar test).
+# Decision rule, fixed before any run: call one arm better only when the exact McNemar
+# p < 0.05 on the paired picks; otherwise report no difference, whatever the raw counts.
+# drive --picks refuses a pick matched since: then run every arm on a copy without it and
+# name the dropped picks in the comparison.
+ufo2p 0x000886F0
+ufo2p 0x00012310
+ufo2p 0x00050EE0
+tacp 0x00079FE0
+tacp 0x00032B80
+tacp 0x00023D50
+ufo2p 0x00013710
+ufo2p 0x00051E60
+ufo2p 0x00050EC0
+ufo2p 0x0005F3E0
+ufo2p 0x00051F70
+tacp 0x000A6EA0
+ufo2p 0x000B78A0
+tacp 0x0001DED0
+ufo2p 0x0008A0C0
+tacp 0x000790F0
+ufo2p 0x00051D80
+ufo2p 0x000621A0
+tacp 0x0007A0A0
+tacp 0x000A3790
+tacp 0x00094F30
+ufo2p 0x00060BD0
+tacp 0x000403C0
+ufo2p 0x0002F510
+ufo2p 0x000B6840
+ufo2p 0x000B3400
+ufo2p 0x000131C0
+tacp 0x000576B0
+tacp 0x0009F680
+tacp 0x00043FE0
+tacp 0x00057C70
+ufo2p 0x00030500
+tacp 0x000594D0
+tacp 0x00040D50
+tacp 0x000BA150
+tacp 0x000A3460
+tacp 0x00058090
+tacp 0x00021440
+ufo2p 0x00099CE0
+ufo2p 0x000AB5F0
+ufo2p 0x00047D70
+tacp 0x00064050
+ufo2p 0x0006F3C0
+tacp 0x00093630
+ufo2p 0x000A3320
+tacp 0x00059540
+ufo2p 0x00027DF0
+tacp 0x000B4D10
+tacp 0x000AD130
+tacp 0x00033620
+tacp 0x00033CD0
+tacp 0x0009C350
+tacp 0x000ABD50
+ufo2p 0x00093EE0
+ufo2p 0x000A8970
+ufo2p 0x000AB240
+tacp 0x00059970
+ufo2p 0x0001DD80
+tacp 0x00097370
+tacp 0x000AB060

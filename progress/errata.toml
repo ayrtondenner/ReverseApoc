@@ -1,0 +1,21 @@
+# The errata ledger (todo errata-ledger): corrections to committed records of
+# progress/attempts.jsonl, which is never rewritten. `reverseapoc stats` applies every
+# correction before it counts, and lists each one with its reason (`stats --run` lists those
+# of the runs it reports). A correction sets `field` (dotted for a nested one: `check.runs`,
+# `tokens.input`) from `old` to `new` in every record of `run` that holds `old` (same type and
+# value). One that changes no record, or leaves a record failing its schema, stops stats with
+# exit 2. Keys: run, field, old, new, reason, date ("YYYY-MM-DD", the day of the correction).
+#
+# No committed record has a single-value correction yet (read 2026-11-18 from
+# docs/model-comparison.md and docs/learnings.md). The Codex double count of cached tokens
+# (learnings 2026-11-11) differs per record, so it is not one entry here.
+#
+# Example (not active):
+#
+# [[correction]]
+# run = "20261116-week-gpt-6.1-terra"
+# field = "check.runs"
+# old = 26
+# new = 25
+# reason = "the wrapper logged a refused check as a run; checks.jsonl holds 25"
+# date = "2026-11-18"

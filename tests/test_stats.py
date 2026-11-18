@@ -1295,3 +1295,309 @@ def test_comparison_arm_table_error(tmp_path, capsys, monkeypatch):
     assert _run(repo, log, "--run", "x", config=config) == 2
     err = capsys.readouterr().err
     assert "reverseapoc stats: error:" in err and "made-up table problem" in err
+
+
+# ---- U7 (todo check-budget-from-data): checks to an exact match per size bucket ----
+
+
+def _checked(start: int, runs: int, outcome: str = "PARTIAL", total: int = 100) -> dict:
+    """A v3 matching attempt of the ufo2p function at `start` that used `runs` checks, with
+    `total` tokens (all input)."""
+    return _on_v3(start, outcome=outcome,
+                  check={"runs": runs, "best_percent": 100.0 if outcome != "PARTIAL" else 50.0,
+                         "sweep_hit": None, "needs": None},
+                  tokens={"input": total, "output": 0, "cache_read": 0,
+                          "cache_creation": 0})  # fmt: skip
+
+
+def _curve_report(capsys, tmp_path: Path) -> dict:
+    """Small functions (16 B) and one of 300 B: matched at checks 1, 1, 2 and 10; partial
+    sessions at 0, 3 and 25 checks."""
+    config = tmp_path / "config"
+    _functions(config, "ufo2p", {0x10000: 16, 0x10010: 16, 0x10020: 16, 0x10030: 16,
+                                 0x10040: 16, 0x10050: 16, 0x10060: 300})  # fmt: skip
+    records = (_checked(0x10000, 1, "MATCHED", 100), _checked(0x10010, 1, "MATCHED", 100),
+               _checked(0x10020, 2, "MATCHED", 200), _checked(0x10030, 0, total=50),
+               _checked(0x10040, 3, total=150), _checked(0x10050, 25, total=400),
+               _checked(0x10060, 10, "MATCHED", 1000))  # fmt: skip
+    return _report(capsys, tmp_path, *records, config=config)
+
+
+def test_check_curves_per_bucket(tmp_path, capsys):
+    curves = _curve_report(capsys, tmp_path)["check_curves"]
+    small = curves["[0, 64)"]
+    assert (small["sessions"], small["exact"]) == (6, 3)
+    assert small["exact_at"] == [[1, 2], [2, 1]]  # [checks, sessions], in check order
+    assert small["cumulative_percent"] == [[1, "66.7"], [2, "100.0"]]
+    assert (small["p50"], small["p95"], small["latest"]) == (1, 2, 2)
+    bands = {b["checks"]: b for b in small["bands"]}
+    assert list(bands) == ["0", "1-3", "4-6", "7-10", "11-15", "16+"]
+    assert (bands["1-3"]["sessions"], bands["1-3"]["exact"]) == (4, 3)
+    assert bands["1-3"]["tokens_percent"] == "55.0"  # 550 of the bucket's 1000 tokens
+    assert (bands["16+"]["sessions"], bands["16+"]["exact"]) == (1, 0)
+    assert bands["16+"]["tokens_percent"] == "40.0"
+    assert curves["[256, 1024)"]["exact_at"] == [[10, 1]]
+    empty = curves["[64, 256)"]
+    assert (empty["sessions"], empty["p50"], empty["latest"]) == (0, None, None)
+    assert empty["bands"][0]["tokens_percent"] is None
+    total = curves["total"]
+    assert (total["sessions"], total["exact"], total["latest"]) == (7, 4, 10)
+    assert "unknown" not in curves
+
+
+def test_check_curves_text(tmp_path, capsys):
+    _curve_report(capsys, tmp_path)
+    assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
+    out = capsys.readouterr().out
+    assert "checks to an exact match per size bucket" in out
+    assert ("  [0, 64): 3 exact of 6 sessions; p50 1, p95 2, latest 2; exact by check: "
+            "1 66.7%, 2 100.0%") in out
+    assert "    sessions by checks used: 0: 1 (0 exact, 5.0% of tokens);" in out
+    assert "  [64, 256): no matching session" in out
+
+
+def test_check_curves_count_a_held_exact_under_run(tmp_path, capsys):
+    """A hold run's HOLD_EXACT session is exact too; the default report leaves hold runs out,
+    so it shows under `--run`."""
+    held = {**_checked(0x10000, 4, "HOLD_EXACT"), "hold_run": True}
+    repo, _ = _repo(tmp_path)
+    report = _json(capsys, repo, _log(tmp_path, held), "--run", "night1",
+                   config=tmp_path / "config")  # fmt: skip
+    assert report["check_curves"]["unknown"]["exact_at"] == [[4, 1]]
+
+
+# ---- U7 (todo errata-ledger): progress/errata.toml, applied and listed ----
+
+
+def _errata(log_dir: Path, text: str) -> None:
+    """The ledger next to the attempt log (_log writes it under tmp_path)."""
+    _write(log_dir / "errata.toml", text)
+
+
+_COST_ERRATUM = """
+[[correction]]
+run = "night1"
+field = "cost_usd"
+old = 0.25
+new = 1.5
+reason = "the CLI's figure was a made-up undercount"
+date = "2026-11-18"
+
+[[correction]]
+run = "night1"
+field = "check.runs"
+old = 2
+new = 3
+reason = "a sweep went unlogged"
+date = "2026-11-18"
+"""
+
+
+def test_errata_applied_and_listed_under_run(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    _errata(tmp_path, _COST_ERRATUM)
+    log = _log(tmp_path, _on_v3(0x10000), _on_v3(0x10010, run="night2"))
+    report = _json(capsys, repo, log, "--run", "night1", config=tmp_path / "config")
+    assert report["totals"]["cost_usd"] == "1.50"
+    assert report["check_curves"]["total"]["bands"][1]["sessions"] == 1  # 3 checks: 1-3
+    assert report["errata"] == [
+        {"run": "night1", "field": "cost_usd", "old": 0.25, "new": 1.5,
+         "reason": "the CLI's figure was a made-up undercount", "date": "2026-11-18",
+         "records": 1},
+        {"run": "night1", "field": "check.runs", "old": 2, "new": 3,
+         "reason": "a sweep went unlogged", "date": "2026-11-18", "records": 1},
+    ]  # fmt: skip
+    assert _run(repo, log, "--run", "night1", config=tmp_path / "config") == 0
+    out = capsys.readouterr().out
+    assert "errata applied (errata.toml next to the attempt log):" in out
+    assert ("  night1 cost_usd: 0.25 -> 1.5 on 1 record (2026-11-18): the CLI's figure was a "
+            "made-up undercount") in out  # fmt: skip
+
+
+def test_errata_of_an_unselected_run_are_not_listed(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    _errata(tmp_path, _COST_ERRATUM)
+    log = _log(tmp_path, _on_v3(0x10000), _on_v3(0x10010, run="night2"))
+    report = _json(capsys, repo, log, "--run", "night2", config=tmp_path / "config")
+    assert report["errata"] == []
+    assert report["totals"]["cost_usd"] == "0.25"
+    assert _run(repo, log, "--run", "night2", config=tmp_path / "config") == 0
+    assert "errata applied: none" in capsys.readouterr().out
+
+
+def test_no_ledger_no_errata(tmp_path, capsys):
+    assert _report(capsys, tmp_path, _on_v3(0x10000))["errata"] == []
+
+
+def test_the_ledger_is_read_next_to_the_log(tmp_path, capsys):
+    """A ledger in the repo does not apply to a --log elsewhere (its corrections would match
+    nothing there)."""
+    repo, _ = _repo(tmp_path)
+    _write(repo / "progress" / "errata.toml", _COST_ERRATUM)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    log = _log(other, _on_v3(0x10000, run="night9"))
+    assert _json(capsys, repo, log, config=tmp_path / "config")["errata"] == []
+
+
+def test_errata_of_records_the_report_leaves_out_are_not_listed(tmp_path, capsys):
+    """The default report leaves hold runs out, so it lists no correction of one."""
+    repo, _ = _repo(tmp_path)
+    _errata(tmp_path, _COST_ERRATUM)
+    log = _log(tmp_path, _on_v3(0x10000, hold_run=True))
+    assert _json(capsys, repo, log, config=tmp_path / "config")["errata"] == []
+    assert len(_json(capsys, repo, log, "--run", "night1",
+                     config=tmp_path / "config")["errata"]) == 2  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        (_COST_ERRATUM.replace("old = 0.25", "old = 0.5"), "changes no record"),
+        (_COST_ERRATUM.replace("new = 3", "new = -1"), "fails its schema"),
+        (_COST_ERRATUM.replace('reason = "a sweep went unlogged"\n', ""), "reason"),
+        (_COST_ERRATUM.replace('date = "2026-11-18"\n', 'date = "18 Nov"\n', 1), "date"),
+        (_COST_ERRATUM + 'extra = "x"\n', "extra"),
+        ("[[correction]\n", "not TOML"),
+    ],
+    ids=["stale", "breaks-schema", "no-reason", "bad-date", "unknown-key", "not-toml"],
+)
+def test_a_bad_erratum_is_refused(tmp_path, capsys, text, message):
+    repo, _ = _repo(tmp_path)
+    _errata(tmp_path, text)
+    assert _run(repo, _log(tmp_path, _on_v3(0x10000)), "--run", "night1",
+                config=tmp_path / "config") == 2  # fmt: skip
+    err = capsys.readouterr().err
+    assert "errata.toml" in err and message in err
+
+
+def test_committed_errata_ledger_reads():
+    errata = reverseapoc.stats.read_errata(REPO_ROOT / "progress" / reverseapoc.stats.ERRATA)
+    records = reverseapoc.stats.read_attempts(REPO_ROOT / ATTEMPT_LOG)
+    reverseapoc.stats.apply_errata(records, errata)  # every entry still changes a record
+
+
+# ---- U7 (todo held-benchmark-statistics): stats --compare RUN_A RUN_B ----
+
+
+def _paired_log(tmp_path: Path) -> Path:
+    """Run A: 9 functions, none exact. Run B: 8 of them and one more, 6 of the 8 shared exact
+    (HOLD_EXACT twice in one function counts once), the extra one exact too."""
+    a = [_on_v3(0x10000 + 16 * i, run="held-a", hold_run=True) for i in range(9)]
+    b = [_on_v3(0x10000 + 16 * i, run="held-b", hold_run=True,
+                outcome="HOLD_EXACT" if i < 6 else "PARTIAL") for i in range(8)]  # fmt: skip
+    b += [_on_v3(0x10000, run="held-b", hold_run=True, outcome="HOLD_EXACT", attempt=2),
+          _on_v3(0x20000, run="held-b", hold_run=True, outcome="HOLD_EXACT")]  # fmt: skip
+    return _log(tmp_path, *a, *b, _on_v3(0x10000, run="other", outcome="MATCHED"))
+
+
+def test_compare_intervals_and_mcnemar(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    doc = _json(capsys, repo, _paired_log(tmp_path), "--compare", "held-a", "held-b",
+                config=tmp_path / "config")  # fmt: skip
+    assert (doc["a"]["functions"], doc["a"]["exact"]) == (9, 0)
+    assert (doc["b"]["functions"], doc["b"]["exact"]) == (9, 7)
+    assert doc["a"]["arms"] == ["anthropic/claude/claude-opus-5-5"]
+    paired = doc["paired"]
+    assert paired["functions"] == 8
+    assert (paired["both"], paired["a_only"], paired["b_only"], paired["neither"]) == (0, 0, 6, 2)
+    assert paired["a"]["wilson_percent"] == ["0.0", "32.4"]  # 0 of 8
+    assert paired["b"]["wilson_percent"] == ["40.9", "92.9"]  # 6 of 8
+    assert paired["mcnemar_p"] == "0.0312"  # 2 * (1/2)^6
+
+
+def test_compare_text(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    assert _run(repo, _paired_log(tmp_path), "--compare", "held-a", "held-b",
+                config=tmp_path / "config") == 0  # fmt: skip
+    out = capsys.readouterr().out
+    assert "  A held-a (anthropic/claude/claude-opus-5-5): 0 exact of 9 functions, 0.0% " in out
+    assert ("paired: 8 functions both runs attempted; both exact 0, A only 0, B only 6, "
+            "neither 2") in out
+    assert "  B: 6 exact of 8, 75.0% [40.9%, 92.9%]" in out
+    assert "exact McNemar test (two-sided, 6 discordant pairs): p = 0.0312" in out
+
+
+def test_compare_without_discordant_pairs_is_p_one(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, _on_v3(0x10000, run="x"), _on_v3(0x10000, run="y"))
+    doc = _json(capsys, repo, log, "--compare", "x", "y", config=tmp_path / "config")
+    assert doc["paired"]["mcnemar_p"] == "1.0000"
+
+
+def test_compare_an_unknown_run_is_refused(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    assert _run(repo, _paired_log(tmp_path), "--compare", "held-a", "nowhere",
+                config=tmp_path / "config") == 2  # fmt: skip
+    assert "nowhere" in capsys.readouterr().err
+
+
+def test_compare_is_not_combined_with_run(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    with pytest.raises(SystemExit):
+        _run(repo, _paired_log(tmp_path), "--compare", "held-a", "held-b", "--run", "held-a")
+
+
+def test_wilson_and_mcnemar_values():
+    from reverseapoc.stats import mcnemar_exact, wilson
+
+    assert wilson(0, 0) is None
+    low, high = wilson(1, 2)
+    assert abs(low - 0.0945) < 1e-4 and abs(high - 0.9055) < 1e-4
+    assert mcnemar_exact(0, 0) == 1.0
+    assert mcnemar_exact(1, 4) == 0.375  # 2 * (1 + 5) / 32
+    assert mcnemar_exact(5, 0) == 0.0625
+
+
+# ---- U7 (todo held-benchmark-statistics): the frozen held pick set ----
+
+HELD_V1 = REPO_ROOT / "config" / "benchmarks" / "held-v1.txt"
+_HELD_V1_BASE = "e93afb69"  # the commit whose status.csv partial rows were sampled
+_HELD_V1_SEED = 20261118
+_HELD_V1_PER_STRATUM = 20
+
+
+def _held_v1_sample(base: Path) -> list[tuple[str, int]]:
+    """The header's recipe: the partial rows of each config/<exe>/status.csv at the base
+    commit, in driver.STRATA groups by that commit's functions.csv size, sorted; one
+    random.Random(seed) draws `sample(group, 20)` from each group in STRATA order. `base`
+    receives the base commit's config files."""
+    import random
+    import subprocess
+
+    from reverseapoc import driver
+    from reverseapoc.status import read_status
+
+    for exe in ("ufo2p", "tacp"):
+        for name in ("status.csv", "functions.csv"):
+            shown = subprocess.run(
+                ["git", "-c", "safe.directory=*", "show", f"{_HELD_V1_BASE}:config/{exe}/{name}"],
+                cwd=REPO_ROOT, capture_output=True, check=True).stdout  # fmt: skip
+            (base / exe).mkdir(parents=True, exist_ok=True)
+            (base / exe / name).write_bytes(shown)
+    sizes = reverseapoc.stats.read_sizes(base)
+    groups: list[list[tuple[str, int]]] = [[] for _ in driver.STRATA]
+    for exe in ("ufo2p", "tacp"):
+        for row in read_status(base / exe / "status.csv"):
+            if row.status == "partial":
+                groups[driver._stratum(sizes[(exe, row.start)])].append((exe, row.start))
+    rng = random.Random(_HELD_V1_SEED)
+    return [key for group in groups for key in rng.sample(sorted(group), _HELD_V1_PER_STRATUM)]
+
+
+def test_held_v1_reads_as_a_picks_file():
+    from reverseapoc import driver
+
+    assert len(driver.read_picks(HELD_V1)) == 3 * _HELD_V1_PER_STRATUM
+    header = HELD_V1.read_text(encoding="utf-8")
+    assert f"seed {_HELD_V1_SEED}" in header and _HELD_V1_BASE in header
+
+
+def test_held_v1_is_the_recorded_sample(tmp_path):
+    """The header's seed and base commit reproduce the file, 20 picks per size group; a clone
+    without that commit (a shallow CI checkout) skips."""
+    if reverseapoc.stats.is_shallow(REPO_ROOT):
+        pytest.skip("shallow clone: the base commit may be missing")
+    listed = [line for line in HELD_V1.read_text(encoding="utf-8").splitlines()
+              if line and not line.startswith("#")]  # fmt: skip
+    assert listed == [f"{exe} 0x{start:08X}" for exe, start in _held_v1_sample(tmp_path)]

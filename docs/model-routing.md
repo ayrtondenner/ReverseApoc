@@ -1185,6 +1185,24 @@ reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-
 The project skill `drive-budget` turns a plain request ("5% of my Claude plan via Haiku and $10
 of OpenRouter") into this command, shows the dry run and asks before it launches anything.
 
+### The check budget
+
+**2026-11-18, from `reverseapoc stats --run '*'`** (the "checks to an exact match" block: every
+matching session in `progress/attempts.jsonl`, hold runs included, by `check.runs`). Of 4,043
+sessions, 188 ended exact (MATCHED or HOLD_EXACT): 59.0% on the first check, 84.0% by check 3,
+p95 at check 7 and the latest at check 13. Per bucket, the latest exact came at check 10 under
+64 B (110 exact, p95 4), 11 at 64-255 B (69, p95 9) and 13 at 256-1023 B (9, p95 13); nothing
+of 1 KB or more matched (143 sessions). The 79 sessions that used 11-15 checks gave 2 exact
+for 2.5% of all tokens, and the 147 that used 16-25 gave none for 5.1% (101 of them under
+64 B, 26% of that bucket's tokens; 134 of the 147 were Opus 5.5). So the data supports
+`attempt.CHECK_BUDGET = 15`, which keeps every exact match seen so far with two checks to
+spare and stops the 16-25 tail; if tokens spread evenly over a session's checks, that saves
+about 2% of all tokens (5.1% at most). No per-bucket caps: the buckets' latest exact checks
+(10, 11, 13) sit within three of each other, and 9 exact sessions at 256 B and up are too few
+to set that bucket apart. The budget stays 25 until the owner rules on D-07, because 25 is also
+in `session.MAX_CHECK_RUNS`, in both matching and readability skills and in their tests, which
+change together. Re-measure with the same command before the ruling.
+
 ## Near-miss lane
 
 The partial rows of `config/<exe>/status.csv` hold far more bytes than the matched ones, and

@@ -36,11 +36,16 @@ function still counts once in the matched totals and per_match.
 from __future__ import annotations
 
 import json
+import math
+import re
+import tomllib
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
+from fractions import Fraction
 from pathlib import Path
+from statistics import NormalDist
 
 from . import backends, driver
 from .functions import FunctionsError, read_functions_csv
@@ -110,6 +115,127 @@ def read_attempts(path: Path) -> list[dict]:
             raise StatsError(f"{path} line {number}: {exc}") from None
         records.append(record)
     return records
+
+
+# ---- todo errata-ledger: corrections to committed records ----
+
+ERRATA = "errata.toml"  # next to the attempt log: progress/errata.toml for the committed one
+_ERRATUM_KEYS = ("run", "field", "old", "new", "reason", "date")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+@dataclass(frozen=True)
+class Erratum:
+    """One `[[correction]]` of the ledger: in every record of `run` whose dotted `field`
+    (`cost_usd`, `check.runs`) holds `old` (same type, same value), it becomes `new`."""
+
+    run: str
+    field: str
+    old: object
+    new: object
+    reason: str
+    date: str  # YYYY-MM-DD
+
+    def to_json(self, records: int) -> dict:
+        return {"run": self.run, "field": self.field, "old": self.old, "new": self.new,
+                "reason": self.reason, "date": self.date, "records": records}  # fmt: skip
+
+
+def _erratum(path: Path, number: int, entry: object) -> Erratum:
+    where = f"{path} correction {number}"
+    if not isinstance(entry, dict):
+        raise StatsError(f"{where}: not a table")
+    extra, missing = set(entry) - set(_ERRATUM_KEYS), set(_ERRATUM_KEYS) - set(entry)
+    if extra or missing:
+        raise StatsError(f"{where}: keys must be {', '.join(_ERRATUM_KEYS)}; extra "
+                         f"{sorted(extra)}, missing {sorted(missing)}")  # fmt: skip
+    for key in ("run", "field", "reason"):
+        if not isinstance(entry[key], str) or not entry[key].strip():
+            raise StatsError(f"{where}: {key} must be a non-empty string")
+    if not isinstance(entry["date"], str) or not _DATE.fullmatch(entry["date"]):
+        raise StatsError(f"{where}: date must be a \"YYYY-MM-DD\" string")
+    for key in ("old", "new"):
+        try:
+            json.dumps(entry[key])
+        except (TypeError, ValueError):
+            raise StatsError(f"{where}: {key} must be a JSON value (no TOML date)") from None
+    return Erratum(**entry)
+
+
+def read_errata(path: Path) -> list[Erratum]:
+    """The ledger's corrections in file order; a missing ledger has none. TOML that does not
+    parse, or a correction without exactly _ERRATUM_KEYS, is a StatsError naming it."""
+    path = Path(path)
+    if not path.is_file():
+        return []
+    try:
+        doc = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise StatsError(f"{path}: not TOML: {exc}") from None
+    extra = set(doc) - {"correction"}
+    if extra or not isinstance(doc.get("correction", []), list):
+        raise StatsError(f"{path}: only [[correction]] tables are allowed (found {sorted(doc)})")
+    return [_erratum(path, n, e) for n, e in enumerate(doc.get("correction", []), start=1)]
+
+
+def _same(a: object, b: object) -> bool:
+    return type(a) is type(b) and a == b
+
+
+def _holder(record: dict, parents: Sequence[str]) -> dict | None:
+    """The mapping the dotted field's last part lives in, or None when the path is absent."""
+    holder: object = record
+    for part in parents:
+        holder = holder.get(part) if isinstance(holder, dict) else None
+    return holder if isinstance(holder, dict) else None
+
+
+def _corrected(record: dict, erratum: Erratum) -> dict | None:
+    """A copy of the record with the erratum applied, or None when it does not apply to it
+    (the logged record itself is never changed)."""
+    *parents, last = erratum.field.split(".")
+    if record["run"] != erratum.run:
+        return None
+    holder = _holder(record, parents)
+    if holder is None or last not in holder or not _same(holder[last], erratum.old):
+        return None
+    out = json.loads(json.dumps(record))  # a deep copy, only of a record that changes
+    _holder(out, parents)[last] = erratum.new
+    return out
+
+
+def apply_errata(records: Sequence[dict], errata: Sequence[Erratum]
+                 ) -> tuple[list[dict], list[tuple[Erratum, int]]]:  # fmt: skip
+    """The records with every correction applied in ledger order, and each correction with
+    the number of records it changed. A correction that changes no record (a stale ledger) or
+    leaves a record failing its schema is a StatsError."""
+    out, applied = list(records), []
+    for erratum in errata:
+        changed = 0
+        for index, record in enumerate(out):
+            fixed = _corrected(record, erratum)
+            if fixed is None:
+                continue
+            try:
+                driver.validate_record(fixed)
+            except (driver.RecordError, KeyError, TypeError) as exc:
+                raise StatsError(f"{ERRATA}: {erratum.run} {erratum.field}: the corrected "
+                                 f"record fails its schema: {exc}") from None  # fmt: skip
+            out[index], changed = fixed, changed + 1
+        if not changed:
+            raise StatsError(f"{ERRATA}: {erratum.run} {erratum.field} = {erratum.old!r} "
+                             "changes no record")  # fmt: skip
+        applied.append((erratum, changed))
+    return out, applied
+
+
+def _errata_lines(errata: Sequence[Mapping]) -> list[str]:
+    if not errata:
+        return ["errata applied: none"]
+    return [f"errata applied ({ERRATA} next to the attempt log):"] + [
+        f"  {e['run']} {e['field']}: {e['old']!r} -> {e['new']!r} on {e['records']} "
+        f"record{'s' if e['records'] != 1 else ''} ({e['date']}): {e['reason']}"
+        for e in errata]  # fmt: skip
 
 
 # ---- match events from git ----
@@ -616,6 +742,168 @@ def _comparison(matching: Sequence[Mapping], landed: Sequence[Mapping], sizes: M
     return {"columns": columns, "arms": rows}
 
 
+# ---- todo check-budget-from-data: checks to an exact match per size bucket ----
+
+# The bands of checks a session used, [low, high] inclusive (high None: no bound): no check,
+# the first three, then the ranges the budget question turns on (attempt.CHECK_BUDGET).
+_CHECK_BANDS = ((0, 0), (1, 3), (4, 6), (7, 10), (11, 15), (16, None))
+_EXACT = (driver.MATCHED, driver.HOLD_EXACT)
+_PERCENTILES = (50, 95)
+
+
+def _band_label(low: int, high: int | None) -> str:
+    if high is None:
+        return f"{low}+"
+    return str(low) if low == high else f"{low}-{high}"
+
+
+def _nearest_rank(values: Sequence[int], percent: int) -> int | None:
+    """The nearest-rank percentile of sorted `values`; None when there are none."""
+    if not values:
+        return None
+    return values[max(0, -(-percent * len(values) // 100) - 1)]
+
+
+def _token_total(record: Mapping) -> int:
+    return sum(record["tokens"][k] for k in _TOKENS)
+
+
+def _band(records: Sequence[Mapping], low: int, high: int | None, tokens: int) -> dict:
+    inside = [r for r in records
+              if low <= r["check"]["runs"] and (high is None or r["check"]["runs"] <= high)]
+    spent = sum(map(_token_total, inside))
+    return {"checks": _band_label(low, high), "sessions": len(inside),
+            "exact": sum(r["outcome"] in _EXACT for r in inside),
+            "tokens_percent": tenth(Decimal(spent) * 100 / tokens) if tokens else None}  # fmt: skip
+
+
+def _curve(records: Sequence[Mapping]) -> dict:
+    """One bucket's curve: the sessions, the exact ones (MATCHED or HOLD_EXACT) by the checks
+    they used (`check.runs`), the cumulative share exact by each such check, the p50 and p95
+    and latest check of an exact session, and every session by _CHECK_BANDS with its share of
+    the bucket's tokens."""
+    runs = sorted(r["check"]["runs"] for r in records if r["outcome"] in _EXACT)
+    at = Counter(runs)
+    cumulative, seen = [], 0
+    for checks in sorted(at):
+        seen += at[checks]
+        cumulative.append([checks, tenth(Decimal(seen) * 100 / len(runs))])
+    tokens = sum(map(_token_total, records))
+    return {"sessions": len(records), "exact": len(runs),
+            "exact_at": [[k, at[k]] for k in sorted(at)], "cumulative_percent": cumulative,
+            **{f"p{p}": _nearest_rank(runs, p) for p in _PERCENTILES},
+            "latest": runs[-1] if runs else None,
+            "bands": [_band(records, low, high, tokens) for low, high in _CHECK_BANDS]}  # fmt: skip
+
+
+def _check_curves(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict:
+    """The curve of every SIZE_BUCKETS bucket (an `unknown` one only when a function has no
+    size) and of all of them (`total`), over the matching sessions."""
+    groups: dict[str, list[Mapping]] = {_bucket_label(i): [] for i in range(len(SIZE_BUCKETS))}
+    for r in matching:
+        groups.setdefault(_size_label(_key(r), sizes), []).append(r)
+    return {**{label: _curve(records) for label, records in groups.items()},
+            TOTAL: _curve(matching)}  # fmt: skip
+
+
+# ---- todo held-benchmark-statistics: `stats --compare RUN_A RUN_B` ----
+
+_Z95 = NormalDist().inv_cdf(0.975)  # the two-sided 95% normal quantile, about 1.96
+
+
+def wilson(exact: int, n: int) -> tuple[float, float] | None:
+    """The Wilson score 95% interval of `exact` successes in `n` trials, as fractions; None
+    for no trial."""
+    if not n:
+        return None
+    p, z2 = exact / n, _Z95 * _Z95
+    centre = (p + z2 / (2 * n)) / (1 + z2 / n)
+    half = _Z95 * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n)) / (1 + z2 / n)
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
+def mcnemar_exact(a_only: int, b_only: int) -> float:
+    """The exact two-sided McNemar p-value of the discordant pairs: twice the binomial(n, 1/2)
+    tail at the smaller count, capped at 1; 1 without a discordant pair."""
+    n = a_only + b_only
+    tail = Fraction(sum(math.comb(n, i) for i in range(min(a_only, b_only) + 1)), 2**n)
+    return float(min(Fraction(1), 2 * tail))
+
+
+def _percent(fraction: float) -> str:
+    return tenth(Decimal(fraction * 100))
+
+
+def _proportion(exact: int, n: int) -> dict:
+    interval = wilson(exact, n)
+    return {"exact": exact, "functions": n,
+            "rate_percent": _rate(exact, n),
+            "wilson_percent": None if interval is None
+            else [_percent(x) for x in interval]}  # fmt: skip
+
+
+def _run_outcomes(records: Sequence[Mapping], name: str) -> tuple[list[str], dict[Key, bool]]:
+    """The arms of run `name`'s matching attempts and, per function, whether any was exact
+    (MATCHED or HOLD_EXACT); a run with none is a StatsError."""
+    mine = [r for r in records if r["kind"] == driver.KIND_ATTEMPT
+            and r.get("session", driver.MATCHING) == driver.MATCHING
+            and run_selected(r["run"], [name])]  # fmt: skip
+    if not mine:
+        raise StatsError(f"run {name!r} has no matching attempt record")
+    exact: dict[Key, bool] = {}
+    for r in mine:
+        exact[_key(r)] = exact.get(_key(r), False) or r["outcome"] in _EXACT
+    return sorted({arm_key(r) for r in mine}), exact
+
+
+def compare_runs(records: Sequence[Mapping], run_a: str, run_b: str) -> dict:
+    """Each run's exact functions with a Wilson 95% interval, and the functions both attempted
+    paired: the four cells, each run's interval on them and the exact McNemar p-value."""
+    (arms_a, a), (arms_b, b) = _run_outcomes(records, run_a), _run_outcomes(records, run_b)
+    shared = sorted(a.keys() & b.keys())
+    cells = Counter((a[k], b[k]) for k in shared)
+    a_only, b_only = cells[(True, False)], cells[(False, True)]
+    both = cells[(True, True)]
+    return {
+        "a": {"run": run_a, "arms": arms_a, **_proportion(sum(a.values()), len(a))},
+        "b": {"run": run_b, "arms": arms_b, **_proportion(sum(b.values()), len(b))},
+        "paired": {"functions": len(shared), "both": both, "a_only": a_only, "b_only": b_only,
+                   "neither": cells[(False, False)],
+                   "a": _proportion(both + a_only, len(shared)),
+                   "b": _proportion(both + b_only, len(shared)),
+                   "mcnemar_p": f"{mcnemar_exact(a_only, b_only):.4f}"},
+    }  # fmt: skip
+
+
+def _interval_text(p: Mapping, unit: str = "") -> str:
+    counted = f"{p['exact']} exact of {p['functions']}{unit}"
+    if p["wilson_percent"] is None:
+        return counted
+    low, high = p["wilson_percent"]
+    return f"{counted}, {p['rate_percent']}% [{low}%, {high}%]"
+
+
+def format_comparison(doc: Mapping) -> str:
+    paired = doc["paired"]
+    lines = ["compare (exact: MATCHED or HOLD_EXACT; Wilson 95% intervals):"]
+    lines += [f"  {side} {doc[key]['run']} ({', '.join(doc[key]['arms'])}): "
+              f"{_interval_text(doc[key], ' functions')}"
+              for side, key in (("A", "a"), ("B", "b"))]  # fmt: skip
+    lines += [f"paired: {paired['functions']} functions both runs attempted; both exact "
+              f"{paired['both']}, A only {paired['a_only']}, B only {paired['b_only']}, neither "
+              f"{paired['neither']}",
+              f"  A: {_interval_text(paired['a'])}", f"  B: {_interval_text(paired['b'])}",
+              f"exact McNemar test (two-sided, {paired['a_only'] + paired['b_only']} discordant "
+              f"pairs): p = {paired['mcnemar_p']}"]  # fmt: skip
+    return "\n".join(lines)
+
+
+def compare(log: Path, run_a: str, run_b: str) -> dict:
+    """`stats --compare`: compare_runs over `log` with the ledger next to it applied."""
+    records, _ = apply_errata(read_attempts(log), read_errata(Path(log).parent / ERRATA))
+    return compare_runs(records, run_a, run_b)
+
+
 def run_selected(run_id: str, names: Sequence[str]) -> bool:
     """Phase 07.2 D-22: `run_id` equals one of `names`, or starts with a name's prefix before
     its trailing `*` (`spike012-*`). The one rule `stats --run` and `drive --land-held`
@@ -635,7 +923,7 @@ def _selected(record: Mapping, runs: Sequence[str]) -> bool:
 def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, int],
                  tiers: Mapping[Key, int] | None, *, own: bool = False,
                  arms: Mapping[str, backends.Arm] | None = None,
-                 repo: Path | None = None) -> Report:  # fmt: skip
+                 repo: Path | None = None, errata: Sequence[Mapping] = ()) -> Report:  # fmt: skip
     """The DEC-07 report of validated `records` and a match history. `own` (`stats --run`): a
     function is matched by the records' own logged matches only, not by the git history of
     other runs; the class lines still come from git. `arms` (quick 261110-f30, `stats --run`):
@@ -684,6 +972,8 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "by_session": _split(v2, "session", len(v1)),
         "by_tier": _by_tier(counted, tiers),
         "comparison": None if arms is None else _comparison(matching, landed, sizes, arms, repo),
+        "check_curves": _check_curves(matching, sizes),
+        "errata": list(errata),
     }  # fmt: skip
     return Report(data)
 
@@ -810,6 +1100,30 @@ def _comparison_lines(comparison: Mapping | None) -> list[str]:
     return lines
 
 
+def _curve_lines(label: str, c: Mapping) -> list[str]:
+    if not c["sessions"]:
+        return [f"  {label}: no matching session"]
+    if c["exact"]:
+        by_check = ", ".join(f"{k} {v}%" for k, v in c["cumulative_percent"])
+        head = (f"  {label}: {c['exact']} exact of {c['sessions']} sessions; p50 {c['p50']}, "
+                f"p95 {c['p95']}, latest {c['latest']}; exact by check: {by_check}")  # fmt: skip
+    else:
+        head = f"  {label}: 0 exact of {c['sessions']} sessions"
+    bands = "; ".join(
+        f"{b['checks']}: {b['sessions']} ({b['exact']} exact, "
+        f"{_shown(b['tokens_percent'])}% of tokens)" for b in c["bands"])  # fmt: skip
+    return [head, f"    sessions by checks used: {bands}"]
+
+
+def _check_curve_lines(curves: Mapping) -> list[str]:
+    """Todo check-budget-from-data: the checks each exact session used, per size bucket."""
+    lines = ["checks to an exact match per size bucket (check.runs of the matching sessions; "
+             "exact: MATCHED or HOLD_EXACT):"]  # fmt: skip
+    for label, curve in curves.items():
+        lines += _curve_lines(label, curve)
+    return lines
+
+
 def _tier_lines(by_tier: Mapping | None) -> list[str]:
     if by_tier is None:
         return [f"per tier: no {MEMBERS_CSV}"]
@@ -835,7 +1149,8 @@ class Report:
     def format(self) -> str:
         d = self.data
         return "\n".join([
-            *_class_lines(d), *_metric_lines(d),
+            *_class_lines(d), *_errata_lines(d["errata"]), *_metric_lines(d),
+            *_check_curve_lines(d["check_curves"]),
             *_split_lines("per model", d["by_model"], d["by_model"]["models"]),
             *_arm_lines(d["by_arm"]),
             *_model_size_lines(d["by_model_size"]),
@@ -852,15 +1167,26 @@ def collect(repo: Path, log: Path, config: Path, *, runs: Sequence[str] | None =
     (a spike's arms are read through `--run`); a landing from one is still a logged match.
     Quick 261110-f30 (spike 012, owner ruling 2026-11-10): with `runs`, the report adds the
     comparison per arm, priced by backends.toml (an unreadable table is a StatsError) and with
-    the per-try rates of <repo>/build/driver; without `runs`, `comparison` is null."""
-    records = read_attempts(log)
+    the per-try rates of <repo>/build/driver; without `runs`, `comparison` is null.
+    Todo errata-ledger: the ledger next to `log` (ERRATA, progress/errata.toml for the
+    committed log) is applied to the whole log first, and the report lists the corrections of
+    the runs it holds a record of."""
+    records, applied = apply_errata(read_attempts(log), read_errata(Path(log).parent / ERRATA))
     if runs is None:
         records = [r for r in records if r.get("hold_run") is not True]
-        return build_report(records, history(repo), read_sizes(config), read_tiers(config))
+        return build_report(records, history(repo), read_sizes(config), read_tiers(config),
+                            errata=_listed(applied, records))  # fmt: skip
     records = [r for r in records if _selected(r, runs)]
     try:
         arms = backends.load_arms()
     except backends.ArmError as exc:
         raise StatsError(f"the arm table: {exc}") from None
     return build_report(records, history(repo), read_sizes(config), read_tiers(config),
-                        own=True, arms=arms, repo=Path(repo))  # fmt: skip
+                        own=True, arms=arms, repo=Path(repo),
+                        errata=_listed(applied, records))  # fmt: skip
+
+
+def _listed(applied: Sequence[tuple[Erratum, int]], records: Sequence[Mapping]) -> list[dict]:
+    """The applied corrections of the runs the report holds a record of."""
+    runs = {r["run"] for r in records}
+    return [e.to_json(n) for e, n in applied if e.run in runs]
