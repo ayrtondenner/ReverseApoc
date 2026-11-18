@@ -298,6 +298,14 @@ _AGY_READS = (" Your read_file tool may also read files inside this attempt's di
 # spike 013: a Copilot session's file access is its cwd, the attempt dir (no --add-dir)
 _COPILOT_READS = (" Your view tool may also read files inside this attempt's directory (your "
                   "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
+# Runs 20261116-copilot2 to -fable-ab: Sonnet 5.5 tried plan2.json, plan.json.tmp,
+# giveup.json.tmp, giveup2.json and giveup.json2 in most sessions; Copilot refused each write,
+# and each such session was spent. Said after the session rules, which list the files.
+_COPILOT_WRITES = (" Write each of those files in place, under its own name: create it once, then "
+                   "change it with your edit tool. Never write a temporary, backup or numbered "
+                   "copy (plan.json.tmp, plan2.json, giveup.json2 and the like) or any other "
+                   "file: Copilot refuses every other write, and one refused write spends the "
+                   "whole attempt, whatever it found.")  # fmt: skip
 
 
 def _signed_in_prompt(goal: str, skill_text: str, note: str) -> str:
@@ -335,8 +343,9 @@ def copilot_prompt(goal: str, skill_text: str) -> str:
     instructions are off) and runs no hook: codex_prompt's text, its harness note extended by
     the one read the session's file access allows (its view tool inside the attempt dir), with
     every `uv run --frozen reverseapoc attempt` in it (goal, skill, rules) spelled as the
-    session's wrapper, COPILOT_WRAPPER."""
-    text = _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS)
+    session's wrapper, COPILOT_WRAPPER, and the session rules closed by _COPILOT_WRITES: each
+    session file written in place, no temporary or numbered copy and no other file."""
+    text = _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS) + _COPILOT_WRITES
     return text.replace(_WRAPPER, COPILOT_WRAPPER)
 
 

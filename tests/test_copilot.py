@@ -11,6 +11,7 @@ key the owner has set can never reach an assertion or a log.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -268,6 +269,26 @@ def test_copilot_prompt():
     assert WRAPPER not in text
 
 
+def test_copilot_prompt_forbids_scratch_copies_of_the_session_files():
+    """Runs 20261116-copilot2 to -fable-ab: Sonnet 5.5 tried plan2.json, plan.json.tmp,
+    giveup.json.tmp, giveup2.json and giveup.json2; Copilot refused each, and each such session
+    was spent. The Copilot prompt says to write each session file in place (create it once,
+    then edit it), never a temporary or numbered copy and no other file. The other signed-in
+    harnesses' prompts are unchanged."""
+    goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=(
+        f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/view/src/{EXE}/{UNIT}.c"))
+    skill = "---\nname: watcom-decomp\ndescription: x\n---\n# Matching one Watcom function\n"
+    text = session.copilot_prompt(goal, skill)
+    assert "in place" in text and "then change it with your edit tool" in text
+    for copy in ("plan.json.tmp", "plan2.json", "giveup.json2"):
+        assert copy in text, copy
+    assert "Copilot refuses every other write" in text
+    rules = text.rindex("Session rules")
+    assert text.index("in place") > rules  # it follows the list of files it means
+    assert "plan.json.tmp" not in session.codex_prompt(goal, skill)
+    assert "plan.json.tmp" not in session.agy_prompt(goal, skill)
+
+
 def test_copilot_session_path_leads_with_the_wrapper_executable(tmp_path, capsys, monkeypatch):
     """The session's PATH starts with the directory of the driver's own interpreter (the
     package's console scripts, reverseapoc-attempt among them), so the bare name the shell
@@ -435,6 +456,159 @@ def test_copilotjson_only_a_shell_completed_notification_is_known():
                 {"type": "agent_completed"}):
         assert copilotjson.unknown_steps([_start(), _notification(bad)]), bad
     assert copilotjson.unknown_steps([_start(), {"type": "system.notification", "data": {}}])
+
+
+# The event review of 2026-11-18 read Copilot CLI 1.0.111's own event schema, which is only on a
+# machine with the CLI installed (CI and the container skip). A new CLI version gets the same
+# review, then this path moves to it.
+_LOCAL = os.environ.get("LOCALAPPDATA")
+REVIEWED_SCHEMA = (Path(_LOCAL) / "copilot" / "pkg" / "win32-x64" / COPILOT_VERSION / "schemas"
+                   / "session-events.schema.json") if _LOCAL else None  # fmt: skip
+
+
+def _schema_constants(definitions: dict, union: str) -> set[str]:
+    """The `type` constant of every member of the schema's `union` definition."""
+    refs = (ref["$ref"].rsplit("/", 1)[-1] for ref in definitions[union]["anyOf"])
+    return {definitions[name]["properties"]["type"]["const"] for name in refs}
+
+
+def test_copilotjson_every_event_type_of_the_reviewed_schema_is_judged():
+    """Six Copilot audit stops on 2026-11-16 were event types no review had read. Every event
+    type 1.0.111's schema documents (and every system.notification kind) is now known, known
+    only in an exact shape, or kept unknown on purpose with a reason; `result` is the one
+    stdout line the schema does not list."""
+    if REVIEWED_SCHEMA is None or not REVIEWED_SCHEMA.is_file():
+        pytest.skip("Copilot CLI 1.0.111's event schema is not installed here")
+    definitions = json.loads(REVIEWED_SCHEMA.read_text(encoding="utf-8"))["definitions"]
+    known, shaped = copilotjson.KNOWN_EVENTS, copilotjson.SHAPED_EVENTS
+    kept = set(copilotjson.KEPT_UNKNOWN)
+    assert _schema_constants(definitions, "SessionEvent") == (known | shaped | kept) - {"result"}
+    kinds = _schema_constants(definitions, "SystemNotification")
+    assert kinds == {"shell_completed", *copilotjson.KEPT_UNKNOWN_NOTIFICATIONS}
+
+
+def test_copilotjson_event_classes_are_disjoint():
+    """An event type is in exactly one of the review's three classes."""
+    known, shaped = copilotjson.KNOWN_EVENTS, copilotjson.SHAPED_EVENTS
+    kept = set(copilotjson.KEPT_UNKNOWN)
+    assert not known & shaped and not known & kept and not shaped & kept
+    assert "shell_completed" not in copilotjson.KEPT_UNKNOWN_NOTIFICATIONS
+
+
+# one made-up payload in 1.0.111's schema shape for each type the review made known as is
+REVIEW_KNOWN = {
+    "assistant.intent": {"intent": "Reading the context pack"},
+    "assistant.streaming_delta": {"totalResponseSizeBytes": 512},
+    "session.title_changed": {"title": "Match func_00012340"},
+    "session.todos_changed": {},
+    "session.quota_observation": {"observation": {"quotaId": "q", "unit": "ai_credits"}},
+    "session.completion_receipt": {"schemaVersion": 1, "attempt": 1, "sourceEventId": "e1",
+                                   "eventRange": {}, "stopReason": "end_turn",
+                                   "successfulToolCount": 3, "failedToolCount": 0},
+    "pending_messages.modified": {},
+    "capabilities.changed": {"ui": {}},
+    "commands.changed": {"commands": []},
+    "session.binary_asset": {"assetId": "a1", "type": "image", "mimeType": "image/png",
+                             "byteLength": 4, "data": "AAAA"},
+    "session.request_body_compression_disabled": {"encoding": "zstd"},
+    "session.indexed_search": {},
+    "session.journal_link": {"version": 1, "sessionId": "s1", "previousFile": "events.1.jsonl"},
+    "instruction.update_delivery": {"deliveryId": "d1", "firstUpdateEventId": "e1",
+                                    "latestUpdateEventId": "e1", "updateCount": 1,
+                                    "requestGeneration": 1, "outcome": "delivered",
+                                    "capability": "x", "reason": "x"},
+    "session_limits_exhausted.requested": {"requestId": "r1", "usedAiCredits": 30.4,
+                                           "maxAiCredits": 30},
+}
+
+
+def test_copilotjson_the_reviews_plain_events_run_nothing():
+    """The review's known-as-is types (2026-11-18): each runs nothing and names no tool, path,
+    model, agent, hook, permission or instruction text the audit would have to judge."""
+    assert set(REVIEW_KNOWN) <= copilotjson.KNOWN_EVENTS
+    for kind, data in REVIEW_KNOWN.items():
+        assert copilotjson.unknown_steps([_start(), {"type": kind, "data": data}]) == [], kind
+
+
+def _usage(**extra) -> dict:
+    """A model call's usage as 1.0.111 persists it (cut to what is judged): `initiator` is
+    `user` on the first call and `agent` on the rest, `interactionType` conversation-agent."""
+    return {"model": HAIKU_MODEL, "initiator": "agent", "interactionType": "conversation-agent",
+            "inputTokens": 4, "outputTokens": 345, **extra}
+
+
+def _usage_events(usage: dict) -> list[dict]:
+    """The two events that carry a usage: the live one and its durable record."""
+    return [{"type": "assistant.usage", "data": usage},
+            {"type": "session.usage_record", "data": {"usage": usage}}]
+
+
+def test_copilotjson_a_usage_of_the_main_agent_is_known(tmp_path):
+    """`session.usage_record`, "internal durable accounting receipt; the live usage event
+    shares its accounting identity" (assistant.usage). 1.0.111 persists one per model call
+    (7,405 in 436 sessions, every one `user` or `agent` and conversation-agent) but streams
+    none. A usage is known only in that shape: a sub-agent's, an MCP sampling's or a
+    background call's is not, and its model joins the model check."""
+    for usage in (_usage(), _usage(initiator="user")):
+        for event in _usage_events(usage):
+            assert copilotjson.unknown_steps([_start(), event]) == [], event
+    no_initiator = {k: v for k, v in _usage().items() if k != "initiator"}
+    for bad in (_usage(initiator="sub-agent"), _usage(initiator="mcp-sampling"),
+                _usage(interactionType="conversation-subagent"),
+                _usage(interactionType="conversation-background"),
+                _usage(parentToolCallId="t0"), no_initiator):
+        for event in _usage_events(bad):
+            assert copilotjson.unknown_steps([_start(), event]), event
+    assert copilotjson.unknown_steps([_start(), {"type": "session.usage_record", "data": {}}])
+    cwd = tmp_path / "ws"
+    cwd.mkdir()
+    for event in _usage_events(_usage(model="gpt-6-luna")):
+        problems = copilotjson.init_problems([_start(context={"cwd": str(cwd)}), event], cwd=cwd,
+                                             accepted=(HAIKU_MODEL,), max_ai_credits=30)
+        assert any("gpt-6-luna" in p for p in problems), event
+
+
+def test_copilotjson_tool_progress_is_known_only_for_a_started_call():
+    """`tool.execution_progress`, "tool execution progress notification with status message":
+    it runs nothing, and is known only while it names a call this session already started
+    (the call itself is judged as any call)."""
+    progress = {"type": "tool.execution_progress",
+                "data": {"toolCallId": "t1", "progressMessage": "Running"}}
+    began, done = _call("t1", "powershell", {"command": "reverseapoc-attempt check"})
+    assert copilotjson.unknown_steps([_start(), began, progress, done]) == []
+    assert copilotjson.unknown_steps([_start(), progress, began, done])
+    other = {**progress, "data": {"toolCallId": 1, "progressMessage": "Running"}}
+    assert copilotjson.unknown_steps([_start(), began, other, done])
+
+
+def test_copilotjson_an_exhausted_credit_cap_is_known_only_when_left_as_set():
+    """`session_limits_exhausted.completed` closes the prompt the driver's --max-ai-credits cap
+    raised. Only action `cancel` ("leave the limit unchanged") is known; `add`, `set` and
+    `unset` would lift the cap the driver set."""
+    def done(response: object) -> dict:
+        return {"type": "session_limits_exhausted.completed",
+                "data": {"requestId": "r1", "response": response}}
+
+    assert copilotjson.unknown_steps([_start(), done({"action": "cancel"})]) == []
+    for bad in ({"action": "add", "additionalAiCredits": 30}, {"action": "set",
+                                                               "maxAiCredits": 90},
+                {"action": "unset"}, {}, "cancel"):
+        assert copilotjson.unknown_steps([_start(), done(bad)]), bad
+
+
+def test_copilotjson_events_kept_unknown_name_their_reason():
+    """The review keeps unknown on purpose anything that names instructions, agents, hooks,
+    permissions, a model or mode switch, a cwd change or a write no call names: each stops the
+    night with its reason. A type the review never read stops it too."""
+    for kind in ("abort", "session.model_change", "system.message", "permission.requested",
+                 "session.context_changed", "session.workspace_file_changed",
+                 "assistant.server_tool_progress", "session.tool_outcomes_recorded"):
+        (step,) = copilotjson.unknown_steps([_start(), {"type": kind, "data": {}}])
+        assert "on purpose" in step and copilotjson.KEPT_UNKNOWN[kind] in step, kind
+    (step,) = copilotjson.unknown_steps([_start(), _notification({"type": "agent_completed"})])
+    assert copilotjson.KEPT_UNKNOWN_NOTIFICATIONS["agent_completed"] in step
+    (step,) = copilotjson.unknown_steps([_start(), {"type": "made.up", "data": {}}])
+    assert "not one the Copilot audit knows" in step
 
 
 SPILL = str(copilotjson.SPILL_DIR / ("1794634688790-copilot-tool-output-63812-"

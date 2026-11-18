@@ -106,10 +106,12 @@ rate_source = "runs 20261114-nearmiss to -opus-sonnet (near-miss lane, then one 
 
 [arms."copilot-sonnet-5-5"]
 plan = "copilot-pro"
-credits = 40
-estimate = true
-source = "estimate: a Haiku session's tokens (usage file, run 20261116-copilot) at Sonnet 5.5's GitHub rates come to about 35 credits; re-measure from the records' credits"
-read = 2026-11-16
+credits = 25.4
+source = "attempt records' credits (usage files, totalNanoAiu): 11 sessions of runs 20261116-copilot2 to -fable-ab, 279.9 credits, mean 25.4 (16.6 to 36.4); the A/B's 8 came to 191.8. Two more sessions the audit stopped (run 20261116-copilot3, no record) spent 33.1 and 47.6"
+read = 2026-11-18
+matched = 1
+sessions = 11
+rate_source = "runs 20261116-copilot2 to -fable-ab (near-miss lane and the Fable A/B)"
 
 [arms."claude-fable-5-1"]
 plan = "claude-ultra"

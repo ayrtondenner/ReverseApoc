@@ -281,6 +281,9 @@ sends_disassembly = true
 accepted_init = ["claude-sonnet-5.5"]
 coauthor = "Claude Sonnet 5.5 <noreply@anthropic.com>"
 max_workers = 4
+# Measured on 2026-11-16 (quota.toml): 25.4 credits a recorded session (16.6 to 36.4), and 47.6
+# for the costliest session, one the audit stopped. 60 keeps that one under the cap with a
+# quarter to spare; a lower cap would cut sessions of the measured length.
 max_ai_credits = 60
 
 [arms."copilot-sonnet-5-5".prices]
