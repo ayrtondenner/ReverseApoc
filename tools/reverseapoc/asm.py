@@ -295,7 +295,25 @@ def case_notes(
     rows: Sequence[FunctionRow],
     symbols: SymbolTable,
 ) -> dict[int, str]:
-    """`cases: 0: <name>, 1: <name>, ...` by the address of each table jump in `row` whose table
+    """`cases: 0: <name>, 1: <name>, ...` by the address of each table jump in `row`
+    (`case_targets`)."""
+
+    def name(va: int) -> str:
+        return _label(va) if row.start <= va < row.end else target_name(symbols, va, code=True)
+
+    found = case_targets(row, flat=flat, fixups=fixups, rows=rows)
+    return {va: f"cases: {', '.join(f'{n}: {name(t)}' for n, t in enumerate(targets))}"
+            for va, targets in found.items()}  # fmt: skip
+
+
+def case_targets(
+    row: FunctionRow,
+    *,
+    flat: bytes | bytearray,
+    fixups: Iterable[Fixup],
+    rows: Sequence[FunctionRow],
+) -> dict[int, list[int]]:
+    """The case targets, in case order, by the address of each table jump in `row` whose table
     sits in a data-in-code row. A table runs to the next table this row jumps through or to the
     end of the row that holds it: one data-in-code row can hold several."""
     index = FixupIndex(fixups)
@@ -306,17 +324,13 @@ def case_notes(
         holder = _data_row(rows, field.target_va) if field is not None else None
         if holder is not None:
             tables[item.va] = (field.target_va, holder.end)
-
-    def name(va: int) -> str:
-        return _label(va) if row.start <= va < row.end else target_name(symbols, va, code=True)
-
-    notes = {}
+    found = {}
     for va, (start, holder_end) in tables.items():
         end = min([holder_end, *(other for other, _ in tables.values() if other > start)])
-        cases = [f"{n}: {name(t)}" for n, t in enumerate(_table_targets(start, end, index))]
-        if cases:
-            notes[va] = f"cases: {', '.join(cases)}"
-    return notes
+        targets = _table_targets(start, end, index)
+        if targets:
+            found[va] = targets
+    return found
 
 
 def _listed_address(line: str) -> int | None:

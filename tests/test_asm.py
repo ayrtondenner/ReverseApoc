@@ -439,3 +439,14 @@ def test_annotated_leaves_out_a_note_with_no_line():
 def test_annotated_with_no_notes_is_the_same_text():
     text = "# made-up\n  0x00010000  ret\n\n"
     assert asm.annotated(text, {}) == text
+
+
+def test_case_targets_are_the_case_notes_addresses():
+    """The outline's view of the same tables: each table jump's case targets, in case order."""
+    image = build_le_image(fixups=[_table_fixups(1), b"", b""],
+                           patches={JUMPS: _jumps(CS_OVERRIDE + TABLE_JUMP)}).data  # fmt: skip
+    parsed = LE(image)
+    rows = _table_rows()
+    targets = asm.case_targets(rows[1], flat=parsed.load_flat(relocate=False),
+                               fixups=parsed.fixups(), rows=rows)  # fmt: skip
+    assert targets == {JUMPS: [FIRST_CASE, AFTER], SECOND_JUMP: [AFTER + 1, SECOND_CASE]}

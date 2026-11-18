@@ -67,7 +67,7 @@ from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 
-from . import unitdefs
+from . import structure, unitdefs
 from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import (
@@ -861,6 +861,15 @@ def difference_window(
     return tuple(WindowRow(i == before, mine, theirs) for i, (mine, theirs) in enumerate(rows))
 
 
+def _shapes(
+    ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult
+) -> tuple[structure.Shape, structure.Shape]:
+    """Code length, blocks and branches of ours and of the original row, each side decoded
+    over its own relocated fields. Feeds no verdict: attempt prints it beside the window."""
+    return (structure.shape(ours, row.start, reloc.ours),
+            structure.shape(bytes(flat[row.start : row.end]), row.start, reloc.theirs))
+
+
 # ---- objdiff ----
 
 
@@ -935,6 +944,8 @@ class FunctionCheck:
     raw_fields: tuple[RawField, ...] = ()  # the unit's raw fields inside this row (18b)
     window: tuple[WindowRow, ...] = ()  # ours beside the original at the first difference
     regions: tuple[int, ...] = ()  # compare_bytes' differing count per 0x100 region (999.7)
+    # structure.shape of ours and of the original (todo structure-first-large-functions)
+    shape: tuple[structure.Shape, structure.Shape] | None = None
 
     @property
     def ok(self) -> bool:
@@ -958,6 +969,8 @@ class FunctionCheck:
                       "filler": self.filler, "regions": list(self.regions)},
             "raw_fields": _raw_fields_json(self.raw_fields),
             "window": [row.to_json() for row in self.window],
+            **({} if self.shape is None else {"shape": {"ours": self.shape[0].to_json(),
+                                                        "original": self.shape[1].to_json()}}),
         }  # fmt: skip
 
     def _bytes_line(self) -> str:
@@ -1183,7 +1196,8 @@ def check_source(
         raw = tuple(f for f in target.raw_fields if d.row.start <= f.va < d.row.end)
         functions.append(FunctionCheck(d.row.name, d.row.start, d.size, percent, reloc,
                                        same.ok, same.differing, same.first_va, raw,
-                                       window=window, regions=same.regions))  # fmt: skip
+                                       window=window, regions=same.regions,
+                                       shape=_shapes(d.ours, d.row, exe.flat, reloc)))  # fmt: skip
     return SourceCheck(compiled.rule.spec, tuple(compiled.rule.flags), tuple(functions), target,
                        compiled.output, account.problems, account.stubs)  # fmt: skip
 
