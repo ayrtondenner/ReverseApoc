@@ -594,10 +594,10 @@ def test_attempt_forms_are_the_shared_constants():
     assert hooks.ATTEMPT_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
     )  # fmt: skip
-    # 07.2-02, 07.2-03 (D-26): the verbs only a matching session runs; readability keeps the five
+    # 07.2-02, 07.2-03 (D-26) and attempt diff: matching-only verbs; readability keeps the five
     assert hooks.MATCHING_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
-        ("giveup",), ("plan",),
+        ("giveup",), ("plan",), ("diff",),
     )  # fmt: skip
     assert hooks.forms_for("matching") == hooks.MATCHING_FORMS
     assert hooks.forms_for("readability") == hooks.ATTEMPT_FORMS

@@ -534,17 +534,20 @@ def _attempt_dir(repo: Path | None, record: Mapping) -> Path | None:
 
 
 def _per_try(records: Sequence[Mapping], repo: Path | None, column: str) -> dict:
-    """causes' per-try counters and rates over the records' saved checks.jsonl."""
-    from . import causes  # causes imports this module
+    """causes' per-try counters and rates over the records' saved checks.jsonl, and `repeats`:
+    the checks the wrapper answered from an earlier verdict, which spend no try."""
+    from . import attempt, causes  # causes imports this module
 
     counts: Counter[str] = Counter()
+    repeats = 0
     for record in records:
         directory = _attempt_dir(repo, record)
         if directory is not None:
             counts.update(causes.attempt_counts(directory))
+            repeats += attempt.repeat_count(directory)
     doc = causes.Tally(column, **counts).to_json()
     del doc["run"]
-    return doc
+    return {**doc, "repeats": repeats}
 
 
 def _ratio(exact: int, denominator: Decimal | None) -> str | None:
@@ -768,8 +771,9 @@ def _shown(value: str | None, unit: str = "") -> str:
 def _per_try_text(per_try: Mapping) -> str:
     if not per_try["checks"]:
         return "no saved checks"
+    repeats = f", repeats {per_try['repeats']}" if per_try["repeats"] else ""
     return f"({per_try['checks']} checks) " + ", ".join(
-        f"{label} {per_try[f'{name}_percent']}%" for name, label in _PER_TRY)  # fmt: skip
+        f"{label} {per_try[f'{name}_percent']}%" for name, label in _PER_TRY) + repeats  # fmt: skip
 
 
 def _column_line(column: str, c: Mapping) -> str:

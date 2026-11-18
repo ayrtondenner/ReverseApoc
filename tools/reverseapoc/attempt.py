@@ -35,6 +35,17 @@ D-17 flag matrix as a diagnostic: a cell at 100% under flags other than the unit
 rule is logged as `sweep_hit`, for the owner to decide (D-18 of Phase 5; cflags.txt is
 owner-only).
 
+After a plain run whose claimed function's bytes differ, the wrapper diffs the object that run
+compiled against the EXE on the host (classify.full_diff) and keeps it in checks/NNNN.diff.json:
+every differing run, ours beside the original's, each with its class. The summary prints the
+function's class and its runs per class; `attempt diff` (a matching session only) prints the
+runs of the plain check answered last in full, bounded by DIFF_LINES, with no check used. An
+object whose byte count is not the run's own is not shown. Within the budget, a matching check
+whose C, comments and blanks aside (`source_digest`), is that of an earlier plain run (or
+sweep, for a sweep) with exit 0 or 1 gets that run's verdict and summary at once: no slot, no
+container, no plan read, its check-note.json removed, one line in checks/repeats.jsonl
+(`repeat_count`, read by `reverseapoc stats`).
+
 In a readability session (REVERSEAPOC_SESSION_KIND=readability, 07-31; D-17, D-18, D-20) a
 plain `attempt check` also runs readlint on the host over the view unit, after the container
 check, and its verdict is OK only when both pass: every defined function still at objdiff 100%
@@ -52,13 +63,14 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, ghidra, lift, signatures, unitdefs
+from . import asm, check, classify, contextpack, ghidra, lift, signatures, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -98,6 +110,9 @@ RM_TIMEOUT = 15  # seconds for `docker rm -f` after a timeout: 580 + 15 < 600 (f
 CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
 CHECK_LOCK = "check.lock"
+DIFF_SUFFIX = ".diff.json"  # checks/NNNN.diff.json: a plain check's full diff (attempt diff)
+REPEATS_LOG = "repeats.jsonl"  # checks/repeats.jsonl: one line per check answered as a repeat
+DIFF_LINES = 200  # the most run lines attempt diff prints; the saved file holds every run
 NOTES_FILE = "notes.md"  # REVERSEAPOC_ATTEMPT_NOTES must be <attempt dir>/notes.md (06-23, M8)
 # D-24 P7: the session's private view of HEAD, <attempt dir>/view/ with src/, include/, config/
 # (cflags.txt and the per-EXE CSVs) and build/; checks are rooted in it when the driver sets
@@ -1027,22 +1042,28 @@ def _not_compiled(claim: Claim) -> str:
 
 def _summary(
     claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran, seconds: float,
-    *, lint: Lint | None = None, check_exit: int | None = None,
+    *, lint: Lint | None = None, check_exit: int | None = None, repeat_used: int | None = None,
 ) -> str:  # fmt: skip
     """The printed summary; `check_exit` is the container half's exit when `lint` (a
-    readability check) combined it with readlint's into line.exit."""
+    readability check) combined it with readlint's into line.exit. `repeat_used` (the checks
+    used so far) makes it the answer to a repeat of `line`'s run (_repeat)."""
     check_exit = line.exit if check_exit is None else check_exit
     kind = "check --sweep" if line.sweep else "check"
     table = _SWEEP_VERDICT if line.sweep else _READABILITY_VERDICT if lint else _VERDICT
     head = (f"attempt {kind} {line.n}/{CHECK_BUDGET}, {round(seconds)} s "
             f"({CHECK_BUDGET - line.n} left) {claim.target} {claim.function}: "
             f"exit {line.exit} {table[line.exit]}")  # fmt: skip
+    if repeat_used is not None:
+        head = (f"attempt {kind} repeat of {line.n:04d} (the same C, whitespace and comments "
+                f"aside): no check used ({CHECK_BUDGET - repeat_used} left), nothing compiled "
+                f"{claim.target} {claim.function}: exit {line.exit} "
+                f"{table[line.exit]}")  # fmt: skip
     body = []
     if doc is not None and line.sweep:
         body = _sweep_summary(doc, line)
     elif doc is not None:
         missing = [_not_compiled(claim)] if _claimed(doc, claim) is None else []
-        board = _board(claim, line.n, doc)
+        board = _board(claim, line.n, doc) + _class_lines(claim.attempt_dir, line.n)
         body = missing + _check_summary(doc, claim.function, board)
     else:
         body = ["  the check printed no usable JSON"] + _tail(ran.stdout)
@@ -1148,13 +1169,19 @@ def _locked_check(
     if n > CHECK_BUDGET:
         raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
                            "(D-07); write notes.md and stop")  # fmt: skip
-    note = _plan_and_note(claim, roots)  # D-01: refused here, no checks/NNNN.c exists yet
-    default = _default_spec(claim, roots) if sweep else ""
     unit = unit_path(claim, roots)
     try:
         text = unit.read_bytes()
     except OSError as exc:
         raise AttemptError(f"{unit} cannot be read: {exc}") from exc
+    # A readability verdict also reads proposals.jsonl, which the session may change between
+    # checks, so only a matching check is answered from an earlier one.
+    earlier = (None if claim.kind == READABILITY
+               else _repeat_of(claim.attempt_dir, source_digest(text), sweep))  # fmt: skip
+    if earlier is not None:
+        return _repeat(claim, *earlier, used=n - 1)
+    note = _plan_and_note(claim, roots)  # D-01: refused here, no checks/NNNN.c exists yet
+    default = _default_spec(claim, roots) if sweep else ""
     stem = f"{n:04d}"
     source = f"{CHECKS_DIR}/{stem}.c"
     _reserve(claim.attempt_dir / source, text)
@@ -1167,6 +1194,8 @@ def _locked_check(
         held.keep = True  # N7: fail closed from here until a removal succeeds
     removal: list[str] = []
     try:
+        if not sweep and claim.kind != READABILITY:  # `attempt diff` is a matching form
+            _save_diff(claim, roots, n, ran)  # before _record: the summary prints its class
         # 07-31: the readability half, in the same run and slot (one budget step).
         lint = lint_view(claim) if claim.kind == READABILITY and not sweep else None
         line, summary = _record(claim, ran, n, source, seconds, sweep=sweep, default=default,
@@ -1224,6 +1253,292 @@ def _finish(
                                    readlint_violations=lint.violation_count,
                                    readlint_waivers=lint.waiver_count)  # fmt: skip
     return combined, _summary(claim, combined, doc, ran, seconds, lint=lint, check_exit=line.exit)
+
+
+# ---- the full diff and the class line (attempt diff) ----
+
+
+def _object_path(claim: Claim, roots: Roots) -> Path:
+    """The object a plain check of the claim compiles (check.UnitPaths): under the view's
+    build/check-custom/ in view mode (its roots are not the committed ones, check.object_root),
+    else under the repository's build/."""
+    if claim.unit_file is not None:
+        root = claim.view_root / VIEW_BUILD / check.CUSTOM_ROOT
+    else:
+        root = Path(roots.repo) / VIEW_BUILD
+    return check.UnitPaths.of(root, claim.exe, claim.unit).obj
+
+
+def _host_diff(claim: Claim, roots: Roots, fn: Mapping[str, Any]) -> classify.FullDiff:
+    """classify.full_diff of the object the run just compiled against the EXE as check loads it,
+    on the host. ValueError when there is no object, or when its byte count or first difference
+    is not check's own for `fn` (the claimed function's entry): then it is not the object this
+    run judged, and a diff of it would explain another C."""
+    obj = _object_path(claim, roots)
+    if not obj.is_file():
+        raise ValueError(f"no object at {obj.as_posix()}")
+    data = exe_inputs(claim.exe, orig=roots.orig, manifest=roots.manifest,
+                      config=config_root(claim, roots))  # fmt: skip
+    diff = classify.full_diff(data, obj, claim.address)
+    if isinstance(diff, str):
+        raise ValueError(f"{obj.as_posix()}: {diff}")
+    same = fn["bytes"]
+    first = None if diff.first_va is None else f"0x{diff.first_va:08X}"
+    if (diff.differing, first) != (same["differing"], same["first_va"]):
+        raise ValueError(f"the object on disk is not the one this check judged: {diff.differing} "
+                         f"bytes differ from {first}, check says {same['differing']} from "
+                         f"{same['first_va']}")  # fmt: skip
+    return diff
+
+
+def _differing_entry(claim: Claim, ran: Ran) -> Mapping[str, Any] | None:
+    """The claimed function's entry in the run's JSON when its bytes differ, else None (no
+    usable JSON is the tool error _record reports)."""
+    doc = _parse(ran.stdout)
+    try:
+        fn = _claimed(doc, claim) if doc is not None else None
+        return fn if fn is not None and fn["bytes"]["ok"] is not True else None
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _save_diff(claim: Claim, roots: Roots, n: int, ran: Ran) -> None:
+    """checks/NNNN.diff.json for a plain run whose claimed function's bytes differ: the full
+    diff, or why there is none. A fault is saved as its reason, never raised, and a failed
+    write costs the file and one stderr line (as _cache_store's): the class only advises, and
+    the run's evidence must still be saved."""
+    fn = _differing_entry(claim, ran)
+    if fn is None:
+        return
+    try:
+        saved = _host_diff(claim, roots, fn).to_json()
+    except (ValueError, OSError) as exc:
+        saved = {"error": _one_line(exc)}
+    except Exception as exc:  # noqa: BLE001 - the reason is printed, as _register_notes does
+        saved = {"error": f"{type(exc).__name__}: {_one_line(exc)}"}
+    path = claim.attempt_dir / CHECKS_DIR / f"{n:04d}{DIFF_SUFFIX}"
+    try:
+        write_atomic(path, (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
+    except OSError as exc:
+        print(f"attempt check: full diff not saved: {_one_line(exc)}", file=sys.stderr)
+        return
+    _ledgered(claim, path)
+
+
+def _saved_diff(attempt_dir: Path, n: int) -> dict[str, Any] | None:
+    """Run `n`'s saved full diff; None when it saved none, an error entry when it no longer
+    reads."""
+    path = attempt_dir / CHECKS_DIR / f"{n:04d}{DIFF_SUFFIX}"
+    if not path.is_file():
+        return None
+    saved = _parse(path.read_text(encoding="utf-8", errors="replace"))
+    return saved if saved is not None else {"error": f"{path.as_posix()} does not read"}
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+def _class_lines(attempt_dir: Path, n: int) -> list[str]:
+    """The class line `attempt check` prints after the claimed function's window: the function's
+    class and its runs per class, from run `n`'s saved diff (nothing when it saved none). A
+    saved diff that does not read is said in the line, as _board says its own faults: an error
+    escaping here would turn the run into a tool error."""
+    try:
+        saved = _saved_diff(attempt_dir, n)
+        if saved is None:
+            return []
+        if "error" in saved:
+            return [f"    class: not shown ({saved['error']})"]
+        runs = saved["runs"]
+        if not runs:
+            return [f"    class {saved['class']}: no differing run in the decoded instructions"]
+        counts = ", ".join(f"{k} {v}" for k, v in Counter(run["class"] for run in runs).items())
+        return [f"    class {saved['class']}: {_plural(len(runs), 'differing run')} ({counts}); "
+                "`attempt diff` prints each in full"]  # fmt: skip
+    except (OSError, KeyError, TypeError, AttributeError) as exc:
+        return [f"    class: not shown (the saved diff does not read: {type(exc).__name__})"]
+
+
+def _run_rows(run: Mapping[str, Any]) -> list[str]:
+    """One run ours | original, window cells, `-` where a side has no instruction left."""
+    ours = [_window_cell(cell) for cell in run["ours"]]
+    theirs = [_window_cell(cell) for cell in run["original"]]
+    height = max(len(ours), len(theirs))
+    ours += ["-"] * (height - len(ours))
+    theirs += ["-"] * (height - len(theirs))
+    width = max(len(text) for text in ours)
+    return [f"    {mine:<{width}} | {other}".rstrip()
+            for mine, other in zip(ours, theirs, strict=True)]  # fmt: skip
+
+
+def diff_lines(claim: Claim, n: int, saved: Mapping[str, Any], path: Path) -> list[str]:
+    """`attempt diff`'s output for run `n`: every run with its class, ours beside the
+    original's, cut after DIFF_LINES lines (the saved file at `path` holds every run)."""
+    runs = saved["runs"]
+    head = (f"attempt diff of check {n:04d} {claim.target} {claim.function}: class "
+            f"{saved['class']}, {_plural(len(runs), 'differing run')}, "
+            f"{_plural(saved['differing'], 'differing byte')} from {saved['first_va']}; ours | "
+            "original")  # fmt: skip
+    body = []
+    for index, run in enumerate(runs, 1):
+        body += [f"  run {index} of {len(runs)}: {run['class']}", *_run_rows(run)]
+    if not saved["whole"]:
+        body.append("  the decode stops before the end of a side: the runs cover what it read")
+    shown = body[:DIFF_LINES]
+    if len(body) > len(shown):
+        shown.append(f"  ... {_plural(len(body) - len(shown), 'more line')} not shown; "
+                     f"{path.as_posix()} holds every run")  # fmt: skip
+    return [head, *shown, f"saved {path.as_posix()}"]
+
+
+def _latest_plain(attempt_dir: Path) -> int | None:
+    """The plain run whose verdict the attempt gave last: its latest plain run in checks.jsonl,
+    or the earlier run a later plain repeat answered with (a repeat line records the slots used
+    when it ran, so a run after it has a higher number). None before any plain check."""
+    runs = list(_plain_runs(attempt_dir))
+    last = runs[-1] if runs else 0
+    answered = runs[-1] if runs else None
+    for entry in _repeats(attempt_dir):
+        of, used = entry.get("of"), entry.get("used")
+        if entry.get("sweep") is False and type(of) is int and type(used) is int and used >= last:
+            answered = of
+    return answered
+
+
+def cmd_diff() -> int:
+    """Print the full diff of the plain check the attempt answered last (_latest_plain), saved
+    when it ran: no check used, nothing compiled and no EXE read."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    n = _latest_plain(claim.attempt_dir)
+    if n is None:
+        raise AttemptError("no plain check in this attempt yet: run `attempt check` first")
+    saved = _saved_diff(claim.attempt_dir, n)
+    if saved is None:
+        print(f"check {n:04d} saved no full diff: the claimed function's bytes matched, it was "
+              "not compiled, or the run printed no usable JSON")  # fmt: skip
+        return EXIT_OK
+    if "error" in saved:
+        raise AttemptError(f"check {n:04d}: the full diff is not shown ({saved['error']})")
+    path = claim.attempt_dir / CHECKS_DIR / f"{n:04d}{DIFF_SUFFIX}"
+    print("\n".join(diff_lines(claim, n, saved, path)))
+    return EXIT_OK
+
+
+# ---- a repeated C (refuse-repeated-check): the earlier verdict, no check used ----
+
+# A string or character literal (kept as written), or a run of blanks and comments. A literal
+# never spans a line; a block comment may, and a line comment does past a backslash-newline
+# (the splice comes before the comment, C's translation phases 2 and 3).
+_C_TEXT = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\''
+                     r"|(?:[ \t\f\v\r]|/\*.*?\*/|//(?:\\.|[^\\\n])*)+", re.DOTALL)  # fmt: skip
+# A line break inside a comment. Outside a literal every other \r was a blank, now a space, so
+# the mark never stands for anything else, and it keeps the line count (__LINE__).
+_COMMENT_BREAK = "\r"
+_SPLICE = "\\"
+
+
+def _blanked(hit: re.Match[str]) -> str:
+    text = hit[0]
+    return text if text[0] in "\"'" else " " + _COMMENT_BREAK * text.count("\n")
+
+
+def _stripped(lines: Iterable[str]) -> Iterator[str]:
+    """Each line without its blank ends, but for the blank a splice joins to the line before,
+    or a blank after a backslash, which keeps that backslash from splicing."""
+    spliced = False
+    for line in lines:
+        line = line if spliced else line.lstrip(" ")
+        line = line if line.rstrip(" ").endswith(_SPLICE) else line.rstrip(" ")
+        spliced = line.endswith(_SPLICE)
+        yield line
+
+
+def source_digest(text: bytes) -> str:
+    """sha256 of the C with every run of blanks and comments outside literals as one space
+    (C's own rule for a comment) and each line's blank ends stripped. Every line stays, since a
+    directive ends at one and __LINE__ counts them. Two texts with one digest compile alike;
+    the converse need not hold (`a+b` and `a + b`)."""
+    code = text.decode("latin-1")  # every byte maps to one character and back
+    lines = _stripped(_C_TEXT.sub(_blanked, code).split("\n"))
+    return hashlib.sha256("\n".join(lines).encode("latin-1")).hexdigest()
+
+
+def _logged_line(raw: str) -> CheckLogLine | None:
+    """One checks.jsonl line as the wrapper wrote it, or None for any other line."""
+    fields = _parse(raw)
+    if fields is None:
+        return None
+    try:
+        line = CheckLogLine(**{f.name: fields[f.name] for f in dataclasses.fields(CheckLogLine)
+                               if f.name in fields})  # fmt: skip
+    except TypeError:
+        return None
+    return line if isinstance(line.source, str) else None
+
+
+def _repeat_of(
+    attempt_dir: Path, digest: str, sweep: bool
+) -> tuple[CheckLogLine, dict[str, Any]] | None:
+    """The latest logged run of the same kind (plain or sweep) whose snapshot has `digest` and
+    whose verdict stands: exit 0 or 1 with its saved JSON. A tool error (a timeout, a missing
+    docker) is worth running again. The view's headers and flags are the driver's, so the unit
+    text is the one input a session changes."""
+    log = attempt_dir / CHECK_LOG
+    found = None
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+    for line in map(_logged_line, lines):
+        if line is None or line.sweep is not sweep or line.exit not in (EXIT_OK, EXIT_MISMATCH):
+            continue
+        doc = _same_c_doc(attempt_dir, line.source, digest)
+        found = (line, doc) if doc is not None else found
+    return found
+
+
+def _same_c_doc(attempt_dir: Path, source: str, digest: str) -> dict[str, Any] | None:
+    """The saved JSON of the run that checked `source` (checks/NNNN.c), when that snapshot has
+    `digest`; None otherwise or when either file is missing or does not read."""
+    snapshot = attempt_dir / source
+    if _SAVED_SOURCE.fullmatch(source) is None or not snapshot.is_file():
+        return None
+    saved = snapshot.with_suffix(".json")
+    if source_digest(snapshot.read_bytes()) != digest or not saved.is_file():
+        return None
+    return _parse(saved.read_text(encoding="utf-8", errors="replace"))
+
+
+def _repeat(claim: Claim, line: CheckLogLine, doc: dict[str, Any], *, used: int) -> tuple[int, str]:
+    """Answer a repeat of `line`'s run with its verdict and summary, rebuilt from its saved
+    JSON, and log it in checks/repeats.jsonl with the `used` slots. No slot is reserved and
+    nothing runs, so plan.json is not read; a check-note.json, written for this C, is removed
+    unread, so the next real check needs a new one (D-02)."""
+    log = claim.attempt_dir / CHECKS_DIR / REPEATS_LOG
+    with log.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"of": line.n, "sweep": line.sweep, "used": used},
+                            sort_keys=True) + "\n")  # fmt: skip
+    _ledgered(claim, log)
+    summary = _summary(claim, line, doc, Ran(line.exit, "", ""), 0.0, repeat_used=used)
+    note = claim.attempt_dir / CHECK_NOTE_NAME
+    if note.is_file():
+        note.unlink()
+        summary += f"\n  {CHECK_NOTE_NAME} was for this C: write a new one for the next check"
+    return line.exit, summary
+
+
+def _repeats(attempt_dir: Path) -> Iterator[dict[str, Any]]:
+    """The lines of the attempt's checks/repeats.jsonl, oldest first; others are skipped."""
+    log = Path(attempt_dir) / CHECKS_DIR / REPEATS_LOG
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+    for raw in lines:
+        entry = _parse(raw)
+        if entry is not None:
+            yield entry
+
+
+def repeat_count(attempt_dir: Path) -> int:
+    """The checks an attempt answered as repeats: the lines of its checks/repeats.jsonl (read
+    by `reverseapoc stats`)."""
+    return sum(1 for _ in _repeats(attempt_dir))
 
 
 CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for

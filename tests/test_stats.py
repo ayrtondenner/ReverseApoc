@@ -1136,6 +1136,29 @@ def test_comparison_per_try_rates(tmp_path, capsys):
     assert "per try no saved checks" in block[block.index(sonnet) + 4]
 
 
+def test_comparison_counts_repeated_checks(tmp_path, capsys):
+    """refuse-repeated-check: the checks an attempt answered as repeats (its
+    checks/repeats.jsonl) are counted beside the per-try rates, and spend no try."""
+    held = _hk(0x10000, outcome="HOLD_EXACT")
+    other = _on_v3(0x10000, run="spike012-sonnet", model_requested=SONNET, model=SONNET,
+                   hold_run=True)  # fmt: skip
+    repo, log, config = _spike(tmp_path, held, other)
+    attempt_dir = (repo / "build" / "driver" / "spike012-haiku" / "ufo2p" / "func_00010000"
+                   / "attempt-1")  # fmt: skip
+    _write(attempt_dir / "checks.jsonl", json.dumps({"sweep": False, "exit": 1}) + "\n")
+    _write(attempt_dir / "checks" / "repeats.jsonl", '{"of": 1, "sweep": false}\n' * 2)
+    arms = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]["arms"]
+    per_try = arms[_arm(HAIKU)]["cells"][TOTAL]["per_try"]
+    assert (per_try["checks"], per_try["repeats"]) == (1, 2)
+    assert arms[_arm(SONNET)]["cells"][TOTAL]["per_try"]["repeats"] == 0
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    block = _block(capsys.readouterr().out)
+    haiku = block[block.index(next(x for x in block if x.startswith(f"  {_arm(HAIKU)}"))) + 1]
+    assert "mismatch 100.0%, match 0.0%, repeats 2, exact per" in haiku
+    sonnet = next(x for x in block if x.startswith(f"  {_arm(SONNET)}"))
+    assert "repeats" not in block[block.index(sonnet) + 4]
+
+
 def test_comparison_ratios_and_wall(tmp_path, capsys):
     """exact per API-equivalent $, per wall hour and per million tokens, from the unrounded
     figures; wall time from duration_ms, the record's seconds when it is null or absent (v2),
