@@ -671,22 +671,32 @@ def mnemonics(
     return tuple(_mnemonic(item) for item in items)
 
 
-def lookalikes(
+def lookalikes[K](
     target: Sequence[str],
-    matched: Mapping[int, Sequence[str]],
+    matched: Mapping[K, Sequence[str]],
     *,
     floor: float = LOOKALIKE_FLOOR,
     top: int = LOOKALIKE_TOP,
-) -> list[tuple[int, float]]:
-    """(start, ratio) of the `top` matched rows most like `target`, by difflib.SequenceMatcher
+) -> list[tuple[K, float]]:
+    """(key, ratio) of the `top` matched rows most like `target`, by difflib.SequenceMatcher
     ratio over mnemonic sequences (no autojunk), kept when the ratio is at least `floor`; equal
-    ratios are ordered by start, so the result never depends on the mapping's order."""
-    ranked = []
-    for start, sequence in matched.items():
-        ratio = difflib.SequenceMatcher(None, list(target), list(sequence), autojunk=False).ratio()
+    ratios are ordered by key, so the result never depends on the mapping's order. A key is a
+    row start, or (todo similarity-first-picking) any sortable key such as (EXE, start) for
+    rows of both EXEs. A row whose quick upper bounds (real_quick_ratio, quick_ratio) fall
+    below the floor, or below the `top`-th ratio kept so far, cannot rank and is skipped."""
+    if top < 1:
+        return []
+    wanted = list(target)
+    ranked: list[tuple[float, K]] = []  # (-ratio, key), the best `top` so far, best first
+    for key, sequence in matched.items():
+        matcher = difflib.SequenceMatcher(None, wanted, list(sequence), autojunk=False)
+        bar = floor if len(ranked) < top else max(floor, -ranked[-1][0])
+        if matcher.real_quick_ratio() < bar or matcher.quick_ratio() < bar:
+            continue
+        ratio = matcher.ratio()
         if ratio >= floor:
-            ranked.append((-ratio, start))
-    return [(start, -negative) for negative, start in sorted(ranked)[:top]]
+            ranked = sorted([*ranked, (-ratio, key)])[:top]
+    return [(key, -negative) for negative, key in ranked]
 
 
 def _lookalike_inputs(

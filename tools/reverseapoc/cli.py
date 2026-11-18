@@ -1848,7 +1848,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   fable_trial=args.fable_trial,
                                   night_model=args.night_model,
                                   picks=args.picks, stratify=args.stratify,
-                                  write_picks=args.write_picks, hold=args.hold,
+                                  write_picks=args.write_picks, max_picks=args.max_picks,
+                                  order=args.order, hold=args.hold,
                                   land_held=tuple(args.land_held or ()),
                                   allow_egress=tuple(args.allow_egress or ()),
                                   arms=arms, routing=tuple(args.cascade),
@@ -2045,12 +2046,20 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
         return ("--hold cannot be used with " + ("--session readability" if readability
                                                  else "--canary" if args.canary
                                                  else "--dry-run"))  # fmt: skip
-    if args.write_picks is not None and args.stratify is None:
-        return "--write-picks needs --stratify"
+    near_miss = args.near_miss is not None or bool(args.near_miss_arm)
+    if args.write_picks is not None and args.stratify is None and not near_miss:
+        return "--write-picks needs --stratify or --near-miss"
+    if args.write_picks is not None and near_miss and not args.dry_run:
+        return "--write-picks needs --dry-run"
     if args.stratify is not None and (args.write_picks is None or not args.dry_run):
         return f"--stratify needs {'--write-picks' if args.write_picks is None else '--dry-run'}"
     if args.picks is not None and args.stratify is not None:
         return "--picks cannot be used with --stratify (which writes a picks file)"
+    if args.max_picks is not None and not (near_miss and args.write_picks is not None):
+        return "--max-picks needs --near-miss and --write-picks"
+    if args.order == picker.ORDER_SIMILARITY and (readability or args.land_held):
+        return ("--order similarity cannot be used with "
+                + ("--session readability" if readability else "--land-held"))  # fmt: skip
     return None
 
 
@@ -2137,7 +2146,19 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    help="with --dry-run and --write-picks: take the first A unattempted rows "
                    "under 64 B, B of 64 to 255 B and C of 256 B and up, in queue order")
     p.add_argument("--write-picks", type=Path, default=None, metavar="FILE",
-                   help="with --stratify: write the stratified picks to FILE")
+                   help="with --stratify: write the stratified picks to FILE; with --dry-run "
+                   "and a near-miss lane: write the lane's rows in its own order (bytes left) "
+                   "that a --picks night can queue, for a following --hold --picks FILE")
+    p.add_argument("--max-picks", type=_positive, default=None, metavar="N",
+                   help="with --near-miss and --write-picks: write the lane's first N rows "
+                   "only; default: every one")  # fmt: skip
+    p.add_argument("--order", choices=picker.ORDERS, default=picker.ORDER_SCORE,
+                   help="the signed tier queue's order inside each group and pass: score "
+                   "(callees-first level, then score's rank) or similarity (the best look-alike "
+                   "ratio against the matched functions of both EXEs first, difflib over "
+                   "mnemonics at the context pack's floor; --dry-run shows each pick's ratio); "
+                   "refused with --session readability and --land-held; "
+                   "default: %(default)s")  # fmt: skip
     p.add_argument("--hold", action="store_true",
                    help="a hold run: nothing lands (no lint, gate or status.csv write), each "
                    "function is attempted once, the records say hold_run; refused with "

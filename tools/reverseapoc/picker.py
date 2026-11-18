@@ -45,10 +45,26 @@ the queue's own order and drops every wait on a key outside it.
 
 The near-miss queue (todo near-miss-lane, 2026-11-13; `NearMissQueue`) is a tier queue over the
 partial rows at a minimum best_percent or more, ranked by bytes left, with no callee wait.
+
+The similarity order (todo similarity-first-picking, `drive --order similarity`; docs/workflow.md
+"Select") ranks the tier queue's eligible work inside its group and pass by each function's best
+look-alike ratio (`Similarity`: contextpack.lookalikes over mnemonic sequences, the pack's
+floor) against the matched functions of both EXEs, highest first, before level and rank; a
+match the night lands raises its look-alikes' ratios at once. The group and pass rules stay.
+
+The hand-off board (todo long-tail-handoff-board; config/handoff.csv, `read_handoff`) lists the
+functions retired from every agent queue for the owner or a human contributor. No queue offers
+a board row: the tier queue leaves it out of its group like a held row (nothing waits on it),
+and the caller drops it from the pools, the near-miss lane and a restricted night. Nothing
+retires a row by itself: the owner adds a row, and each row's `return_rule` says when it goes
+back to the queues, which the owner does by deleting the row.
 """
 
 from __future__ import annotations
 
+import csv
+import datetime
+import re
 from collections import Counter
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -56,6 +72,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .callgraph import HAND, CallGraph, Edge, sccs, with_edges
+from .contextpack import lookalikes
 from .mechanics import HUB_KINDS, ROLE_HUB, ROLE_MEMBER, Mechanics, MemberRow, signed_tiers
 from .score import Candidate
 from .status import MATCHED
@@ -311,13 +328,52 @@ Rank = tuple[bool, int, int]  # score's own: (__CHK prologue, score, start)
 Passes = Mapping[Key, int]  # each function's finished passes (driver.pass_index)
 Ranks = Mapping[str, Mapping[int, Candidate]]  # EXE -> row start -> the row as score ranks it
 Units = Mapping[str, Mapping[int, str]]  # EXE -> row start -> unit
+Sequences = Callable[[Key], Sequence[str] | None]  # a row's mnemonics; None: no game/thunk row
+
+ORDER_SCORE = "score"  # the tier queue's own order: level, then score's rank
+ORDER_SIMILARITY = "similarity"  # todo similarity-first-picking: the best look-alike first
+ORDERS = (ORDER_SCORE, ORDER_SIMILARITY)
+
+
+class Similarity:
+    """Todo similarity-first-picking: each key's best look-alike ratio against the matched keys,
+    by contextpack.lookalikes (difflib over mnemonic sequences, the pack's floor and its tie
+    order) over the matched keys of every EXE that have a sequence (`sequences`). Below the
+    floor, or with no sequence, the ratio is 0.0. Each ratio is computed once, when first asked
+    for; `matched` adds a newly matched key and raises every ratio computed so far."""
+
+    def __init__(self, sequences: Sequences, *, matched: Iterable[Key]) -> None:
+        self._sequences = sequences
+        self._matched = {key: seq for key in matched if (seq := sequences(key)) is not None}
+        self._best: dict[Key, float] = {}
+
+    def _against(self, key: Key, matched: Mapping[Key, Sequence[str]]) -> float:
+        target = self._sequences(key)
+        if target is None:
+            return 0.0
+        found = lookalikes(target, {k: s for k, s in matched.items() if k != key}, top=1)
+        return found[0][1] if found else 0.0
+
+    def ratio(self, key: Key) -> float:
+        if key not in self._best:
+            self._best[key] = self._against(key, self._matched)
+        return self._best[key]
+
+    def matched(self, key: Key) -> None:
+        sequence = self._sequences(key)
+        if sequence is None or key in self._matched:
+            return
+        self._matched[key] = sequence
+        for other, best in self._best.items():
+            self._best[other] = max(best, self._against(other, {key: sequence}))
 
 
 @dataclass(frozen=True, slots=True)
 class TierItem:
     """One queued function: its signed tier, its callees-first level in its group (0: a leaf),
     its rank, the pick, whether it is one of the tier's hubs, and (set by `next_item`) the pass
-    it would run, one more than its finished passes."""
+    it would run, one more than its finished passes, and under the similarity order its best
+    look-alike ratio (None under the score order)."""
 
     tier: int
     level: int
@@ -325,6 +381,7 @@ class TierItem:
     pick: Pick
     hub: bool = False
     pass_n: int = 0
+    similarity: float | None = None
 
     @property
     def key(self) -> Key:
@@ -338,12 +395,16 @@ class TierQueue:
     never written (the night counts the passes, `use_passes` binds the night's own index).
     `take` marks an item in flight, `finish` ends that (`matched` adds it to the matched set;
     `aborted`, a pass a transient abort ended, sends it behind its group's other work;
-    `parked`, a pass a sweep hit ended, quick 261109-gzu, keeps it out for the queue's life)."""
+    `parked`, a pass a sweep hit ended, quick 261109-gzu, keeps it out for the queue's life).
+    `similarity` (todo similarity-first-picking) switches to the similarity order; a match
+    `finish` records raises its look-alikes' ratios."""
 
     def __init__(self, items: Iterable[TierItem], callees: Mapping[Key, Iterable[Key]], *,
                  matched: Iterable[Key] = (), passes: Passes | None = None,
-                 held: Iterable[Key] = ()) -> None:  # fmt: skip
+                 held: Iterable[Key] = (),
+                 similarity: Similarity | None = None) -> None:  # fmt: skip
         self._items = tuple(items)
+        self._similarity = similarity
         self._held = tuple(held)
         self._callees = {key: tuple(keys) for key, keys in callees.items()}
         self._matched = set(matched)
@@ -381,22 +442,35 @@ class TierQueue:
     def _order(self, item: TierItem) -> tuple:
         """07-26 review I1 (orchestrator ruling): the group (tier, member before hub) first, so
         an eligible member is never passed over for a hub or a later tier; inside the group
-        aborted passes go last, then pass N before N+1 (D-08), then level and rank."""
+        aborted passes go last, then pass N before N+1 (D-08), then (the similarity order) the
+        best look-alike ratio, highest first, then level and rank."""
         key = item.key
-        return (item.tier, item.hub, self._aborts[key], self._passes.get(key, 0), item.level,
-                item.rank, EXE_ORDER.index(item.pick.exe))  # fmt: skip
+        similar = 0.0 if self._similarity is None else -self._similarity.ratio(key)
+        return (*self._group(item), similar, item.level, item.rank,
+                EXE_ORDER.index(item.pick.exe))  # fmt: skip
+
+    def _group(self, item: TierItem) -> tuple[int, bool, int, int]:
+        """`_order`'s head: the group (tier, member before hub), aborted passes, finished passes."""
+        key = item.key
+        return item.tier, item.hub, self._aborts[key], self._passes.get(key, 0)
 
     def next_item(self, claimed_units: Container[tuple[str, str]] = frozenset(), *,
                   skip: Container[Key] = frozenset()) -> TierItem | None:  # fmt: skip
         """The eligible item with the least (tier, member before hub, aborted passes, finished
         passes, level, rank), its `pass_n` set; None when no item is eligible now.
         `claimed_units` holds the (EXE, unit) pairs other passes hold: their items are skipped,
-        not dropped. Quick 261112-fdr (WR-01): so are the functions in `skip`, one by one."""
-        eligible = (item for item in self._items if self._eligible(item, claimed_units, skip))
+        not dropped. Quick 261112-fdr (WR-01): so are the functions in `skip`, one by one.
+        Under the similarity order only the items of the least `_group` are ranked, so a ratio
+        is computed only where it can decide."""
+        eligible = [item for item in self._items if self._eligible(item, claimed_units, skip)]
+        if self._similarity is not None and eligible:
+            head = min(map(self._group, eligible))
+            eligible = [item for item in eligible if self._group(item) == head]
         best = min(eligible, key=self._order, default=None)
         if best is None:
             return None
-        return replace(best, pass_n=self._passes.get(best.key, 0) + 1)
+        similar = None if self._similarity is None else self._similarity.ratio(best.key)
+        return replace(best, pass_n=self._passes.get(best.key, 0) + 1, similarity=similar)
 
     def next_eligible(self, claimed_units: Container[tuple[str, str]] = frozenset(), *,
                       skip: Container[Key] = frozenset()) -> Pick | None:  # fmt: skip
@@ -409,7 +483,7 @@ class TierQueue:
         in this queue."""
         passes = dict(self._passes)
         trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes,
-                          held=self._held)  # fmt: skip
+                          held=self._held, similarity=self._similarity)  # fmt: skip
         trial._flight = set(self._flight)
         trial._aborts = Counter(self._aborts)
         trial._parked = set(self._parked)
@@ -424,12 +498,12 @@ class TierQueue:
         """The queue's own items whose key is in `keys`, in the same order, each waiting only
         on callees in `keys` (quick 261101-b5f, OD-3: a Fable trial never offers the rest, so
         nothing may wait on them); the matched set, the passes (read live) and the held rows
-        are kept, and the order rules are untouched."""
+        are kept, and the order rules (the similarity order's too) are untouched."""
         items = [item for item in self._items if item.key in keys]
         callees = {item.key: [c for c in self._callees.get(item.key, ()) if c in keys]
                    for item in items}  # fmt: skip
         return TierQueue(items, callees, matched=self._matched, passes=self._passes,
-                         held=self._held)  # fmt: skip
+                         held=self._held, similarity=self._similarity)  # fmt: skip
 
     def take(self, key: Key) -> None:
         self._flight.add(key)
@@ -443,6 +517,8 @@ class TierQueue:
         self._flight.discard(key)
         if matched:
             self._matched.add(key)
+            if self._similarity is not None:
+                self._similarity.matched(key)
         if parked:
             self._parked.add(key)
         if aborted:
@@ -514,24 +590,29 @@ def tier_queue(
     matched: Iterable[Key] = (),
     passes: Passes | None = None,
     held: Iterable[Key] = (),
+    retired: Iterable[Key] = (),
+    similarity: Similarity | None = None,
 ) -> TierQueue:
     """The tier queue of every signed tier (`mechanics.signed_tiers`: signed, digest matching),
     in tier order: each tier's members, then its hubs, a row queued once (by its first tier).
     `graphs` are the EXEs' call graphs, `ranks` every row as score ranks it (no P16 filter),
     `units` each row's unit. A queued row without a rank, a unit or a call graph is refused.
     `held` (07-44; `mechanics.signed_held`) is left out of every group before its levels, so
-    nothing waits on it; `TierQueue.held` lists the held rows a group would have queued."""
+    nothing waits on it; `TierQueue.held` lists the held rows a group would have queued.
+    `retired` (the hand-off board, `read_handoff`) is left out the same way, and listed nowhere.
+    `similarity` (todo similarity-first-picking) gives the queue the similarity order."""
     hold = frozenset(held)
     items: list[TierItem] = []
     callees: dict[Key, tuple[Key, ...]] = {}
-    for group in _groups(mech, members, hold):
+    for group in _groups(mech, members, hold | frozenset(retired)):
         if group.exe not in graphs:
             raise PickerError(f"{group.exe}: no call graph for tier {group.tier}")
         for item, waits in _group_items(mech, group, graphs[group.exe], ranks, units):
             items.append(item)
             callees[item.key] = waits
     return TierQueue(items, callees, matched=matched, passes=passes,
-                     held=_held_in_order(mech, members, hold))  # fmt: skip
+                     held=_held_in_order(mech, members, hold),
+                     similarity=similarity)  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -694,3 +775,56 @@ def readability_queue(
         return (tier_units.get(unit, _UNTIERED), EXE_ORDER.index(pick.exe), pick.start, unit)
 
     return [matched_units[unit] for unit in sorted(eligible, key=order)]
+
+
+# ---- the hand-off board (todo long-tail-handoff-board, 2026-11-18) ----
+
+HANDOFF_CSV = "handoff.csv"  # under config/: committed, the owner's alone to edit
+# the progress page lists the board by this exact header: never change it
+HANDOFF_HEADER = ("exe", "address", "reason", "retired_on", "return_rule")
+_HANDOFF_ADDRESS = re.compile(r"0x[0-9A-Fa-f]{8}")  # `0x0008A0E0`, as status.csv writes a start
+_HANDOFF_TEXT = ("reason", "return_rule")  # free text, never empty
+
+
+def _handoff_key(row: Mapping[str, str], where: str) -> Key:
+    """The (EXE, start) of one board row; a PickerError naming `where` and the field at fault."""
+    if row["exe"] not in EXE_ORDER:
+        raise PickerError(f"{where}: exe {row['exe']!r} is not one of {', '.join(EXE_ORDER)}")
+    if not _HANDOFF_ADDRESS.fullmatch(row["address"]):
+        raise PickerError(f"{where}: address {row['address']!r} is not 0x and 8 hex digits")
+    for name in _HANDOFF_TEXT:
+        if not row[name].strip():
+            raise PickerError(f"{where}: {name} is empty")
+    try:
+        datetime.date.fromisoformat(row["retired_on"])
+    except ValueError as exc:
+        raise PickerError(f"{where}: retired_on {row['retired_on']!r} is not YYYY-MM-DD") from exc
+    return row["exe"], int(row["address"], 16)
+
+
+def read_handoff(path: Path) -> frozenset[Key]:
+    """The (EXE, start) of every row of the hand-off board at `path` (HANDOFF_HEADER: the EXE
+    key, the row start, why it was retired, the day, and the rule for its return). A missing
+    file retires nothing. Another header, a row without every field, an unknown EXE, an address
+    that is not 0x and 8 hex digits, an empty reason or return_rule, a retired_on that is not
+    YYYY-MM-DD, or a row listed twice is a PickerError naming the line."""
+    path = Path(path)
+    if not path.is_file():
+        return frozenset()
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle, restkey="", restval=None)
+        if tuple(reader.fieldnames or ()) != HANDOFF_HEADER:
+            raise PickerError(f"{path}: header {','.join(reader.fieldnames or ())!r} is not "
+                              f"{','.join(HANDOFF_HEADER)!r}")  # fmt: skip
+        seen: dict[Key, int] = {}
+        for row in reader:
+            where = f"{path} line {reader.line_num}"
+            if "" in row or None in row.values():
+                raise PickerError(f"{where}: not the {len(HANDOFF_HEADER)} fields "
+                                  f"{','.join(HANDOFF_HEADER)}")  # fmt: skip
+            key = _handoff_key(row, where)
+            if key in seen:
+                raise PickerError(f"{where}: {key[0]} 0x{key[1]:08X} is listed again (first on "
+                                  f"line {seen[key]})")  # fmt: skip
+            seen[key] = reader.line_num
+    return frozenset(seen)

@@ -380,16 +380,18 @@ def _ranked(starts, *, scores=None, chk=()) -> dict[int, Candidate]:
 
 
 def _tq(rows, edges=(), *, mech=None, matched=(), passes=None, scores=None, units=None,
-        chk=(), held=None):  # fmt: skip
+        chk=(), held=None, **more):  # fmt: skip
     """The tier queue of UFO2P `rows` over the graph of `edges`, each row in its own unit;
-    `held` (07-44), when given, is the signed asm list's held keys."""
+    `held` (07-44), when given, is the signed asm list's held keys; `more` goes to tier_queue
+    as it is (`retired`, `similarity`)."""
     starts = [r.address for r in rows]
     units = units or {s: f"u_{s:08x}" for s in starts}
     hold = {} if held is None else {"held": held}
     return picker.tier_queue(mech or _mech(rows), rows, {UFO2P: _graph(*edges)},
                              {UFO2P: _ranked(starts, scores=scores, chk=chk)}, {UFO2P: units},
                              matched=frozenset((UFO2P, m) for m in matched),
-                             passes={} if passes is None else passes, **hold)  # fmt: skip
+                             passes={} if passes is None else passes, **hold,
+                             **more)  # fmt: skip
 
 
 def _serve(q, passes: dict, *, match=(), limit=50) -> list[int]:
@@ -1671,3 +1673,52 @@ def test_near_miss_lane_reaches_the_night(tmp_path, capsys, monkeypatch):
     assert f"0x{TB:08X}" in drafts[0] and f"0x{TS:08X}" in drafts[0]
     line = next(line for line in err.splitlines() if "near-miss lane:" in line)
     assert haiku in line and "90.00%" in line, line
+
+
+# ---- todo near-miss-write-picks: the lane's own ranking as a picks file ----
+
+
+def _cli_rig(tmp_path, monkeypatch):
+    """`_nm_rig` reached through the real `reverseapoc drive` parser: the checkout is the rig's
+    repo and the seams are its fakes."""
+    from reverseapoc import cli
+
+    rig, worlds = _nm_rig(tmp_path)
+    monkeypatch.setattr(cli, "REPO_ROOT", rig.repo)
+    monkeypatch.setattr(driver, "default_seams",
+                        lambda repo: rig.seams(world=lambda: worlds))  # fmt: skip
+    return rig, worlds, cli
+
+
+def test_near_miss_write_picks_feeds_a_hold_run(tmp_path, capsys, monkeypatch):
+    """`drive --dry-run --near-miss --write-picks FILE` writes the lane's rows in its own order
+    (bytes left), leaving out TS, a partial row outside the queue a `--picks` night builds;
+    `drive --hold --picks FILE` then starts with no refusal, its queue the written picks."""
+    rig, worlds, cli = _cli_rig(tmp_path, monkeypatch)
+    path = tmp_path / "near.txt"
+    assert cli.main(["drive", "--dry-run", "--near-miss", "--write-picks", str(path),
+                     "--run", "nm1", "--json"]) == 0  # fmt: skip
+    capsys.readouterr()
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if not line.startswith("#")] == [
+        f"ufo2p 0x{TB:08X}", f"ufo2p 0x{TC:08X}"]  # fmt: skip
+    assert any(f"ufo2p 0x{TS:08X}" in line for line in lines if line.startswith("#"))
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(deps)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    assert cli.main(["drive", "--hold", "--picks", str(path), "--night-model",
+                     "claude-haiku-5-5", "--run", "hold1", "--json"]) == 0  # fmt: skip
+    (deps,) = seen
+    assert [i.pick.start for i in deps.queue(frozenset()).preview(10)] == [TB, TC]
+
+
+def test_near_miss_write_picks_takes_the_first_max_picks(tmp_path, capsys, monkeypatch):
+    _, _, cli = _cli_rig(tmp_path, monkeypatch)
+    path = tmp_path / "near.txt"
+    assert cli.main(["drive", "--dry-run", "--near-miss", "--write-picks", str(path),
+                     "--max-picks", "1", "--run", "nm1", "--json"]) == 0  # fmt: skip
+    assert driver.read_picks(path) == {(UFO2P, TB)}
