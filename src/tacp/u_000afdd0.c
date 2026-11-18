@@ -13,7 +13,10 @@ void func_000AFDD0(void)
 {
     D_002AC9F8 = 1;
 }
-INCLUDE_ASM(func_000AFDE0);
+void func_000AFDE0(void)
+{
+    D_002AC9F8 = 0;
+}
 INCLUDE_ASM(func_000AFDF0);
 INCLUDE_ASM(func_000B01D0);
 INCLUDE_ASM(func_000B0200);
