@@ -36,20 +36,22 @@ Commit dates are when the C entered the repository. The first push could be late
 so 2026-10-24 is the earliest date any matched C of ours could have been public.
 
 The matched C grew quickly after that. Cumulative `match` commits touching `src/` (git log of
-`src/`, subjects `feat(...): match ...`; this undercounts matched rows slightly, since
-`config/*/status.csv` lists 234 matched rows today against 197 such commits):
+`src/`, subjects containing `): match `). One commit can carry several functions (a batch commit
+such as "match 23 Tier 1 functions"), so these are a lower bound on functions;
+`config/*/status.csv` lists 234 matched rows today against 199 such commits:
 
-| By the end of | Match commits |
+| By the end of | Match commits (functions: at least this many) |
 |---|---|
 | 2026-10-25 | 5 |
 | 2026-10-31 | 29 |
-| 2026-11-03 | 74 |
-| 2026-11-07 | 108 |
-| 2026-11-13 | 143 |
-| 2026-11-17 | 197 |
+| 2026-11-03 | 76 |
+| 2026-11-07 | 110 |
+| 2026-11-13 | 145 |
+| 2026-11-17 | 199 |
 
 A model whose training cutoff fell before 2026-10-24 cannot have read any of it. One whose cutoff
-fell on 2026-11-07 could have read at most about 108 functions' C.
+fell on 2026-11-07 could have read the C of at least 110 functions, and somewhat more counting
+the batch commits.
 
 ### 1.2 What else is public
 
@@ -62,8 +64,8 @@ From the kickoff research of 2026-10-19:
   (`ufo2p.h`, `tacp.h`, and `tools/extractors/docs/`), so they carry table layouts, not code
   (notes-target-binary-and-toolchain.md:273-276).
 - **OpenApoc PRs by andremmfaria** (#1679, #1681, #1685, #1688; 2026-09-10 to 2026-09-13) cite
-  Ghidra `FUN_` addresses and describe the behaviour of a handful of functions, "~90 sites in ~25
-  functions" (notes-target-binary-and-toolchain.md:257-271). Those addresses are in the **CD
+  Ghidra `FUN_` addresses and describe the behaviour of some functions: PR #1685 alone touches
+  "~90 sites in ~25 functions" (notes-target-binary-and-toolchain.md:257-271). Those addresses are in the **CD
   build**, not the installed build ReverseApoc matches (docs/toolchain.md:36;
   docs/learnings.md:252-253). They do not line up with our addresses without re-deriving them.
 - **UFOpaedia and the StrategyCore-era tools** (Apoc'd, Apatcher and others) cover file formats,
@@ -88,15 +90,17 @@ purpose:
   (tools/reverseapoc/picker.py:31), and the near-miss lane's guards say "never a matched row"
   (docs/model-routing.md:1202).
 - Best partial C stays under the gitignored `build/driver/<run>/.../best/`. The committed records
-  "hold no C" (docs/model-routing.md:1215-1217). So partial C was never public either.
+  "hold no C" (docs/model-routing.md:1215-1217). So partial C was never public either. A
+  near-miss row's pack does carry its earlier best C from there (docs/model-routing.md:1215-1216):
+  that too is in context by design, not training exposure.
 - Hold runs keep arms apart: `attempt.earlier_notes` drops hold-run notes, records and best C
   (notes-ideas-llm-decomp-research.md:416; docs/model-routing.md:57).
 - The canary checks an already-matched function ("the claimed function is already matched",
   docs/workflow.md:169). It is the one place a session works on public C. Its exit 0 proves the
   container path and never counts as a match.
 
-**Consequence.** Every counted match is of a function whose matched C did not exist, in public or
-under `build/`, before the session that wrote it. Memorising our repo cannot hand a model a match
+**Consequence.** Every counted match is of a function whose matched C had never been public before
+the session that wrote it, and whose earlier partial C, if any, was never public either. Memorising our repo cannot hand a model a match
 it then reports. At most it can teach house style that the session already reads in its view. So
 the ledger matters for any evaluation that re-runs **already matched** rows (the recall probe,
 canaries, a future benchmark built from our matches). For the counts reported so far it does not.
@@ -116,28 +120,29 @@ either way. Cutoffs: the repository states none.
 | Claude Sonnet 5.5 | `claude-sonnet-5-5` (Claude Code), `copilot-sonnet-5-5` (Copilot) | yes | not stated | `0a60c4ef`, 2026-11-09 | Not ruled out by repo sources |
 | Claude Haiku 5.5 | `claude-haiku-5-5` (Claude Code), `copilot-haiku-5-5` (Copilot) | yes | not stated | `0a60c4ef`, 2026-11-09 | Not ruled out by repo sources |
 | Claude Sonnet 4.6, Opus 4.6 | `agy-sonnet-4-6`, `agy-opus-4-6` (agy) | no: never passed a canary (docs/model-comparison.md:34) | not stated | priced from a list cached 2026-10-06 (config/driver/backends.toml:213); Sonnet 4.6 cited on 2026-10-19 (2026-10-19-kickoff-research-report.md:45) | **No** |
-| GPT-6 Luna | `gpt-6-luna` (Codex), `copilot-gpt-6-luna` (Copilot) | yes | not stated | `63594cf6`, 2026-11-09 (backends.toml:63-64, "OpenAI's help page and CLI 0.159.1's catalogue") | Not ruled out by repo sources |
-| GPT-6.1 Sol | `gpt-6.1-sol` (Codex) | yes | not stated | `63594cf6`, 2026-11-09 | Not ruled out by repo sources |
+| GPT-6 Luna | `gpt-6-luna` (Codex), `copilot-gpt-6-luna` (Copilot) | yes | not stated | `0a60c4ef`, 2026-11-09 (backends.toml:63-64, "OpenAI's help page and CLI 0.159.1's catalogue") | Not ruled out by repo sources |
+| GPT-6.1 Sol | `gpt-6.1-sol` (Codex) | yes | not stated | `0a60c4ef`, 2026-11-09 | Not ruled out by repo sources |
 | GPT-6.1 Terra | `gpt-6.1-terra` (Codex) | yes | not stated | `72e7278b`, 2026-11-11 (backends.toml:104-106, `codex debug models`, codex-cli 0.167.0) | Not ruled out by repo sources |
 | GPT-6 Astra | `gpt-6-astra` (Codex) | yes | not stated | `72e7278b`, 2026-11-11 (backends.toml:104-106) | Not ruled out by repo sources |
 | Gemini 3.8 Flash | `gemini-flash` (agy), `gemini-3.8-flash-openrouter` (OpenRouter, the D-21 fallback) | yes: 1 session in spike 012, 1 on the cascade nights (docs/model-comparison.md:109, 307) | not stated | `63594cf6`, 2026-11-09 (backends.toml:152, "`agy models` listed on 2026-11-09") | Not ruled out by repo sources |
-| GPT-OSS 120B | `gpt-oss` (agy) | no: never passed a canary (docs/model-comparison.md:34) | not stated | `002e16e5`, 2026-11-09 | Moot: no session |
-| GPT-OSS 20B | `gpt-oss-20b` (OpenRouter) | no: wired, never run (docs/model-comparison.md:71) | not stated | `002e16e5`, 2026-11-09 | Moot: no session |
-| DeepSeek V4.1-Flash | `deepseek-flash` (OpenRouter) | yes | not stated | `37019a42`, 2026-11-10 (backends.toml:311-312, OpenRouter list read 2026-11-10) | Not ruled out by repo sources |
+| GPT-OSS 120B | `gpt-oss` (agy) | no: never passed a canary (docs/model-comparison.md:34) | not stated | `e66b25f6`, 2026-11-09 | Moot: no session |
+| GPT-OSS 20B | `gpt-oss-20b` (OpenRouter) | no: wired, never run (docs/model-comparison.md:71) | not stated | `2e5a14db`, 2026-11-10 | Moot: no session |
+| DeepSeek V4.1-Flash | `deepseek-flash` (OpenRouter) | yes | not stated | `63594cf6`, 2026-11-09 (prices from OpenRouter's list read 2026-11-10, backends.toml:311-312) | Not ruled out by repo sources |
 | GLM-5.3 | `glm-5.3` (OpenRouter) | yes | not stated | `63594cf6`, 2026-11-09 | Not ruled out by repo sources |
-| GLM-4.7-Flash | `glm-4.7-flash` (OpenRouter) | yes | not stated | `37019a42`, 2026-11-10 | Not ruled out by repo sources |
-| Qwen3.6-35B-A3B | `qwen-hosted` (OpenRouter); `qwen-local` never run (docs/model-comparison.md:71) | yes (hosted) | not stated | `ac6bc594`, 2026-11-09 | Not ruled out by repo sources |
+| GLM-4.7-Flash | `glm-4.7-flash` (OpenRouter) | yes | not stated | `63594cf6`, 2026-11-09 | Not ruled out by repo sources |
+| Qwen3.6-35B-A3B | `qwen-hosted` (OpenRouter); `qwen-local` never run (docs/model-comparison.md:71) | yes (hosted) | not stated | `0a60c4ef`, 2026-11-09 | Not ruled out by repo sources |
 | Muse Spark Open | `muse-spark-open` (OpenRouter) | yes, 11 sessions (docs/model-comparison.md:32-33) | not stated | released 2026-10-15 (backends.toml:397; .planning/phases/07.2-fnv-inspired-matching-pipeline/07.2-RESEARCH.md:839) | **No**: released before 2026-10-24 |
 
-First-record commits were found with `git log --reverse -S<model id>`. Co-author dates come from
+First-record commits are the earlier of `git log --reverse -S<model id>` and `-S<display name>`
+(for example `GLM-4.7`, `Qwen3.6`, `GPT-6 Luna`). Co-author dates come from
 the `Co-Authored-By` trailers in git log.
 
 Note a: this session's Claude Code harness states a knowledge cutoff of June 2026 for Opus 5.5.
 That is not a repo source. Confirm it at Anthropic's model card before citing it.
 
-The arms with no repo bound were all first recorded 16 to 20 days after 2026-10-24. Exposure
-would need a training cutoff inside that window, followed by release within days. That is
-unlikely, but the repo cannot rule it out. The paper must take each vendor's stated cutoff from
+The arms with no repo bound were all first recorded 16 to 18 days after 2026-10-24 (2026-11-09 to
+2026-11-11). Exposure would need a training cutoff inside that window, followed by release within
+days. That is unlikely, but the repo cannot rule it out. The paper must take each vendor's stated cutoff from
 its model card.
 
 ### 1.5 Conclusion
@@ -182,8 +187,9 @@ much bigger finding.
   similarity 0.90 or more against our committed C).
 - **H2.** On each arm, the matched sample and the control sample do not differ in the count of
   answers scoring objdiff 90% or more (one-sided Fisher exact, p >= 0.05).
-- **H3.** No arm gives the exact committed name of a function whose name is not a `func_`
-  placeholder.
+- **H3.** No arm gives the exact committed name of more than one function whose name is not a
+  `func_` placeholder. (One hit is allowed: a short descriptive name such as a `sys_` helper's can
+  be guessed from the vocabulary OpenApoc and the game share.)
 - **H4 (manipulation check).** On each arm, at least two of the three positive controls (2.4)
   reach raw token similarity 0.70 or more. This shows the prompt can draw out recall at all. An
   arm that fails H4 could not have failed H1-H3, so its results there are reported as
@@ -200,9 +206,14 @@ Population, read at a pinned commit `S` (record its SHA in the run marker):
 - **Matched rows.** Rows of `config/ufo2p/status.csv` and `config/tacp/status.csv` with status
   `matched`. Drop any start listed in that EXE's `runtime.csv` (library rows, matched by
   `libmatch`, not by C). Size is `end - start` from `config/<exe>/functions.csv`.
-- **Controls.** Rows of `functions.csv` (kind function, not in `runtime.csv`) with **no** row in
-  `status.csv`: never attempted, so no C for them exists anywhere, partial or matched. They give
-  the arm's chance rate on the same cue.
+- **Controls.** Rows of `functions.csv` with kind `game` (the kinds are `game`, `runtime`,
+  `data-in-code` and `thunk`) that have **no** row in `status.csv`, whose `(exe, start)` appears
+  in **no** `kind: attempt` record of `progress/attempts.jsonl`, and whose address appears in
+  **no** `kind: rename` record there. A missing status row alone is not enough: today 95 GAVE_UP
+  attempt records name functions with no status row, and 62 APPLIED rename records gave such
+  functions public names. The rows left were never attempted or renamed, so no C for them exists
+  anywhere, partial or matched, not even under `build/`. They give the arm's chance rate on the
+  same cue.
 
 Strata: the `stats` size buckets merged as the cascade does (config/driver/backends.toml:484-505):
 `[0, 64)`, `[64, 256)`, `[256, inf)`.
@@ -214,8 +225,12 @@ Draw, deterministic:
    `search.py`'s `SEED = 20261103` (tools/reverseapoc/search.py:51).
 3. Matched: for each stratum in the order above, `rng.sample(stratum, min(10, len(stratum)))`.
 4. Controls: with the same `rng`, continuing, 10 per stratum the same way.
-5. Name probe: the matched sample's rows whose committed name is not a `func_` placeholder; if
-   fewer than 10, top up from all such matched rows with the same `rng`, up to 10.
+5. Name probe. A row's committed name is its function's identifier in its unit at `S`. Take the
+   matched sample's rows whose committed name is not a `func_` placeholder, in draw order, and
+   keep the first 10. If fewer than 10, top up with
+   `rng.sample(rest, min(10 - len(chosen), len(rest)))`, where `rest` is every other named matched
+   row not already chosen, sorted by `(exe, start)`. Today about 40 of the 234 matched rows carry
+   such a name.
 6. Write the list (EXE, start, size, stratum, set) next to the run marker before the first prompt.
 
 At `e93afb69` the matched population is 234 rows: 132 under 64 B, 91 at 64-255 B, 11 at 256 B
@@ -237,7 +252,8 @@ X-COM: Apocalypse (MicroProse/Mythos, 1997, DOS), executable {EXE} as shipped in
 Steam/GOG installed build, compiled with Watcom C 10.6 (-4r -s -fpi), DOS/4GW LE.
 The function at linear address 0x{START:08X} is {SIZE} bytes long.
 From memory only, write the C89 source of this function as it was originally written.
-If you do not know it, answer exactly UNKNOWN. Output one C function and nothing else.
+If you do not know it, answer exactly UNKNOWN. Otherwise output one C89 translation unit:
+the declarations the function needs, then the function. Nothing else.
 ```
 
 **Template S (strong cue).** Used for matched rows only.
@@ -247,7 +263,8 @@ The GitHub repository ayrtondenner/ReverseApoc is a matching decompilation of
 X-COM: Apocalypse. Its file src/{exe}/{unit}.c contains the function {NAME}
 (address 0x{START:08X} in {EXE}, {SIZE} bytes).
 From memory only, reproduce that function exactly as it appears in the repository.
-If you do not know it, answer exactly UNKNOWN. Output one C function and nothing else.
+If you do not know it, answer exactly UNKNOWN. Otherwise output one C89 translation unit:
+the declarations the function needs, then the function. Nothing else.
 ```
 
 **Template N (name).** Used for the name-probe rows.
@@ -255,11 +272,15 @@ If you do not know it, answer exactly UNKNOWN. Output one C function and nothing
 ```
 In the GitHub repository ayrtondenner/ReverseApoc (a matching decompilation of
 X-COM: Apocalypse), src/{exe}/{unit}.c defines a function at address 0x{START:08X} in {EXE}.
-The functions next to it in that file are named {PREV_NAME} and {NEXT_NAME}.
+In the executable, the function just before it is named {PREV_NAME} and the one just after it
+is named {NEXT_NAME}.
 From memory only, what is this function's name? Answer with the identifier only, or UNKNOWN.
 ```
 
-Neighbour names that are `func_` placeholders are given as they are. They carry no meaning.
+The neighbours are the previous and next kind-`game` rows of `functions.csv` by address, whatever
+their unit, so they exist even for a unit holding one function. Their names are their committed
+names at `S`. A `func_` placeholder is given as it is: it carries no meaning. At the first or last
+game function of an EXE the missing neighbour is given as `none`.
 
 **Positive controls (H4).** Three functions from a widely mirrored public C codebase that
 predates every arm's cutoff, asked for with Template S's wording (repository, path and name). The
@@ -273,11 +294,13 @@ to 103.
 
 For each C answer:
 
-- **Parse.** Take the first function definition. `UNKNOWN`, or no definition, is an abstention:
-  score 0, counted on its own line. The abstention rate is itself a result.
-- **objdiff %.** Replace the function's definition in a scratch copy of its committed unit (or,
-  for a control, a fresh unit holding only the answer), compile with the unit's rule from
-  `config/cflags.txt`, and score against the original function the way `attempt check` does. A
+- **Parse.** The scored function is the answer's last function definition (declarations come
+  first). `UNKNOWN`, or no definition, is an abstention: score 0, counted on its own line. The
+  abstention rate is itself a result.
+- **objdiff %.** Matched rows and controls are compiled the same way, so the comparison in H2
+  builds in no difference between them: each answer is compiled as its own translation unit,
+  holding only the answer's text, with the rule `config/cflags.txt` gives that function's unit.
+  It is scored against the original function the way `attempt check` does, relocations masked. A
   build failure scores 0 and is counted. The coordinator runs this; the model never sees the
   result.
 - **Token similarity** (matched rows and positive controls only). Tokenize the answer and our
@@ -288,8 +311,10 @@ For each C answer:
     first appearance (one bijection per function). C keywords stay, and so do `func_` and `D_`
     placeholders, which the address alone gives away.
 
-  T_raw well above T_alpha means the model also knew our local and parameter names. Those names
-  exist only in our repo, so it is the strongest sign of having read it.
+  Renaming can only make two functions more alike, so T_alpha is at least about T_raw. A high
+  T_alpha with a much lower T_raw means the model got the structure but not our names. A high
+  T_raw, close to T_alpha, means it also knew our local and parameter names. Those names exist
+  only in our repo, so that is the strongest sign of having read it.
 - **Name answers.** A hit is an exact, case-sensitive match of the committed name.
 
 Thresholds, per answer:
@@ -314,9 +339,10 @@ With 30 against 30, the probe detects gross memorisation, not a few percent. Say
 
 Assumptions: about 103 prompts, about 500 input tokens each (template and cue) and about 1,500
 output tokens on average (code plus any reasoning, capped at 4,000). So about 50k input and 150k
-output tokens per arm, about 0.2M in all. That is a fifth of one average matching session (a
-Haiku session is about 1.2M tokens, docs/model-routing.md:1123). Output dominates, so cheap-input
-models gain little. Dollars are list price, from `config/driver/backends.toml` `prices` and, for
+output tokens per arm, about 0.2M in all. In tokens that is a fifth of one average matching
+session (a Haiku session is about 1.07M cache read, 80k cache creation and 24k output,
+docs/model-routing.md:1123). In dollars it is not. A session is mostly cheap cache reads, while
+the probe is mostly output, so a Haiku probe costs about twice a Haiku session's list price. Dollars are list price, from `config/driver/backends.toml` `prices` and, for
 the Claude Code arms, `streamjson.py`'s table (tools/reverseapoc/streamjson.py:102-105).
 
 | Arm | Input / output USD per MTok | List cost of one probe |
@@ -359,12 +385,12 @@ output-heavy.
 > **Training-data contamination.** X-COM: Apocalypse's source code has never been published, and
 > we found no public decompilation or code-level reverse engineering of either executable. The
 > public material is OpenApoc, a C++ reimplementation; its extractors' data-table offsets; and
-> Ghidra addresses and behaviour notes for a few functions of a different (CD) build. No model could have memorised
-> the original C. Our own matched C has been public on GitHub since 2026-10-24, but it cannot
-> inflate our match counts. The driver never serves a matched function, unmatched attempts' best
-> C is never published, and so each match's C did not exist anywhere before the session that
-> wrote it. Earlier matches do reach later sessions, in context and by design, as they would reach
-> a human working from the repository. Two of the models, Claude Opus 5.5 and Fable 5.1, were in
+> Ghidra addresses and behaviour notes for some functions of a different (CD) build. No model
+> could have memorised the original C. Our own matched C has been public on GitHub since
+> 2026-10-24, but it cannot inflate our match counts. The driver never serves a matched function
+> and never publishes an unmatched attempt's best C, so no function's C was public before the
+> session that matched it. Earlier matches, and a near-miss row's earlier best C, do reach later
+> sessions, in context and by design, as they would reach a human working from the repository. Two of the models, Claude Opus 5.5 and Fable 5.1, were in
 > use on the project before the first match, and a third, Muse Spark Open, was released before
 > it, so their training data cannot contain any of our C. For the other models we do not have a
 > bound from first-hand evidence. A pre-registered recall probe asks each model for 30 matched
@@ -388,9 +414,8 @@ before submission.
 | GPT-6 Luna, GPT-6.1 Sol | yes | 2026-11-09 | unknown |
 | GPT-6.1 Terra, GPT-6 Astra | yes | 2026-11-11 | unknown |
 | Gemini 3.8 Flash | 2 | 2026-11-09 | unknown |
-| GLM-5.3, Qwen3.6-35B-A3B | yes | 2026-11-09 | unknown |
-| DeepSeek V4.1-Flash, GLM-4.7-Flash | yes | 2026-11-10 | unknown |
-| GPT-OSS 120B, GPT-OSS 20B | none | 2026-11-09 | moot |
+| DeepSeek V4.1-Flash, GLM-5.3, GLM-4.7-Flash, Qwen3.6-35B-A3B | yes | 2026-11-09 | unknown |
+| GPT-OSS 120B, GPT-OSS 20B | none | 2026-11-09, 2026-11-10 | moot |
 
 Training cutoffs: none stated in project sources. Fill them in from the vendors' model cards.
 
