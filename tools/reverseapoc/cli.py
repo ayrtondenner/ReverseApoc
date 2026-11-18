@@ -2445,6 +2445,7 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     _add_locate_verb(verbs)
     _add_asm_verb(verbs)
     _add_splits_verb(verbs)
+    _add_interior_verb(verbs)
     p.set_defaults(func=_cmd_mechanics)
 
 
@@ -2512,6 +2513,33 @@ def _add_splits_verb(verbs: argparse._SubParsersAction) -> None:
     s.add_argument("--exe", choices=mechanics.EXES, help="one EXE; default: both")
     _mechanics_roots(s, game=True)
     s.set_defaults(mechanics_func=_mechanics_splits)
+
+
+def _mechanics_interior(args: argparse.Namespace) -> int:
+    exes = (args.exe,) if args.exe else mechanics.EXES
+    statuses = mechanics.read_statuses(Path(args.config), exes)
+    reports = []
+    for exe in exes:
+        inputs = locate.load_inputs(args.config, args.orig, args.manifest, exe)
+        mine = {start: status for (owner, start), status in statuses.items() if owner == exe}
+        reports.append(splits.interior_branches(inputs, statuses=mine))
+    if args.json:
+        print(json.dumps(splits.interiors_json(reports), indent=2))
+    else:
+        print(splits.format_interiors(reports))
+    return 0
+
+
+def _add_interior_verb(verbs: argparse._SubParsersAction) -> None:
+    s = verbs.add_parser(
+        "interior",
+        help="print evidence only: suspected bad splits, every call or jump of a game row that "
+        "lands inside another functions.csv row (not on its start), with the proposed fix "
+        "(split the target row, or merge the rows) for the owner; writes nothing",
+    )
+    s.add_argument("--exe", choices=mechanics.EXES, help="one EXE; default: both")
+    _mechanics_roots(s, game=True)
+    s.set_defaults(mechanics_func=_mechanics_interior)
 
 
 def _number(value: str) -> int:
