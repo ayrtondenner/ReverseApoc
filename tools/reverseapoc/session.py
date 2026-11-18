@@ -301,8 +301,9 @@ _COPILOT_READS = (" Your view tool may also read files inside this attempt's dir
 # Runs 20261116-copilot2 to -fable-ab: Sonnet 5.5 tried plan2.json, plan.json.tmp,
 # giveup.json.tmp, giveup2.json and giveup.json2 in most sessions; Copilot refused each write,
 # and each such session was spent. Said after the session rules, which list the files.
-_COPILOT_WRITES = (" Write each of those files in place, under its own name: create it once, then "
-                   "change it with your edit tool. Never write a temporary, backup or numbered "
+_COPILOT_WRITES = (" Write each of those files in place, under its own name: edit your unit, which "
+                   "is already there; create each other file once, then change it with your edit "
+                   "tool. Never write a temporary, backup or numbered "
                    "copy (plan.json.tmp, plan2.json, giveup.json2 and the like) or any other "
                    "file: Copilot refuses every other write, and one refused write spends the "
                    "whole attempt, whatever it found.")  # fmt: skip

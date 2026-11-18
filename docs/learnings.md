@@ -265,7 +265,9 @@ Entry format:
   `session_limits_exhausted.completed` answered `cancel`. Kept unknown: hooks, skills,
   subagents, fusion, MCP, permissions, model or mode switches, Autopilot, system messages,
   other tools and programs, IDE and canvas, resume and schedules, `abort` (the driver never
-  interrupts a session), a cwd change and a session-workspace write.
+  interrupts a session), a cwd change and a session-workspace write. Any event whose envelope
+  carries `agentId` (a subagent's) is unknown too, whatever its type. The tests also fail when
+  an installed CLI version is not the reviewed one.
 - The schema's own words were wrong once: it says a usage's `initiator` is "absent for
   user-initiated calls", but all 7,405 persisted usage records carry `user` (first call) or
   `agent`. Check a shape against recorded data, not only the schema.
@@ -277,7 +279,8 @@ Entry format:
   and point the test at it.
 - Replaying all 436 recorded Copilot transcripts through the new audit gave no event-type stop.
 - Copilot Sonnet 5.5 tried a scratch copy (`plan2.json`, `giveup.json.tmp`, `giveup2.json`,
-  `giveup.json2`, `plan.json.tmp`) in 14 sessions; in the three read closely, the real file
+  `giveup.json2`, `plan.json.tmp`) in 14 sessions of runs 20261116-copilot2 to -mixed4,
+  uncounted retries and audit-stopped sessions included; in the three read closely, the real file
   was already written. The Copilot prompt now says to write each session file in place
   (create once, then edit) and nothing else. Measured cost: 25.4 credits a recorded session
   (11 sessions, 279.9 credits, 1 match), so quota.toml drops its estimate of 40. The 60-credit

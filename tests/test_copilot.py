@@ -280,6 +280,8 @@ def test_copilot_prompt_forbids_scratch_copies_of_the_session_files():
     skill = "---\nname: watcom-decomp\ndescription: x\n---\n# Matching one Watcom function\n"
     text = session.copilot_prompt(goal, skill)
     assert "in place" in text and "then change it with your edit tool" in text
+    # the unit exists before the session (the driver's view): it is edited, never created
+    assert "edit your unit" in text
     for copy in ("plan.json.tmp", "plan2.json", "giveup.json2"):
         assert copy in text, copy
     assert "Copilot refuses every other write" in text
@@ -487,12 +489,36 @@ def test_copilotjson_every_event_type_of_the_reviewed_schema_is_judged():
     assert kinds == {"shell_completed", *copilotjson.KEPT_UNKNOWN_NOTIFICATIONS}
 
 
+def test_copilotjson_the_installed_cli_is_the_reviewed_one():
+    """A new CLI version can document event types the review never read: every Copilot CLI
+    package installed here must be the reviewed version until its schema gets the same review
+    (then COPILOT_VERSION and the classes move with it)."""
+    packages = Path(_LOCAL) / "copilot" / "pkg" / "win32-x64" if _LOCAL else None
+    if packages is None or not packages.is_dir():
+        pytest.skip("no Copilot CLI package installed here")
+    # a version folder's name starts with its major number (beside it: .session-operation-locks)
+    installed = sorted(p.name for p in packages.iterdir() if p.is_dir() and p.name[:1].isdigit())
+    assert installed == [COPILOT_VERSION], f"review the event schema of {installed}"
+
+
 def test_copilotjson_event_classes_are_disjoint():
-    """An event type is in exactly one of the review's three classes."""
+    """An event type is in exactly one of the review's three classes, and under one reason."""
     known, shaped = copilotjson.KNOWN_EVENTS, copilotjson.SHAPED_EVENTS
     kept = set(copilotjson.KEPT_UNKNOWN)
     assert not known & shaped and not known & kept and not shaped & kept
     assert "shell_completed" not in copilotjson.KEPT_UNKNOWN_NOTIFICATIONS
+    assert len(kept) == sum(len(kinds) for kinds in copilotjson._KEPT.values())
+
+
+def test_copilotjson_an_event_of_a_subagent_is_unknown():
+    """The CLI's schema puts `agentId` on the envelope of a subagent's events; none of the
+    436 recorded sessions has one. Any event carrying it is unknown, known type or not."""
+    for event in ({"type": "assistant.intent", "data": {"intent": "x"}},
+                  {"type": "assistant.usage", "data": _usage()},
+                  {"type": "assistant.message", "data": {"content": "x"}}):
+        assert copilotjson.unknown_steps([_start(), event]) == [], event
+        (step,) = copilotjson.unknown_steps([_start(), {**event, "agentId": "a1"}])
+        assert "subagent" in step, event
 
 
 # one made-up payload in 1.0.111's schema shape for each type the review made known as is

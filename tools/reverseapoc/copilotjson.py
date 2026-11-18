@@ -33,8 +33,9 @@ them for each arm.
   reads them (D-26).
 - `unknown_steps` (fail closed): each call that is not known, each start or completion whose
   toolCallId is not a string, each completion with no start, each second start or completion of
-  one id (only one of each is read), and each event of a type outside KNOWN_EVENTS that is not
-  one of SHAPED_EVENTS in its known shape: one of KEPT_UNKNOWN (a hook, a skill, a subagent, a
+  one id (only one of each is read), each event carrying `agentId` (a subagent's), and each
+  event of a type outside KNOWN_EVENTS that is not one of SHAPED_EVENTS in its known shape:
+  one of KEPT_UNKNOWN (a hook, a skill, a subagent, a
   permission prompt, a model switch...) names its reason, any other is a type no review read.
   The audit counts each as a stray. `hook_traces`: each tool result that carries a hook's
   guidance text (the owner's user-level postToolUse hook reached the capture's results): the
@@ -314,12 +315,6 @@ def _cache_break_known(event: dict) -> bool:
         if any(_mapping(tool).get("name") not in AVAILABLE_TOOLS for tool in tools):
             return False
     return True
-
-
-# the types known only in an exact shape (unknown_steps checks each); with KNOWN_EVENTS and
-# KEPT_UNKNOWN they cover every event type of the reviewed schema
-SHAPED_EVENTS = frozenset({_CACHE_BREAK, _NOTIFICATION, "assistant.usage", _USAGE_RECORD,
-                           _PROGRESS, _LIMIT_DONE})  # fmt: skip
 
 
 def _served_models(events: Sequence[dict]) -> list:
@@ -680,27 +675,26 @@ def _rejected(call: Call) -> bool:
             and message == _ENOENT.format(path=path))  # fmt: skip
 
 
-def _shape_known(event: dict, seen: Mapping) -> bool:
-    """One of SHAPED_EVENTS in its known shape; `seen` holds the tool starts read so far."""
-    kind, data = event.get("type"), _data(event)
-    if kind == _CACHE_BREAK:
-        return _cache_break_known(event)
-    if kind == _NOTIFICATION:
-        return _notification_known(event)
-    if kind == _USAGE_RECORD:
-        return _usage_known(data.get("usage"))
-    if kind == _PROGRESS:  # progress of a call this session already started
-        ident = data.get("toolCallId")
-        return isinstance(ident, str) and (_TOOL_START, ident) in seen
-    if kind == _LIMIT_DONE:
-        return _limit_kept(event)
-    return _usage_known(data)  # assistant.usage: the usage is its data
+def _progress_known(event: dict, seen: Mapping) -> bool:
+    """Progress of a call this session already started (`seen` holds the starts read so far)."""
+    ident = _data(event).get("toolCallId")
+    return isinstance(ident, str) and (_TOOL_START, ident) in seen
 
 
-_SHAPE_TEXT = {_CACHE_BREAK: "lists a tool the session was not given",
-               _NOTIFICATION: "of a kind the Copilot audit does not know",
-               _PROGRESS: "names no tool call this session started",
-               _LIMIT_DONE: "answers the credit cap with anything but cancel"}  # fmt: skip
+# Each of the types known only in an exact shape: its check (the event, the tool starts read so
+# far) and why an event outside that shape is unknown. With KNOWN_EVENTS and KEPT_UNKNOWN they
+# cover every event type of the reviewed schema.
+_SHAPE_CHECKS = {
+    _CACHE_BREAK: (lambda e, _: _cache_break_known(e), "lists a tool the session was not given"),
+    _NOTIFICATION: (lambda e, _: _notification_known(e),
+                    "of a kind the Copilot audit does not know"),
+    "assistant.usage": (lambda e, _: _usage_known(_data(e)), "is not a main-agent usage"),
+    _USAGE_RECORD: (lambda e, _: _usage_known(_data(e).get("usage")),
+                    "is not a main-agent usage"),
+    _PROGRESS: (_progress_known, "names no tool call this session started"),
+    _LIMIT_DONE: (lambda e, _: _limit_kept(e), "answers the credit cap with anything but cancel"),
+}
+SHAPED_EVENTS = frozenset(_SHAPE_CHECKS)
 
 
 def _event_problem(event: dict, seen: Mapping) -> str | None:
@@ -708,15 +702,19 @@ def _event_problem(event: dict, seen: Mapping) -> str | None:
     kind = event.get("type")
     if not isinstance(kind, str):
         return f"event type {kind!r} is not one the Copilot audit knows"
-    if kind in KNOWN_EVENTS or kind in SHAPED_EVENTS and _shape_known(event, seen):
+    if _AGENT in event:  # the CLI's schema: on the envelope of a subagent's events
+        return f"event type {kind!r} carries agentId: a subagent's event"
+    if kind in KNOWN_EVENTS:
         return None
-    if kind == _NOTIFICATION:
-        sort = _mapping(_data(event).get("kind")).get("type")
+    if kind in SHAPED_EVENTS:
+        check, why = _SHAPE_CHECKS[kind]
+        if check(event, seen):
+            return None
+        sort = _mapping(_data(event).get("kind")).get("type") if kind == _NOTIFICATION else None
         if isinstance(sort, str) and sort in KEPT_UNKNOWN_NOTIFICATIONS:
             return (f"event type {kind!r} of kind {sort!r} is kept unknown on purpose: "
                     f"{KEPT_UNKNOWN_NOTIFICATIONS[sort]}")  # fmt: skip
-    if kind in SHAPED_EVENTS:
-        return f"event type {kind!r} {_SHAPE_TEXT.get(kind, 'is not a main-agent usage')}"
+        return f"event type {kind!r} {why}"
     if kind in KEPT_UNKNOWN:
         return f"event type {kind!r} is kept unknown on purpose: {KEPT_UNKNOWN[kind]}"
     return f"event type {kind!r} is not one the Copilot audit knows"
