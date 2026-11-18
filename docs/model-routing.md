@@ -1230,6 +1230,7 @@ in `session.MAX_CHECK_RUNS`, in both matching and readability skills and in thei
 change together. Re-measure with the same command before the ruling.
 
 **Owner ruling (2026-11-18): the budget is 15.** `attempt.CHECK_BUDGET` and `session.MAX_CHECK_RUNS` are 15, and both skills say so. The change set is the one listed above.
+
 ## Near-miss lane
 
 The partial rows of `config/<exe>/status.csv` hold far more bytes than the matched ones, and
