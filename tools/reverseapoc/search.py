@@ -16,6 +16,11 @@ highest (exact, stack_score, score) of its cells. A better variant becomes the b
 starts again from it. A statement-order variant stands only when it is exact: reordering can
 change behaviour, so byte identity is the only evidence for it (D-26).
 
+The rewrite axis (todo search-rewrite-axis) takes Echo's rule-based refinement: rewrites of one
+expression, branch or loop that keep the meaning of the C, each a candidate of its own, greedy as
+every axis is (rewrite_moves names them). An if/else of one assignment turned into a ternary, or
+back, may convert a value differently, so it is a statement move too and stands only when exact.
+
 The declaration axis asks the slot model first (slots.py). Where it knows the order of the memory
 locals it computes the one order the original's slots need, and it moves nothing for the slots
 that hold scalars, which declarations cannot reach; the result names those. The plain moves of
@@ -54,7 +59,8 @@ WAVE = 64  # variants per compile_batch call
 WORKERS = 12
 SEARCH_CELLS = ("-4r -oneatx -s -fpi",)
 OUT = batch.BUILD_ROOT / "search"
-AXES = ("type", "statement", "scope", "declaration")  # type first: it moves spills (RESEARCH)
+# type first: it moves spills (RESEARCH); rewrite next, before the shuffles can spend the budget
+AXES = ("type", "rewrite", "statement", "scope", "declaration")
 # What reading a compiled body can raise past batch.function_body's own failure keys.
 _UNREADABLE = (omf2elf.Omf2ElfError, relocs.RelocError)
 
@@ -618,6 +624,556 @@ def _scalars(text: str, name: str, slot_map: batch.SlotMap) -> tuple[int, ...]:
     return slots.scalar_slots(memory, mismatched, slot_map.frame_ours)
 
 
+# ---- the rewrite axis: Echo's rules that keep the meaning (todo search-rewrite-axis) ----
+
+_TOKEN = re.compile(r"->|\+\+|--|<<=|>>=|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^]=|\w+|\S")
+_NUMBER = re.compile(r"0[xX][0-9A-Fa-f]+[uUlL]*|\d+[uUlL]*")
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+_MACRO = re.compile(r"[A-Z0-9_]*[A-Z][A-Z0-9_]*")  # a macro may hide an operator: never an operand
+# C's binary operators by precedence, higher binding tighter.
+_PRECEDENCE = {"*": 13, "/": 13, "%": 13, "+": 12, "-": 12, "<<": 11, ">>": 11, "<": 10, ">": 10,
+               "<=": 10, ">=": 10, "==": 9, "!=": 9, "&": 8, "^": 7, "|": 6, "&&": 5,
+               "||": 4}  # fmt: skip
+_MAYBE_UNARY = frozenset(("*", "+", "-", "&"))
+_ENDS_AN_OPERAND = frozenset((")", "]", "++", "--"))
+# What binds looser than any operator a rewrite reads: an operand next to one of these is whole.
+_OPENS = frozenset(("(", "[", ",", ";", "?", ":", "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
+                    "^=", "<<=", ">>=", "return"))  # fmt: skip
+_CLOSES = frozenset((")", "]", ",", ";", "?", ":"))
+_COMMUTATIVE = ("+", "*", "&", "|", "^", "==", "!=")
+_MIRROR = {"<": ">", ">": "<", "<=": ">=", ">=": "<=", **{op: op for op in _COMMUTATIVE}}
+_BITWISE = frozenset(("&", "|", "^"))  # associative on every operand C allows them
+_ARITHMETIC = frozenset(("+", "*"))  # associative on integers only, as wcc386 wraps them
+_FLIPPED = {"==": "!=", "!=": "=="}  # negations that hold for a NaN too
+_ELSE_LINE = re.compile(r"\s*\}\s*else\s*\{\s*$")
+_RETURN = re.compile(r"\s*return\b")
+_CASE = re.compile(r"\b(?:case|default)\b")
+_CONTINUE = re.compile(r"\bcontinue\b")
+REWRITE = ("rewrite",)
+CHANGED = ("rewrite", "statement")  # D-26: may change what the C means, so it stands only exact
+
+
+@dataclass(frozen=True)
+class _Token:
+    text: str
+    start: int
+    end: int
+
+
+def _tokens(code: str) -> list[_Token]:
+    return [_Token(found[0], found.start(), found.end()) for found in _TOKEN.finditer(code)]
+
+
+def _head_operand(text: str) -> bool:
+    """A token that can start a simple operand: a number, or a name that is not a keyword, a type
+    or a macro."""
+    if _NUMBER.fullmatch(text):
+        return True
+    return (_IDENTIFIER.fullmatch(text) is not None and _MACRO.fullmatch(text) is None
+            and text not in _TYPE_WORDS and text not in _STATEMENT_WORDS)  # fmt: skip
+
+
+def _index(token: _Token) -> bool:
+    return any(pattern.fullmatch(token.text) for pattern in (_NUMBER, _IDENTIFIER))
+
+
+def _operand_end(tokens: Sequence[_Token], at: int) -> int | None:
+    """The token past the simple operand that starts at `at`: a number, or a name with members and
+    subscripts of one name or number each (`p->n`, `v[i].m`); None when none starts there."""
+    if at >= len(tokens) or not _head_operand(tokens[at].text):
+        return None
+    if _NUMBER.fullmatch(tokens[at].text):
+        return at + 1
+    end = at + 1
+    while end < len(tokens):
+        word = tokens[end + 1] if end + 1 < len(tokens) else None
+        if tokens[end].text in (".", "->") and word and _IDENTIFIER.fullmatch(word.text):
+            end += 2
+        elif (tokens[end].text == "[" and end + 2 < len(tokens) and _index(tokens[end + 1])
+              and tokens[end + 2].text == "]"):  # fmt: skip
+            end += 3
+        else:
+            break
+    return end
+
+
+def _binary(tokens: Sequence[_Token], at: int) -> bool:
+    """The operator at `at` is binary: an operand ends right before it."""
+    before = tokens[at - 1].text if at else ""
+    return before in _ENDS_AN_OPERAND or _head_operand(before)
+
+
+def _left_bound(tokens: Sequence[_Token], at: int, op: str) -> bool:
+    """The token at `at`, left of an operand of `op`, binds looser than `op`. A line's start does
+    not: the expression may go on from the line above."""
+    if at < 0:
+        return False
+    text = tokens[at].text
+    if text in _OPENS:
+        return True
+    looser = text in _PRECEDENCE and _PRECEDENCE[text] < _PRECEDENCE[op]
+    return looser and (text not in _MAYBE_UNARY or _binary(tokens, at))
+
+
+def _right_bound(tokens: Sequence[_Token], at: int, op: str) -> bool:
+    """The token at `at`, right of an operand of `op`, leaves it to `op`: C's binary operators
+    group from the left, so one of `op`'s own precedence does too."""
+    if at >= len(tokens):
+        return False
+    text = tokens[at].text
+    return text in _CLOSES or (text in _PRECEDENCE and _PRECEDENCE[text] <= _PRECEDENCE[op])
+
+
+def _operand_start(tokens: Sequence[_Token], op_at: int) -> int | None:
+    """Where the simple operand that ends right before the operator at `op_at` starts, when what
+    stands before it binds looser."""
+    op = tokens[op_at].text
+    for start in range(op_at - 1, -1, -1):
+        if _operand_end(tokens, start) == op_at and _left_bound(tokens, start - 1, op):
+            return start
+    return None
+
+
+def _swapped_operands(line: str, tokens: Sequence[_Token], at: int) -> str | None:
+    """`line` with the two operands of the operator at `at` swapped, a comparison mirrored."""
+    op = tokens[at].text
+    if op not in _MIRROR or (op in _MAYBE_UNARY and not _binary(tokens, at)):
+        return None
+    start = _operand_start(tokens, at)
+    end = _operand_end(tokens, at + 1)
+    if start is None or end is None or not _right_bound(tokens, end, op):
+        return None
+    left = line[tokens[start].start : tokens[at - 1].end]
+    right = line[tokens[at + 1].start : tokens[end - 1].end]
+    head, tail = line[: tokens[start].start], line[tokens[end - 1].end :]
+    return f"{head}{right} {_MIRROR[op]} {left}{tail}"
+
+
+def _regroupable(token: _Token, op: str, integers: set[str]) -> bool:
+    """A one-token operand `op` may regroup: an integer for `+` and `*`, any for a bitwise one."""
+    if not _head_operand(token.text):
+        return False
+    return op in _BITWISE or _NUMBER.fullmatch(token.text) is not None or token.text in integers
+
+
+def _chain(tokens: Sequence[_Token], at: int, shape: str, integers: set[str]) -> str | None:
+    """The operator of the chain of `shape` ("a+b+c" or "a+(b+c)") whose first operator is at `at`,
+    when it is one associative operator over operands that regroup and stands whole."""
+    width = len(shape) - 1  # the tokens after the first operand
+    if at < 1 or at + width > len(tokens):
+        return None
+    op = tokens[at].text
+    if op not in _BITWISE | _ARITHMETIC or not _binary(tokens, at):
+        return None
+    window = tokens[at - 1 : at + width]
+    for token, kind in zip(window, shape, strict=True):
+        if kind == "a" and not _regroupable(token, op, integers):
+            return None
+        if kind in "+()" and token.text != {"+": op}.get(kind, kind):
+            return None
+    whole = _left_bound(tokens, at - 2, op) and _right_bound(tokens, at + width, op)
+    return op if whole else None
+
+
+def _regrouped(line: str, tokens: Sequence[_Token], at: int, integers: set[str]) -> str | None:
+    """`line` with `a op b op c` at `at` regrouped as `a op (b op c)`, or that back."""
+    for shape in ("a+a+a", "a+(a+a)"):
+        op = _chain(tokens, at, shape, integers)
+        if op is None:
+            continue
+        a, b, c = (tokens[at - 1 + n].text for n, kind in enumerate(shape) if kind == "a")
+        grouped = f"{a} {op} {b} {op} {c}" if "(" in shape else f"{a} {op} ({b} {op} {c})"
+        end = tokens[at + len(shape) - 2].end
+        return line[: tokens[at - 1].start] + grouped + line[end:]
+    return None
+
+
+def _expression_rewrites(line: str, code: str, integers: set[str]) -> Iterator[str]:
+    """Each operand swap and each regrouping of one line, from its blanked `code`."""
+    tokens = _tokens(code)
+    for at in range(len(tokens)):
+        for moved in (_swapped_operands(line, tokens, at), _regrouped(line, tokens, at, integers)):
+            if moved is not None and moved != line:
+                yield moved
+
+
+def _is_integer(found: re.Match[str]) -> bool:
+    spec = " ".join(word for word in found["spec"].split() if word not in _QUALIFIERS)
+    declarator = found["declarators"].split("=")[0]
+    return spec in _SIZES and spec not in _FLOATING and not set("*[") & set(declarator)
+
+
+def _integer_names(code: Sequence[str], span: tuple[int, int]) -> set[str]:
+    """The names the function declares as plain integers, its parameters included, less any name
+    it also declares otherwise."""
+    head = "\n".join([*code[: span[0]], code[span[0]].split("{")[0]]).rstrip()
+    opening = len(head) - 1 - _closing(head[::-1], 0, ")", "(")
+    parts = unitdefs._split_top(head[opening + 1 : -1], ",")
+    found = [_declaration(part + ";") for part in parts]
+    found += [_declaration(code[n]) for n in range(span[0] + 1, span[1])]
+    found = [one for one in found if one is not None]
+    others = {_name(one) for one in found if not _is_integer(one)}
+    return {_name(one) for one in found if _is_integer(one)} - others
+
+
+def _braces(code: Sequence[str], n: int, column: int) -> Iterator[tuple[int, int]]:
+    """(line, depth after it) of each brace from `column` of line `n` on."""
+    depth = 0
+    for m in range(n, len(code)):
+        for char in code[m][column:] if m == n else code[m]:
+            if char in "{}":
+                depth += 1 if char == "{" else -1
+                yield m, depth
+
+
+def _block_end(code: Sequence[str], n: int) -> int | None:
+    """The line of the `}` that closes the `{` ending line `n`."""
+    return next((m for m, depth in _braces(code, n, len(code[n].rstrip()) - 1) if not depth), None)
+
+
+def _enclosing_end(code: Sequence[str], n: int) -> int | None:
+    """The line of the `}` that closes the block line `n` stands in, when it opens its line."""
+    found = next((m for m, depth in _braces(code, n, 0) if depth < 0), None)
+    return found if found is not None and code[found].lstrip().startswith("}") else None
+
+
+def _header(code: str, word: str) -> tuple[int, int, str] | None:
+    """(the `(`, the `)`, what follows it) of a line that opens with `word (...)`."""
+    found = re.match(rf"\s*{word}\s*\(", code)
+    if found is None:
+        return None
+    close = _closing(code, found.end() - 1, "(", ")")
+    return None if close is None else (found.end() - 1, close, code[close + 1 :].strip())
+
+
+def _rows(code: Sequence[str], first: int, last: int) -> list[int]:
+    """The lines from `first` up to `last` that hold code."""
+    return [m for m in range(first, last) if code[m].strip()]
+
+
+def _governed(code: Sequence[str], n: int) -> bool:
+    """A braceless `if`, `else`, loop or a statement split across lines runs on into line `n`."""
+    above = next((m for m in range(n - 1, -1, -1) if code[m].strip()), None)
+    return above is not None and not code[above].rstrip().endswith(_ENDS_A_STATEMENT)
+
+
+def _indent(line: str) -> str:
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _returns(code: Sequence[str], first: int, last: int) -> bool:
+    """The lines from `first` up to `last`, a block's inside, end in a return that always runs."""
+    rows = _rows(code, first, last)
+    if not rows:
+        return False
+    above = code[rows[-2]] if len(rows) > 1 else code[first - 1]
+    return (_RETURN.match(code[rows[-1]]) is not None and code[rows[-1]].rstrip().endswith(";")
+            and above.rstrip().endswith(_ENDS_A_STATEMENT))  # fmt: skip
+
+
+def _whole(tokens: Sequence[_Token], first: int) -> bool:
+    """The tokens from `first` are one simple operand."""
+    return _operand_end(tokens, first) == len(tokens)
+
+
+def _negated(text: str, code: str) -> str:
+    """The condition `text` negated: `!x` and `!(e)` lose their `!`, `==` and `!=` flip between
+    two simple operands, and anything else is wrapped in `!(...)`. A `<` is never flipped to `>=`,
+    which a NaN would tell apart."""
+    tokens = _tokens(code)
+    body = text.strip()
+    if tokens and tokens[0].text == "!":
+        inner = body[1:].strip()
+        if _whole(tokens, 1):
+            return inner
+        if tokens[1].text == "(" and _closing(code, tokens[1].start, "(", ")") == tokens[-1].start:
+            return inner[1:-1].strip()
+    middle = next((n for n, token in enumerate(tokens) if token.text in _FLIPPED), None)
+    if middle is not None and _operand_end(tokens, 0) == middle and _whole(tokens, middle + 1):
+        token = tokens[middle]
+        return f"{text[: token.start].strip()} {_FLIPPED[token.text]} {text[token.end :].strip()}"
+    return f"!({body})"
+
+
+def _if_else(code: Sequence[str], n: int) -> tuple[int, int, int, int] | None:
+    """(the `(`, the `)`, the `} else {` line, the closing line) of a braced if/else on line `n`
+    that nothing governs and that is not part of an else-if chain."""
+    header = _header(code[n], "if")
+    if header is None or header[2] != "{" or _governed(code, n):
+        return None
+    middle = _block_end(code, n)
+    if middle is None or _ELSE_LINE.match(code[middle]) is None:
+        return None
+    end = _block_end(code, middle)
+    if end is None or code[end].strip() != "}":
+        return None
+    return header[0], header[1], middle, end
+
+
+Lines = list[str]
+
+
+def _swapped_branches(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """An if/else with its condition negated and its two bodies swapped."""
+    found = _if_else(code, n)
+    if found is None:
+        return
+    opening, close, middle, end = found
+    condition = _negated(lines[n][opening + 1 : close], code[n][opening + 1 : close])
+    head = f"{lines[n][: opening + 1]}{condition}{lines[n][close:]}"
+    yield [*lines[:n], head, *lines[middle + 1 : end], lines[middle], *lines[n + 1 : middle],
+           *lines[end:]]  # fmt: skip
+
+
+def _dropped_else(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """An if/else whose if returns, its else's body moved after it. An else that declares a local
+    keeps its block."""
+    found = _if_else(code, n)
+    if found is None or not _returns(code, n + 1, found[2]):
+        return
+    _, _, middle, end = found
+    if any(_declaration(code[m]) is not None for m in range(middle + 1, end)):
+        return
+    yield [*lines[:middle], f"{_indent(lines[middle])}}}", *lines[middle + 1 : end],
+           *lines[end + 1 :]]  # fmt: skip
+
+
+def _added_else(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """An if with no else whose body returns, the rest of its block moved into an else. A rest
+    holding a case label stays put."""
+    header = _header(code[n], "if")
+    if header is None or header[2] != "{" or _governed(code, n):
+        return
+    end = _block_end(code, n)
+    if end is None or code[end].strip() != "}" or not _returns(code, n + 1, end):
+        return
+    close = _enclosing_end(code, end + 1)
+    rest = _rows(code, end + 1, close) if close is not None else []
+    if not rest or code[rest[0]].lstrip().startswith("else"):
+        return
+    if any(_CASE.search(code[m]) for m in rest):
+        return
+    indent = _indent(lines[end])
+    yield [*lines[:end], f"{indent}}} else {{", *lines[end + 1 : close], f"{indent}}}",
+           *lines[close:]]  # fmt: skip
+
+
+def _loop(code: Sequence[str], n: int, word: str) -> tuple[int, int, int] | None:
+    """(the `(`, the `)`, the closing line) of a braced `word` loop on line `n` whose `}` stands
+    alone."""
+    header = _header(code[n], word)
+    if header is None or header[2] != "{":
+        return None
+    end = _block_end(code, n)
+    return None if end is None or code[end].strip() != "}" else (header[0], header[1], end)
+
+
+def _for_parts(line: str, code: str, opening: int, close: int) -> list[str] | None:
+    """The init, condition and step of a for header, stripped."""
+    parts = unitdefs._split_top(code[opening + 1 : close], ";")
+    if len(parts) != 3:
+        return None
+    at, texts = opening + 1, []
+    for part in parts:
+        texts.append(line[at : at + len(part)].strip())
+        at += len(part) + 1
+    return texts
+
+
+def _keyword_head(line: str, opening: int, word: str) -> str:
+    """What stands before the keyword of a header: its indent."""
+    return line[:opening].rstrip().removesuffix(word)
+
+
+def _for_to_while(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """`for (i; c; s) {` as `i; while (c) {`, the step last in the body. A body holding a
+    `continue` keeps its for: the continue would skip the step. `for (; c;)` is just a while."""
+    found = _loop(code, n, "for")
+    parts = None if found is None else _for_parts(lines[n], code[n], found[0], found[1])
+    if found is None or parts is None:
+        return
+    opening, close, end = found
+    init, condition, step = parts
+    keyword = _keyword_head(lines[n], opening, "for")
+    head = f"{keyword}while ({condition or '1'}){lines[n][close + 1 :]}"
+    if not init and not step:
+        yield [*lines[:n], head, *lines[n + 1 :]]
+        return
+    body = range(n + 1, end)
+    if _governed(code, n) or any(_CONTINUE.search(code[m]) for m in body):
+        return
+    inner = next((_indent(lines[m]) for m in body if code[m].strip()), _indent(lines[n]) + "    ")
+    before = [f"{_indent(lines[n])}{init};"] if init else []
+    after = [f"{inner}{step};"] if step else []
+    yield [*lines[:n], *before, head, *lines[n + 1 : end], *after, *lines[end:]]
+
+
+def _statement(line: str, code: str) -> str:
+    """The text of the simple statement on `line`, without its `;` or a comment."""
+    return line[len(code) - len(code.lstrip()) : code.rstrip().rindex(";")].strip()
+
+
+def _above(code: Sequence[str], n: int) -> int | None:
+    """The nearest line above `n` that holds code."""
+    return next((m for m in range(n - 1, -1, -1) if code[m].strip()), None)
+
+
+def _simple_at(code: Sequence[str], row: int | None) -> bool:
+    above = None if row is None else _above(code, row)
+    return above is not None and _is_simple(code[row], code[above])
+
+
+def _while_to_for(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """`while (c) {` as `for (; c;) {`, and with the statement before it and the last of its
+    body as the for's init and step, when no `continue` would skip that step."""
+    found = _loop(code, n, "while")
+    if found is None:
+        return
+    opening, close, end = found
+    condition = lines[n][opening + 1 : close].strip()
+    head = f"{_keyword_head(lines[n], opening, 'while')}for ("
+    tail = lines[n][close:]
+    bare = "" if code[n][opening + 1 : close].strip() == "1" else f" {condition}"
+    yield [*lines[:n], f"{head};{bare};{tail}", *lines[n + 1 :]]
+    init, body = _above(code, n), _rows(code, n + 1, end)
+    if not body or not _simple_at(code, init) or not _simple_at(code, body[-1]):
+        return
+    if any(_CONTINUE.search(code[m]) for m in body):
+        return
+    step = body[-1]
+    pair = (_statement(lines[init], code[init]), _statement(lines[step], code[step]))
+    yield [*lines[:init], *lines[init + 1 : n], f"{head}{pair[0]}; {condition}; {pair[1]}{tail}",
+           *lines[n + 1 : step], *lines[step + 1 :]]  # fmt: skip
+
+
+def _guarded_do(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """`while (c) { b }` as `if (c) { do { b } while (c); }`: c runs as often either way."""
+    found = _loop(code, n, "while")
+    if found is None:
+        return
+    opening, close, end = found
+    condition = lines[n][opening + 1 : close].strip()
+    keyword = _keyword_head(lines[n], opening, "while")
+    yield [*lines[:n], f"{keyword}if ({condition}){lines[n][close + 1 :]}",
+           f"{_indent(lines[n])}do {{", *lines[n + 1 : end],
+           f"{_indent(lines[end])}}} while ({condition});", *lines[end:]]  # fmt: skip
+
+
+def _assignment(line: str, code: str) -> tuple[str, str] | None:
+    """(the target, the value) of a line `x = v;` whose target is a simple operand and whose value
+    holds no top-level comma, or None."""
+    tokens = _tokens(code)
+    end = _operand_end(tokens, 0)
+    if end is None or end + 1 >= len(tokens) or tokens[end].text != "=" or tokens[-1].text != ";":
+        return None
+    if len(unitdefs._split_top(code[tokens[end].end : tokens[-1].start], ",")) != 1:
+        return None
+    target = line[tokens[0].start : tokens[end - 1].end]
+    return target, line[tokens[end].end : tokens[-1].start].strip()
+
+
+def _operand_text(text: str) -> str:
+    """`text` as one operand of `?:`: a simple operand bare, anything else in parentheses."""
+    tokens = _tokens(text)
+    return text if tokens and _whole(tokens, 0) else f"({text})"
+
+
+def _branch_pair(
+    lines: Sequence[str], code: Sequence[str], n: int
+) -> tuple[str, int, int, int] | None:
+    """(the condition, the if's line, the else's line, the line past the statement) of an if/else
+    on line `n` with one line in each branch, braced or not."""
+    header = _header(code[n], "if")
+    if header is None or _governed(code, n):
+        return None
+    opening, close, rest = header
+    condition = lines[n][opening + 1 : close].strip()
+    if rest == "{":
+        found = _if_else(code, n)
+        if found is None:
+            return None
+        _, _, middle, end = found
+        rows = (_rows(code, n + 1, middle), _rows(code, middle + 1, end))
+        if [len(one) for one in rows] != [1, 1]:
+            return None
+        return condition, rows[0][0], rows[1][0], end + 1
+    if rest or n + 3 >= len(code) or code[n + 2].strip() != "else":
+        return None
+    return condition, n + 1, n + 3, n + 4
+
+
+def _to_ternary(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """An if/else assigning one target in each branch as one `x = c ? a : b;`. The value of `?:`
+    converts both branches to one type first, which can change the value stored."""
+    found = _branch_pair(lines, code, n)
+    if found is None:
+        return
+    condition, first, second, past = found
+    one, other = _assignment(lines[first], code[first]), _assignment(lines[second], code[second])
+    if one is None or other is None or one[0] != other[0]:
+        return
+    values = " : ".join(_operand_text(value) for value in (one[1], other[1]))
+    yield [*lines[:n], f"{_indent(lines[n])}{one[0]} = {_operand_text(condition)} ? {values};",
+           *lines[past:]]  # fmt: skip
+
+
+def _ternary_parts(line: str, code: str) -> tuple[str, str, str] | None:
+    """(the condition, the first value, the second) of the value of `x = c ? a : b;`, each with
+    one `?` and one `:` at its top level."""
+    value_at = code.index("=") + 1
+    value_end = code.rstrip().rindex(";")
+    questions = unitdefs._split_top(code[value_at:value_end], "?")
+    if len(questions) != 2:
+        return None
+    colons = unitdefs._split_top(questions[1], ":")
+    if len(colons) != 2 or "?" in questions[1]:
+        return None
+    question = value_at + len(questions[0])
+    colon = question + 1 + len(colons[0])
+    return (line[value_at:question].strip(), line[question + 1 : colon].strip(),
+            line[colon + 1 : value_end].strip())  # fmt: skip
+
+
+def _from_ternary(lines: Sequence[str], code: Sequence[str], n: int) -> Iterator[Lines]:
+    """`x = c ? a : b;` as a braced if/else, the reverse of _to_ternary."""
+    found = _assignment(lines[n], code[n])
+    parts = None if found is None else _ternary_parts(lines[n], code[n])
+    if parts is None or not all(parts) or _governed(code, n):
+        return
+    (condition, first, second), indent, target = parts, _indent(lines[n]), found[0]
+    yield [*lines[:n], f"{indent}if ({condition}) {{", f"{indent}    {target} = {first};",
+           f"{indent}}} else {{", f"{indent}    {target} = {second};", f"{indent}}}",
+           *lines[n + 1 :]]  # fmt: skip
+
+
+_BLOCK_REWRITES = ((_swapped_branches, REWRITE), (_dropped_else, REWRITE), (_added_else, REWRITE),
+                   (_for_to_while, REWRITE), (_while_to_for, REWRITE), (_guarded_do, REWRITE),
+                   (_to_ternary, CHANGED), (_from_ternary, CHANGED))  # fmt: skip
+
+
+def rewrite_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
+    """Each single rewrite of the body at `span`, line by line, after Echo's rules (todo
+    search-rewrite-axis): an operand swap that mirrors a comparison or keeps a commutative
+    operator, a regrouping of one associative operator (integers only for `+` and `*`), an
+    if/else with its condition negated and its bodies swapped, an else dropped after an if that
+    returns or added around the rest of its block, a for as a while and back, a while as a
+    guarded do-while, and an if/else of one assignment as a ternary and back. Every rewrite keeps
+    the meaning of the C but the ternaries, which are a statement move too (D-26). The rewrites
+    read whole lines and simple operands only, so an expression split across lines is left
+    alone."""
+    lines = text.split("\n")
+    code = _code(text).split("\n")
+    integers = _integer_names(code, span)
+    for n in range(span[0] + 1, span[1]):
+        if not code[n].strip() or _declaration(code[n]) is not None:
+            continue
+        for moved in _expression_rewrites(lines[n], code[n], integers):
+            yield Candidate("\n".join([*lines[:n], moved, *lines[n + 1 :]]), REWRITE)
+        for rule, axes in _BLOCK_REWRITES:
+            for moved_lines in rule(lines, code, n):
+                yield Candidate("\n".join(moved_lines), axes)
+
+
 # ---- the waves ----
 
 
@@ -719,7 +1275,8 @@ def _best_cell(records: Sequence[dict[str, Any]]) -> int:
 
 def _axis_moves(run: _Run, axis: str, best: _Scored) -> Iterator[Candidate]:
     """The moves of `axis` from `best`, each naming every axis its text moved along."""
-    by_axis = {"type": type_moves, "statement": statement_moves, "scope": scope_moves}
+    by_axis = {"type": type_moves, "rewrite": rewrite_moves, "statement": statement_moves,
+               "scope": scope_moves}  # fmt: skip
     text, axes = best.candidate.text, best.candidate.axes
     span = function_span(text, run.name)
     if axis == "declaration":

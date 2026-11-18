@@ -1,4 +1,4 @@
-"""`reverseapoc search`: refusals, the four axes, the waves, the slot map and the D-12 queue route.
+"""`reverseapoc search`: refusals, the five axes, the waves, the slot map and the D-12 queue route.
 
 No compiler runs here: batch.compile_batch, function_body, body_key and judge are stubbed, and a
 stubbed verdict is decided by the text of the variant and the cell it was compiled under. The C
@@ -466,8 +466,10 @@ def test_moves_add_no_banned_text():
         assert batch.refusal(move.text) is None
 
 
-def test_axes_run_type_then_statement_then_scope_then_declaration():
-    assert reverseapoc.search.AXES == ("type", "statement", "scope", "declaration")
+def test_axes_run_type_then_rewrite_then_statement_then_scope_then_declaration():
+    """The rewrite axis follows the type axis (docs/research/notes-ideas-llm-decomp-research.md
+    #8), before the declaration shuffles can spend the budget."""
+    assert reverseapoc.search.AXES == ("type", "rewrite", "statement", "scope", "declaration")
 
 
 def _body(*lines: str) -> str:
@@ -972,6 +974,41 @@ def test_reordered_initializers_that_are_exact_are_kept(monkeypatch, stubs):
     assert result.exact is True
     assert INITIALIZERS_SWAPPED in _best(result)
     assert "statement" in result.axes
+
+
+REWRITTEN = "    b = 1 + a;\n"  # TEXT's `b = a + 1;` with its operands swapped
+BRANCHES = """int func_00010000(int a)
+{
+    int b;
+
+    if (a) {
+        b = 1;
+    } else {
+        b = 2;
+    }
+    return b;
+}
+"""
+TERNARY = "    b = a ? 1 : 2;\n"
+
+
+def test_a_better_rewrite_becomes_the_base_and_names_its_axis(stubs):
+    stubs.decide = _scored({REWRITTEN: verdict(60.0, 60.0)})
+    result = _run()
+    assert REWRITTEN in _best(result)
+    assert result.axes == ("rewrite",)
+
+
+def test_a_ternary_rewrite_is_dropped_unless_exact(stubs):
+    """D-26: `?:` converts both values to one type first, so only byte identity speaks for it."""
+    stubs.decide = _scored({TERNARY: verdict(99.0, 99.0)})
+    result = _run(BRANCHES)
+    assert TERNARY not in _best(result)
+    assert any(TERNARY in job.src.read_text(encoding="ascii") for job in stubs.jobs)
+    stubs.decide = _scored({TERNARY: verdict(exact=True)})
+    result = _run(BRANCHES)
+    assert TERNARY in _best(result)
+    assert result.axes == ("rewrite", "statement")
 
 
 def test_a_better_variant_becomes_the_base_and_its_axis_repeats(stubs):
