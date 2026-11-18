@@ -10,6 +10,7 @@ key the owner has set can never reach an assertion or a log.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from dataclasses import replace
@@ -978,6 +979,61 @@ def test_copilot_audit_flags(tmp_path, capsys, monkeypatch):
         assert code != 0, name
         stopped = _stopped(night)
         assert stopped["reason"] == driver.GUARDRAIL and words in stopped["detail"], (name, stopped)
+
+
+def test_a_copilot_stray_names_the_copilot_audit(tmp_path, capsys, monkeypatch):
+    """Run 20261116: Copilot's strays said "(codex audit)". The mark names the harness that
+    audited the session, and it still keeps each reason out of containment: the stray file is
+    quarantined and no reason is handled as a path."""
+    spec = Sess(write=None, files=(("x.txt", "made up\n"),))
+    rig, night, env = copilot_night(tmp_path, monkeypatch, spec=spec)
+    _run(capsys, rig, env)
+    detail = _stopped(night)["detail"]
+    assert "x.txt: not a file a session may leave in its attempt dir (copilot audit)" in detail
+    assert "codex audit" not in detail
+    assert "not contained" not in detail and "not restored" not in detail, detail
+    assert list(night.quarantine.rglob("x.txt"))
+
+
+LEFTOVER = "checks/.0002.json.b6d3a4ff20e5fde3.tmp"  # run 20261116-fable-ab, 18:18
+IN_FLIGHT = "int x;\n"  # checks/0002.c, the source of the check that was killed
+
+
+def _killed_check(*extra: tuple[str, str]) -> Sess:
+    """What a check killed mid-write leaves: its source checks/0002.c, which the wrapper's
+    ledger names, no checks/0002.json, and write_atomic's temp file for it."""
+    digest = hashlib.sha256(IN_FLIGHT.encode()).hexdigest()
+    ledger = f"../../../ledger/{PER_SESSION}.jsonl"
+    entry = json.dumps({"path": "checks/0002.c", "sha256": digest}) + "\n"
+    return Sess(write=None, files=(("checks/0002.c", IN_FLIGHT), (LEFTOVER, "{"),
+                                   (ledger, entry), *extra))  # fmt: skip
+
+
+def test_a_killed_checks_temp_file_does_not_stop_the_night(tmp_path, capsys, monkeypatch):
+    """E2E (interrupted-check-temp-file): a Copilot session killed mid-check leaves the
+    wrapper's write_atomic temp file in checks/. It is quarantined, the console says so, and
+    the night goes on."""
+    rig, night, env = copilot_night(tmp_path, monkeypatch, spec=_killed_check())
+    code, out, err = _run(capsys, rig, env)
+    assert code == 0, err
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    assert not (night.attempt_dir() / LEFTOVER).exists()
+    assert list(night.quarantine.rglob(LEFTOVER.split("/")[-1]))
+    assert "a killed check's temp file" in out + err
+
+
+def test_a_killed_checks_temp_file_beside_a_stray_still_stops(tmp_path, capsys, monkeypatch):
+    """E2E: the leftover excuses only itself: a checks/ file the ledger never saw next to it
+    stops the night, and the leftover is not named."""
+    spec = _killed_check(("checks/0003.json", "{}\n"))
+    rig, night, env = copilot_night(tmp_path, monkeypatch, spec=spec)
+    code, _, _ = _run(capsys, rig, env)
+    assert code != 0
+    stopped = _stopped(night)
+    assert stopped["reason"] == driver.GUARDRAIL, stopped
+    assert "checks/0003.json: a wrapper-owned file the wrapper's ledger never saw" in (
+        stopped["detail"])  # fmt: skip
+    assert ".tmp" not in stopped["detail"]
 
 
 def test_copilot_audit_clean_session(tmp_path, capsys, monkeypatch):

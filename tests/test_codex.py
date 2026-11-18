@@ -523,6 +523,35 @@ def test_audit_catches_a_forged_checks_log(tmp_path):
     assert "ledger" in strays["checks.jsonl"]
 
 
+CHECK_LEFTOVER = "checks/.0002.json.b6d3a4ff20e5fde3.tmp"  # run 20261116-fable-ab, 18:18
+
+
+def test_a_killed_checks_temp_file_is_a_leftover_and_nothing_else(tmp_path):
+    """A check killed between fileio.write_atomic's write and its rename leaves
+    checks/.<NNNN>.json.<16 hex>.tmp, and the wrapper's ledger names checks/NNNN.c but no
+    checks/NNNN.json: that file alone is the wrapper's leftover. Any other name in checks/, a
+    temp file of a check the ledger never started or already recorded, and a file of that
+    form behind a linked checks/ are not."""
+    from test_driver import _plant_dir_link
+
+    root = tmp_path / "attempt-1"
+    others = ("checks/.0002.json.tmp", "checks/.0002.c.b6d3a4ff20e5fde3.tmp",
+              "checks/.0002.json.ABCDEF0123456789.tmp", "checks/0003.json",
+              ".0002.json.b6d3a4ff20e5fde3.tmp", "checks/.0001.json.0123456789abcdef.tmp",
+              "checks/.0004.json.0123456789abcdef.tmp")  # fmt: skip
+    for rel in (CHECK_LEFTOVER, *others):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("{", encoding="utf-8")
+    ledger = {"checks/0001.c": "x", "checks/0001.json": "x", "checks/0002.c": "x"}
+    assert driver.check_leftovers(root, ledger) == [CHECK_LEFTOVER]
+    linked = tmp_path / "linked"
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / ".0002.json.0123456789abcdef.tmp").write_text("{", encoding="utf-8")
+    _plant_dir_link(linked / "checks", target)
+    assert driver.check_leftovers(linked, ledger) == []
+
+
 def test_audit_flags_a_write_outside_the_allowlist(tmp_path):
     """Every file_change path, relative to the attempt dir (Codex's --cd) or absolute, must pass
     the session's write allowlist; a path outside the checkout, a wrapper-owned file and any
@@ -546,10 +575,28 @@ def test_codex_stray_quarantines(tmp_path, capsys, monkeypatch):
     assert code != 0
     stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
     assert stopped["reason"] == driver.GUARDRAIL and "x.txt" in stopped["detail"]
+    assert "x.txt: not a file a session may leave in its attempt dir (codex audit)" in (
+        stopped["detail"])  # fmt: skip
+    assert "not contained" not in stopped["detail"] and "not restored" not in stopped["detail"]
     assert list(night.quarantine.rglob("x.txt"))
     assert not (night.attempt_dir() / "x.txt").exists()
     record = night.kinds("attempt")[0]
     assert (record["outcome"], record["abort_reason"]) == ("GAVE_UP", driver.GUARDRAIL)
+
+
+@pytest.mark.parametrize("harness", backends.HARNESSES)
+def test_the_audit_mark_names_each_harness(harness):
+    """The 2026-11-16 records called every stray "(codex audit)": each harness's mark names it,
+    and containment knows every one of them as a reason, never a path."""
+    assert driver._audit_mark(harness) == f" ({harness} audit)"
+    assert driver._audit_mark(harness) in driver._AUDIT_MARKS
+
+
+def test_an_unknown_harness_reason_is_still_marked_for_containment():
+    """Fail closed: the "no audit for it" reason of a harness outside HARNESSES still carries a
+    mark containment skips, so it is never handled as a path."""
+    assert driver._audit_mark("made-up") == " (unknown harness audit)"
+    assert driver._audit_mark("made-up") in driver._AUDIT_MARKS
 
 
 def test_audit_stops_the_night_on_a_stray_command_or_write(tmp_path, capsys, monkeypatch):

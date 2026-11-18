@@ -1481,7 +1481,64 @@ UV_PROJECT_ENV = "UV_PROJECT"  # 07.2 review CR-01: uv's --project, never found 
 UV_NO_CONFIG_ENV = "UV_NO_CONFIG"  # and its --no-config: no uv.toml or pyproject.toml settings
 UV_CACHE_ENV = "UV_CACHE_DIR"  # canary round 3: a Codex session's own uv cache (_Claim.uv_cache)
 UV_CACHE_PREFIX = "reverseapoc-uv-"  # <TEMP>/reverseapoc-uv-<run>__<exe>__<function>__attempt-<n>
-_AUDIT_MARK = " (codex audit)"  # a stray that is a reason, not a file to contain
+_AUDIT_MARK = " ({} audit)"  # marks a stray that is a reason, not a file to contain (its harness)
+_UNKNOWN_HARNESS = "unknown harness"  # the mark of a harness outside HARNESSES (fail closed)
+
+
+def _audit_mark(harness: str) -> str:
+    """The mark of a reason the `harness` audit found (2026-11-16: one shared "(codex audit)"
+    labelled Copilot's and agy's strays too)."""
+    return _AUDIT_MARK.format(harness if harness in HARNESSES else _UNKNOWN_HARNESS)
+
+
+_AUDIT_MARKS = tuple(_AUDIT_MARK.format(h) for h in (*HARNESSES, _UNKNOWN_HARNESS))  # skipped
+STOP_DIR = "stop"  # build/driver/<run>/stop/<exe>__<function>__attempt-<n>.jsonl: its transcript
+_SIGNAL_CAP = 300  # characters of one signal's text in a STOPPED detail
+_NO_SIGNAL = "no signal the driver can name (see the transcript)"
+
+
+def _signal_line(text: object) -> str:
+    return " ".join(str(text).split())[:_SIGNAL_CAP]
+
+
+def _claude_signal(event: Mapping) -> str | None:
+    """One Claude Code stream event as a D-08 signal (streamjson.classify's inputs): an
+    api_retry's error and status, a rate_limit_event that is rejected or carries an errorCode,
+    a result that is an error or of a subtype classify does not know, with its text and API
+    status; None for any other event."""
+    kind = event.get("type")
+    if kind == "system" and event.get("subtype") == "api_retry":
+        return f"api_retry {event.get('error')} (status {event.get('error_status')})"
+    if kind == "rate_limit_event":
+        info = event.get("rate_limit_info")
+        info = info if isinstance(info, Mapping) else {}
+        if info.get("status") == "rejected" or info.get("errorCode"):
+            return f"rate_limit_event {info.get('status')} errorCode {info.get('errorCode')}"
+        return None
+    if kind != "result":
+        return None
+    subtype = event.get("subtype")
+    if not streamjson._is_error_result(event) and subtype in streamjson._KNOWN_SUBTYPES:
+        return None
+    status = event.get("api_error_status")
+    shown = f"result {subtype}: {' / '.join(streamjson._result_texts([event]))}"
+    return shown + (f" (status {status})" if status is not None else "")
+
+
+def stop_signal(harness: str, events: Sequence[dict]) -> str:
+    """The signals in a D-08 STOP session's stream, for the STOPPED detail, each one line of at
+    most _SIGNAL_CAP characters: each distinct Claude signal (_claude_signal; a retry the
+    session recovered from is listed too), or the Codex, agy or Copilot stream's failure
+    text."""
+    if harness == backends.CLAUDE:
+        signals = (_claude_signal(event) for event in events)
+        return "; ".join(dict.fromkeys(_signal_line(s) for s in signals if s)) or _NO_SIGNAL
+    failure = {backends.CODEX: codexjson.failure, backends.AGY: agyjson.failure,
+               backends.COPILOT: copilotjson.failure}.get(harness)  # fmt: skip
+    text = failure(events) if failure is not None else None
+    return _signal_line(text) if text else _NO_SIGNAL
+
+
 _FORBIDDEN_PARTS = ("orig", "third_party")  # D-10: never sent to a non-Anthropic backend
 _PATH_PARTS = re.compile(r"[^a-z0-9_.-]+")  # any other character splits a command into parts
 _SESSION_FILES = (attempt.NOTES_FILE, attempt.PROPOSALS_FILE, *hooks.SESSION_FILE_NAMES)
@@ -1489,6 +1546,9 @@ _CACHE_PARTS = (attempt.VIEW_DIR, attempt.VIEW_BUILD, attempt.CACHE_DIR)
 _WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
 _WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
 _WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
+# fileio.write_atomic's temp name for checks/NNNN.json, left when a check dies between its write
+# and its rename (run 20261116-fable-ab, 18:18): the wrapper's own, quarantined, never a stray
+_CHECK_LEFTOVER = re.compile(r"\.([0-9]{4})\.json\.[0-9a-f]{16}\.tmp")
 _NOT_A_FILE = ("link:", "outside:")  # attempt_inventory's digests of a link and a far cache
 
 
@@ -1942,6 +2002,25 @@ def attempt_inventory(attempt_dir: Path) -> dict[str, str]:
     if cache is not None:
         _inventory_tree(found, attempt_dir, cache, ())
     return found
+
+
+def check_leftovers(attempt_dir: Path, ledger: Mapping[str, str]) -> list[str]:
+    """Each checks/.<NNNN>.json.<16 hex>.tmp (_CHECK_LEFTOVER, attempt-dir-relative) a killed
+    check of the wrapper left: a regular file, never a link, in a checks/ that is a real
+    directory of the attempt dir, of a check in flight (the wrapper's `ledger` names its
+    checks/NNNN.c and no checks/NNNN.json). Any other file is the audit's as before."""
+    checks = attempt_dir / attempt.CHECKS_DIR
+    if _is_link(checks) or not checks.is_dir():
+        return []
+    out = []
+    for path in sorted(checks.iterdir()):
+        match = _CHECK_LEFTOVER.fullmatch(path.name)
+        if match is None or _is_link(path) or not path.is_file():
+            continue
+        stem = f"{attempt.CHECKS_DIR}/{match.group(1)}"
+        if f"{stem}.c" in ledger and f"{stem}.json" not in ledger:
+            out.append(f"{attempt.CHECKS_DIR}/{path.name}")
+    return out
 
 
 def read_wrapper_ledger(path: Path) -> dict[str, str]:
@@ -4704,10 +4783,34 @@ class _Night:
                 self._record_attempt(session, GAVE_UP, TOOL, summary)
             raise _Stop(TOOL, note)
         if session.disposition is Disposition.STOP:
+            kept = self._keep_stop_transcript(session)
             self._reset(session)
-            raise _Stop(STOP_SIGNAL, "the session's stream carries a D-08 STOP signal")
+            raise _Stop(STOP_SIGNAL, f"the session's stream carries a D-08 STOP signal "
+                                     f"(arm {claim.arm_in(self.arms).name}, {claim.target} "
+                                     f"{claim.function} attempt {claim.n}; {kept}); the "
+                                     f"stream's signals: "
+                                     f"{stop_signal(claim.harness, session.events)}")  # fmt: skip
         self._check_init(session)
         return session
+
+    def _keep_stop_transcript(self, session: _Session) -> str:
+        """Run 20261115-claude-push stopped on a D-08 STOP that no file explained: the stopping
+        session's transcript is copied to build/driver/<run>/stop/ (STOP_DIR), and the result
+        names it for the STOPPED detail. A session's stderr is the driver's console
+        (run_session inherits it), so there is no stderr file to keep. A failed copy is named,
+        never raised: the night stops either way."""
+        claim = session.claim
+        transcript = claim.attempt_dir / TRANSCRIPT
+        data = None if _is_link(transcript) else _read(transcript)
+        if data is None:
+            return "no transcript to keep (none, or not a regular file)"
+        kept = claim._per_session(STOP_DIR, ".jsonl")
+        try:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            write_atomic(kept, data)
+        except OSError as exc:
+            return f"transcript not kept: {type(exc).__name__}: {exc}"
+        return f"transcript kept: {kept.relative_to(self.repo).as_posix()}"
 
     def _prompt(self, claim: _Claim) -> tuple[str, dict[str, str]]:
         """The session's /goal and the extra Deps.argv keywords of its kind: a matching
@@ -4853,7 +4956,7 @@ class _Night:
         --cd and agy's cwd) and, for agy, its read paths and its settings file; then its attempt
         dir against the launch inventory and the wrapper's ledger. A harness the audit does not
         know is a stray (fail closed). A file to contain is named by its repo-relative path;
-        every reason carries _AUDIT_MARK."""
+        every reason carries the session's harness's mark (_audit_mark)."""
         claim = session.claim
         events = session.events
         reasons: list[str] = []
@@ -4888,16 +4991,31 @@ class _Night:
         reasons += codex_write_strays(writes, attempt_dir=claim.attempt_dir, repo=self.repo,
                                       allowed=allowed)  # fmt: skip
         files = []
+        ledger = read_wrapper_ledger(claim.wrapper_ledger)
+        self._quarantine_leftovers(session, check_leftovers(claim.attempt_dir, ledger))
         found = codex_inventory_strays(attempt_inventory(claim.attempt_dir),
-                                       launch=session.launch_files,
-                                       ledger=read_wrapper_ledger(claim.wrapper_ledger))
+                                       launch=session.launch_files, ledger=ledger)  # fmt: skip
         for rel, why in found:
             path = claim.attempt_dir / rel
             shown = path.relative_to(self.repo).as_posix()
             if path.is_file() or _is_link(path):
                 files.append(shown)
             reasons.append(f"{shown}: {why}")
-        return files + [f"{reason}{_AUDIT_MARK}" for reason in reasons]
+        mark = _audit_mark(claim.harness)
+        return files + [f"{reason}{mark}" for reason in reasons]
+
+    def _quarantine_leftovers(self, session: _Session, leftovers: Sequence[str]) -> None:
+        """Run 20261116-fable-ab: a killed check's temp file (check_leftovers) is moved into
+        build/driver/<run>/quarantine/ like a stray, but stops nothing; the console names it.
+        One that could not be moved stays, and the inventory then judges it a stray."""
+        if not leftovers:
+            return
+        shown = [(session.claim.attempt_dir / rel).relative_to(self.repo).as_posix()
+                 for rel in leftovers]  # fmt: skip
+        done = self._contain(session, shown)
+        if done.quarantined:
+            self.deps.say(f"{session.claim.target}: a killed check's temp file quarantined, "
+                          f"not a stray: {_listed(done.quarantined)}")  # fmt: skip
 
     def _base_changed(self, session: _Session) -> list[str]:
         """07.2-07 (T-07.2-18): a readability session's unit-base.c is the driver's; it must
@@ -5184,7 +5302,7 @@ class _Night:
         again, and describe all of it. A refused quarantine write (a link) writes nothing more
         and is named."""
         self.breached = True  # fix round 2 J2: sticky, whatever the final reason
-        files = [s for s in stray if not s.endswith((_TRANSCRIPT_MARK, _AUDIT_MARK))]
+        files = [s for s in stray if not s.endswith((_TRANSCRIPT_MARK, *_AUDIT_MARKS))]
         done = self._contain(session, files)
         try:
             self._reset(session)
@@ -7429,8 +7547,7 @@ def compose_project(repo: Path) -> str:
     return re.sub(r"[^a-z0-9_-]", "", Path(repo).name.lower())
 
 
-REMOVAL_RACE = "is already in progress"  # docker's words when a `--rm` container removes itself
-REMOVAL_TRIES = 5  # with REMOVAL_WAIT_S: a dead container's removal gets about 4 s to finish
+REMOVAL_TRIES = 5  # with REMOVAL_WAIT_S: a dead container's removal gets about 5 s to finish
 REMOVAL_WAIT_S = 1
 
 
@@ -7440,8 +7557,11 @@ def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
     container left running after a timeout. A failing docker call is a DriverError naming
     docker's stderr; the driver records it and stops the night after the audit (06-23 S1).
     Check containers run with `--rm`, so one that dies with its session can be mid-removal when
-    `docker rm -f` arrives (run 20261107-030004). That refusal alone is no failure: the list is
-    read again, and only a container still there after REMOVAL_TRIES stops the night."""
+    `docker rm -f` arrives (run 20261107-030004), and with about 30 sessions at once docker can
+    fail to kill one ("did not receive an exit event", run 20261116-fable-ab) that then goes
+    on its own. So no failed `rm -f` alone is a failure: after a wait the list is read again,
+    and only a container still listed after the last try's wait stops the night, with docker's
+    last words."""
     project = compose_project(repo)
 
     def listed(prefix: str) -> list[str]:
@@ -7454,18 +7574,18 @@ def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
 
     def remove(prefix: str) -> None:
         failure = ""
-        for _ in range(REMOVAL_TRIES):
+        for tried in range(REMOVAL_TRIES + 1):
             names = listed(prefix)
             if not names:
                 return
+            if tried == REMOVAL_TRIES:
+                break
             gone = run(["docker", "rm", "-f", *names])
             if gone.returncode == 0:
                 return
             why = (gone.stderr or "").strip()
             failure = f"docker rm -f {' '.join(names)} failed: exit {gone.returncode} {why}"
-            if REMOVAL_RACE not in why:
-                break
-            time.sleep(REMOVAL_WAIT_S)
+            time.sleep(REMOVAL_WAIT_S)  # then the list again: one gone on its own is no failure
         raise DriverError(failure)
 
     return remove
