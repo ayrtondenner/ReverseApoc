@@ -1,5 +1,4 @@
 exe,address,reason,retired_on,return_rule
-ufo2p,0x00018005,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00018577,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0001863E,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000189C0,suspected bad split,2026-11-19,boundary fixed
@@ -41,7 +40,6 @@ ufo2p,0x00051F90,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051FA0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00052100,"long tail: 48 attempts, best 97.06%, mostly other",2026-11-19,hint or tooling:other
 ufo2p,0x00060500,"long tail: 40 attempts, best 98.03%, mostly register_allocation",2026-11-19,hint or tooling:register_allocation
-ufo2p,0x0006D000,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00078400,"long tail: 24 attempts, best 94.90%, mostly instruction_idiom",2026-11-19,hint or tooling:instruction_idiom
 ufo2p,0x0007BB23,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007BDA8,suspected bad split,2026-11-19,boundary fixed
@@ -51,7 +49,6 @@ ufo2p,0x0007DEA1,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007E4FA,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007E57B,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007E5F9,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x0007ECA0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00080910,"long tail: 36 attempts, best 97.78%, mostly block_layout",2026-11-19,hint or tooling:block_layout
 ufo2p,0x000AEAB0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AECA0,suspected bad split,2026-11-19,boundary fixed
@@ -61,7 +58,6 @@ ufo2p,0x000AF450,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AF700,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AF7A0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AF8F0,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x000BA7F0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BBF90,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BBFA0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BBFB0,suspected bad split,2026-11-19,boundary fixed
@@ -78,9 +74,6 @@ ufo2p,0x000BC260,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BC270,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BC280,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BC290,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x000C73F0,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x000C7678,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00013160,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F270,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F7F2,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F828,suspected bad split,2026-11-19,boundary fixed
@@ -93,13 +86,11 @@ tacp,0x00024B7D,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00024B86,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00024B90,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00024B95,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00027C6D,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00027DB3,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00027E7A,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00028A13,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00028C98,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00028CA0,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0002AE60,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00034450,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00034C40,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00034CE0,suspected bad split,2026-11-19,boundary fixed
@@ -125,5 +116,3 @@ tacp,0x000B0520,suspected bad split,2026-11-19,boundary fixed
 tacp,0x000B0610,suspected bad split,2026-11-19,boundary fixed
 tacp,0x000B0650,suspected bad split,2026-11-19,boundary fixed
 tacp,0x000B12E0,suspected bad split,2026-11-19,boundary fixed
-tacp,0x000CA700,suspected bad split,2026-11-19,boundary fixed
-tacp,0x000CA988,suspected bad split,2026-11-19,boundary fixed
