@@ -484,12 +484,12 @@ def test_cli_interior_reads_status_csv(tmp_path, monkeypatch, capsys):
 
 REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix), checked by hand 2026-11-18
     ("ufo2p", 0x00024470, 0x764): (0x00024C03, 0xAB, "merge"),  # switch cases cut out
-    ("ufo2p", 0x000946B0, 0xF2C): (0x0002E100, 0x210, "split"),  # after a ret and filler
+    ("ufo2p", 0x0002E350, 0x51): (0x0002E100, 0x180, "split"),  # after a ret (re-pinned 2026-11-19)
     ("tacp", 0x000AF170, 0x0): (0x000B12E0, 0x100, "split"),  # a tail-jump stub
 }
 REAL_FIXES = {
     ("ufo2p", "merge", (0x00024470, 0x00024BD9, 0x00024BE7, 0x00024BF5, 0x00024C03), None),
-    ("ufo2p", "split", (0x0002E100,), 0x0002E310),
+    ("ufo2p", "split", (0x0002E100,), 0x0002E280),
     ("tacp", "split", (0x000B12E0,), 0x000B13E0),
 }
 

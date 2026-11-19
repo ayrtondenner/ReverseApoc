@@ -175,6 +175,8 @@ def regenerated(request) -> Regenerated:
     found = discover(le, runtime_starts=[row.start for row in runtime_rows])
     result = reconcile(le, read_ghidra_export(export), found, runtime_rows,
                        existing=read_boundaries_csv(boundaries), modules=matches)  # fmt: skip
+    config = functions_csv_path(name).parent  # boundary-fixes.csv, applied as --write does
+    result = cli._boundary_fixed(result, config, config)
     units = units_csv_path(name)
     rows = assign_units(result.functions, read_units_csv(units)) if units.is_file() else (
         result.functions)  # fmt: skip
