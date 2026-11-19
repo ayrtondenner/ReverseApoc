@@ -593,8 +593,9 @@ refused tacp func_000AB650 as not in the queue.
 
 **Twins.** The same days landed 59 functions by `reverseapoc twins` (37 TACP from UFO2P, 4
 UFO2P from TACP, 18 UFO2P within UFO2P), and 13 were refused. status.csv now counts 295
-matched functions. `stats` classes the twin landings as human-written (todo
-`stats-tool-class`).
+matched functions. `stats` classes the twin landings, and the converter's
+(`reverseapoc lift`), as `tool` since 2026-11-19 (todo `stats-tool-class`): of the 295, 189
+unattended, 99 tool (59 twins, 40 lift) and 7 human-written.
 
 ## Adding the next comparison
 
