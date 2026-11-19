@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"made-up-thread-0021"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"uv run --frozen reverseapoc attempt context","aggregated_output":"made-up wrapper output\n","exit_code":0,"status":"completed"}}
+{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: made-up transport error, request ID made-up-0001.)"}
+{"type":"error","message":"Reconnecting... 5/5 (stream disconnected before completion: made-up transport error, request ID made-up-0002.)"}
+{"type":"item.completed","item":{"id":"item_1","type":"error","message":"Falling back from WebSockets to HTTPS transport. stream disconnected before completion: made-up transport error, request ID made-up-0003."}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"made-up agent text"}}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":200,"reasoning_output_tokens":50}}

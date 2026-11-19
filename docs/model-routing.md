@@ -326,7 +326,11 @@ All four ids ran in spike 012: each arm's canary passed on codex-cli 0.167.0
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
   session's write allowlist; every item must be of a type the audit knows (`agent_message`,
   `reasoning`, `todo_list`, `command_execution`, `file_change`; an MCP tool call or a web
-  search is a stray); and the attempt dir may hold only the session files (notes.md,
+  search is a stray; a transport notice `error` item is known in exact shape only,
+  `{id, type: "error", message}` with the message starting `Reconnecting... n/m (` or
+  `Falling back from WebSockets to HTTPS transport. `, and any other `error` item, such as
+  spike 012's `Codex is ignoring ... unrecognized configuration setting`, is still a stray);
+  and the attempt dir may hold only the session files (notes.md,
   plan.json, check-note.json, giveup.json, proposals.jsonl), the transcript, the driver's own
   files as they were at launch (the rules file included), the broker's responses with the
   bytes it wrote, and wrapper output whose hash is its ledger entry's. A `file_change` into the
@@ -389,7 +393,12 @@ All four ids ran in spike 012: each arm's canary passed on codex-cli 0.167.0
   week, and the 22 sessions of the 64-255 B picks filled a 5-hour window (owner screenshots;
   [model-comparison.md](model-comparison.md#quota-and-spend)). Each arm runs with
   `max_workers = 1`; the owner may raise it in backends.toml. A Codex failure that says a usage limit was hit pauses the night like a
-  Claude usage limit; any other failure stops it.
+  Claude usage limit; any other failure stops it. A reconnect notice is known in exact shape:
+  codex-cli 0.167.0 streams each transport retry as a top-level
+  `{"type": "error", "message": "Reconnecting... n/5 (stream disconnected ...)"}` event and
+  carries on, so in a session that then completes its turn, with none failed, it is no
+  failure and the attempt is counted. A session whose turn failed or never ended still stops
+  on it, as does any other top-level `error` (run 20261119-3s-new).
 - **Windows sandbox caveats** (RESEARCH Pitfall 11). Elevated and unelevated sandbox modes have
   open issues, `apply_patch` has been reported at 13 to 20 s per patch, and some setups run
   commands as the real user. The canary's identity, outside-write and network probes exist

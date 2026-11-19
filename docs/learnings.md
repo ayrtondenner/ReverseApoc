@@ -11,6 +11,24 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-19: a Codex reconnect is a notice, not a failure
+
+- Held run 20261119-3s-new (gpt-6.1-terra, 5 workers) stopped after 2 sessions. The tacp
+  func_000677E0 session streamed a top-level `error` event, `Reconnecting... 2/5 (stream
+  disconnected before completion ...)`, then completed its turn and gave up normally;
+  `codexjson.failure` took the first top-level `error` as the session's failure, so the driver
+  read it as a D-08 STOP.
+- The `item 'item_5': type 'error'` guardrail stray in the same detail came from another
+  worker: ufo2p func_00011CF0 had four reconnects (2/5 to 5/5) and then an `error` item,
+  `Falling back from WebSockets to HTTPS transport. ...`. Stop-all killed that session and
+  its audit flagged the item. The end record joins every worker's stop, so two sessions'
+  reasons read as one.
+- Fix: a retry event of exactly `{type, message: "Reconnecting... n/m (..."}` is no failure
+  when a turn completed and none failed; an `error` item of exactly `{id, type, message}`
+  with a retry or that fallback text is no unknown item. Everything else fails closed as
+  before, including spike 012's `Codex is ignoring ... configuration setting` item. The
+  survey of every kept transcript found only these shapes, plus 325 usage-limit errors.
+
 ## 2026-11-19: splits batch 1, and most merge suspects are shared epilogues
 
 - The first boundary fixes went through `config/<exe>/boundary-fixes.csv`: 24 call splits (ufo2p 13,
