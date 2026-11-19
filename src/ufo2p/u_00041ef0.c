@@ -31,10 +31,44 @@ INCLUDE_ASM(func_00042790);
 INCLUDE_ASM(func_00042C10);
 INCLUDE_ASM(func_00043A20);
 INCLUDE_ASM(func_00046400);
-INCLUDE_ASM(func_00046840);
 INCLUDE_ASM(func_000469C0);
 INCLUDE_ASM(func_00046F30);
 INCLUDE_ASM(func_00047340);
+
+extern float D_000D227E, D_000D228A, D_000D2296, D_000D229A;
+extern double D_000D2282, D_000D228E;
+extern int D_001A3C70, D_001A3C74;
+void func_000425F0(int, int, int, int, int);
+
+/* No return value is consumed here; callers decide the return type. */
+void func_00046840(float x0, float y0, float x1, float y1,
+                   float x2, float y2, float x3, float y3,
+                   signed char colour, int skip)
+{
+    float bx, dx, cx, cy, ax, ay, by, dy;
+    float t, px, py;
+    int y, x, i;
+
+    ax = ((x1 - x2) * D_000D227E - x0 + x3) * D_000D2282;
+    ay = ((y1 - y2) * D_000D227E - y0 + y3) * D_000D2282;
+    bx = (x0 - x1 * D_000D228A + x2) * D_000D228E;
+    by = (y0 - y1 * D_000D228A + y2) * D_000D228E;
+    cx = (x2 - x0) * D_000D228E;
+    cy = (y2 - y0) * D_000D228E;
+    dx = (x0 + x1 * D_000D2296 + x2) * D_000D2282;
+    dy = (y0 + y1 * D_000D2296 + y2) * D_000D2282;
+    for (i = 0; i <= 30; i++) {
+        t = i / D_000D229A;
+        px = ((ax * t + bx) * t + cx) * t + dx;
+        py = ((ay * t + by) * t + cy) * t + dy;
+        x = px;
+        y = py;
+        if (skip) skip = 0;
+        else func_000425F0(D_001A3C74, D_001A3C70, x, y, colour);
+        D_001A3C74 = x;
+        D_001A3C70 = y;
+    }
+}
 
 extern volatile short D_00183AF2;
 extern short D_000D4CE0, D_000D4CE2;
