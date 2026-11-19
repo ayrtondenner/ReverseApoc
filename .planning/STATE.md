@@ -157,6 +157,13 @@ None yet.
 | 261112-fdv | watcom-decomp skill names actions, not Claude Code tools | 2026-11-12 | f0b64cf4 | — | .planning/quick/261112-fdv-todo-planning-todos-pending-skill-harness-neutral-wording-md |
 | 261112-fdw | worktree hook allowlist closes the residual bypasses | 2026-11-12 | 2c7db2fa | — | .planning/quick/261112-fdw-todo-planning-todos-pending-worktree-hook-residual-bypasses |
 | 261112-fdx | slot model lines A-C drawn past the 07.1 sweep (D broke) | 2026-11-12 | cf4cc3c0 | — | .planning/quick/261112-fdx-todo-planning-todos-pending-slot-model-array-ties-md-what-is |
+| 261119-bhq | boundary-fixes.csv input and suspects on the board | 2026-11-19 | 199378c3 | — | — |
+| 261119-bhm | agy network tools denied, search-web probe | 2026-11-19 | f55c25e8 | — | — |
+| 261119-bhl | gate refuses pragma and inline asm on every harness | 2026-11-19 | afff156d | — | — |
+| 261119-bho | stats --compare finished picks and Holm | 2026-11-19 | 2305abaa | — | — |
+| 261119-bhn | reverseapoc handoff threshold and return rules | 2026-11-19 | 3800328e | — | — |
+| 261119-bhk | relocation control in the nightly preflight | 2026-11-19 | cacca532 | — | — |
+| 261119-bhj | tool provenance class | 2026-11-19 | 9e3c67bd | — | — |
 
 ### Roadmap Evolution
 
