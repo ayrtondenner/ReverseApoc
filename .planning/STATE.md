@@ -164,6 +164,7 @@ None yet.
 | 261119-bhn | reverseapoc handoff threshold and return rules | 2026-11-19 | 3800328e | — | — |
 | 261119-bhk | relocation control in the nightly preflight | 2026-11-19 | cacca532 | — | — |
 | 261119-bhj | tool provenance class | 2026-11-19 | 9e3c67bd | — | — |
+| 261119-bhp | three-shapes stop rule at 256 B and up | 2026-11-19 | e4dbdcff | — | — |
 
 ### Roadmap Evolution
 

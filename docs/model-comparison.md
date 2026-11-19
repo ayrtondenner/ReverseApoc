@@ -597,6 +597,46 @@ matched functions. `stats` classes the twin landings, and the converter's
 (`reverseapoc lift`), as `tool` since 2026-11-19 (todo `stats-tool-class`): of the 295, 189
 unattended, 99 tool (59 twins, 40 lift) and 7 human-written.
 
+## The three-shapes rule at 256 B and up: a held A/B (2026-11-19)
+
+Owner decision of 2026-11-19 (todo `three-shapes-rule-256b`): at 256 B and up a check counts as a new
+C shape only when the attempt check's `shape:` line (blocks, branches) changes, with at most six
+shapes; the 15-check budget stays and the rule under 256 B is unchanged. The skill change went
+through writing-skills with a fresh-agent retrieval test (RED on the old text: "the skill does not
+define shape"; GREEN on the new text, all six questions right; quick task 261119-bhp). It was
+measured as a held A/B with nothing landed: the same 20 picks, the same arm, the old rule first.
+
+- **Picks.** `drive --dry-run --near-miss --write-picks` (185 near-miss rows), filtered by
+  functions.csv size to the first 20 rows of 256-1023 B in lane order
+  (`build/driver/20261119-3s-picks.txt`; 14 TACP, 6 UFO2P, 256-617 B).
+- **Arm.** GPT-6.1 Terra (Codex 0.167.0), 5 workers, `--hold`, one session per pick.
+- **Runs.** `20261119-3s-old` (skill as of 4f52a58e, environment digest `f0016097a26c`) and
+  `20261119-3s-new` (after e4dbdcff, digest `dd7184091f56`). Both ran all three controls (gold 0,
+  null 1, reloc 1). The new run took three starts: a Codex reconnect notice stopped it after 2
+  sessions (fixed in quick 261119-cxerr, learnings 2026-11-19), and an owner-approved Ctrl-C paused
+  it during the Codex 5-hour window; a hold run resumes skipping counted picks, so each pick still
+  got one session.
+- **Statistics.** `stats --compare` on finished picks only: 20 of 20 paired, none left out.
+
+| Rule | Sessions | Exact (T) | Checks per session (mean, median, range) | Checks in all | Input tokens (T) |
+|---|---|---|---|---|---|
+| Old: three shapes | 20 | 0 | 2.9, 3, 2-3 | 58 | 23.0M |
+| New: six shapes by the `shape:` line | 20 | 0 | 7.8, 7, 1-15 | 156 | 42.2M |
+
+- **Exact matches.** 0 and 0: no discordant pair, so the exact McNemar p is 1.0 (Holm p 1.0 over the
+  one pair). The A/B cannot say the new rule matches more.
+- **Best percent per pick (new minus old session).** Up on 12 picks, down on 4, the same on 4; mean
+  +1.75 points, median +0.67; an exact sign test on 12 against 4 gives p = 0.077 (descriptive, not a
+  decision rule). The largest rise was ufo2p 0x0004A1E0, 56.70 to 77.43 (its status.csv best stays
+  98.62 from earlier sessions). Five new-rule sessions ran out the 15-check budget, so the budget,
+  not the shape count, now ends some sessions at this size.
+- **Cost.** The new rule spent 1.83 times the input tokens for 2.7 times the checks.
+- **Reading.** The rule now lets a 256 B session work, and it moves the best percent up more often
+  than down, but neither run matched a function, so the comparison says nothing yet about
+  matches. The check-curve confound stays: these are rows earlier sessions failed, picked by bytes
+  left. Files: `build/gate/20261119-3s/` (compare.txt, compare.json, stats-old.txt,
+  stats-new.txt, paired.txt).
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks

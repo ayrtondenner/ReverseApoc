@@ -11,6 +11,15 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-19: six shapes at 256 B let Terra work, but no match yet
+
+- Held A/B on 20 near-miss rows of 256-1023 B (GPT-6.1 Terra, one session each): the old
+  three-shapes rule used 2.9 checks a session, the new rule (six shapes, counted by the `shape:`
+  line) 7.8, with 1.83 times the input tokens. Neither run matched a function (McNemar p = 1.0).
+  The best percent rose on 12 picks and fell on 4 (sign test p = 0.077).
+- The stop rule no longer ends every 256 B session at 3 checks; five of 20 new-rule sessions
+  reached the 15-check budget. Tables in docs/model-comparison.md, 2026-11-19 section.
+
 ## 2026-11-19: a Codex reconnect is a notice, not a failure
 
 - Held run 20261119-3s-new (gpt-6.1-terra, 5 workers) stopped after 2 sessions. The tacp

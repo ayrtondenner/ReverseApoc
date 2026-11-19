@@ -105,7 +105,7 @@
       "quick_id": "261119-bhp",
       "client_id": null,
       "description": "Three-shapes stop rule at 256 B and up (watcom-decomp skill via superpowers writing-skills with a RED/GREEN retrieval test by a fresh agent): at 256 B and up a new shape counts only when the attempt check's shape: line (blocks, branches) changes, at most 6 shapes; keep the 15-check budget; leave the rule under 256 B as is; keep session.STOP_RULES and tests/test_skill.py + tests/test_session.py in sync; branch only, merged by the coordinator after the old-rule held run",
-      "status": "pending",
+      "status": "complete",
       "depends_on": [],
       "planned_files": [],
       "directory": null,
@@ -114,7 +114,7 @@
       "dispatched_branch": null,
       "dispatched_base": null,
       "wave": 0,
-      "commit": null,
+      "commit": "e4dbdcff",
       "failure_reason": null
     },
     {
