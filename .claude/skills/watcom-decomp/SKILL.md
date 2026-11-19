@@ -134,7 +134,7 @@ Other pack sections, when present:
 - **Owner hints** is written by the owner, not by an agent or a tool. Treat it as the owner's word about this function: a type, a struct, a known flag, or why the last attempt stalled. It comes from `config/hints/<exe>.toml`, which sessions never edit. If a hint looks wrong, say so in notes.md.
 - **Callee signatures** gives each callee's argument registers, stack arguments and result as the lifter infers them (`int` stands for an unknown type). A matched callee's own C prototype is in "Callees" and wins.
 - **Struct shapes** lists the fields other functions of the original code read through the same pointer: offset, width, how it is read, and how many functions read it. Declare your struct from it in your own unit; the field names are yours. A field marked "sign unknown" was only read by plain moves, so the bytes decide its signedness.
-- **Control-flow outline** (rows of 256 B and up) gives a count line (blocks, branches, loops, switches, calls, returns), one line per basic block with its exit, and the loops as back edges. Read it before writing C. Write the skeleton first, with one `if`/loop/`switch` per outline item in the same order, then fill in the statements. After each check, compare the summary's `shape:` line (ours against the original: code length, blocks, branches) before reading byte differences. A block or branch count that differs means the control flow is wrong, so fix that before tuning registers or the stack.
+- **Control-flow outline** (rows of 256 B and up) gives a count line (blocks, branches, loops, switches, calls, returns), one line per basic block with its exit, and the loops as back edges. Read it before writing C. Write the skeleton first, with one `if`/loop/`switch` per outline item in the same order, then fill in the statements. After each check, compare the summary's `shape:` line (ours against the original: code length, blocks, branches) before reading byte differences. A block or branch count that differs means the control flow is wrong, so fix that before tuning registers or the stack. At 256 B and up this line counts shapes: a check is a new shape only when its blocks or branches differ from the check before, six shapes at most.
 
 **The plan and the note.** A check needs two files beside notes.md. Without them `attempt check`, plain or `--sweep`, is refused with exit `2` and uses none of the 15 runs. The refusal names what is missing or wrong, e.g. `write plan.json beside notes.md first`: write that file, then run the check again.
 
@@ -209,7 +209,7 @@ A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the
    `attempt diff` prints every run in full.
 2. An instruction that ends in `(relocated)` covers a relocated field: the byte compare ignores that operand, and yours shows the unlinked placeholder. A wrong target there shows in `reloc.problems`, never in the window.
 3. For the rest of the original, take `bytes.first_va` and each address named in `reloc.problems` and find them in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`, some with a note after it.
-4. Change the C shape behind that instruction, one change per check, using the idioms in `docs/matching.md`.
+4. Change the C shape behind that instruction, one change per check, using the idioms in `docs/matching.md`. At 256 B and up a check whose `shape:` line keeps the blocks and branches of the check before is a step within the same shape, not a new shape.
 
 The window shows at most 8 rows around the first difference; `attempt diff` shows every differing run of the whole function.
 
@@ -218,7 +218,7 @@ The window shows at most 8 rows around the first difference; `attempt diff` show
 Stop only when one of these holds:
 - `attempt check` exited `0`: stop editing, because the driver gates the view unit as you leave it;
 - a sweep printed `sweep hit: needs flags`: write the hit in notes.md and stop, because the driver starts no new session on the function for the rest of the night;
-- three different C shapes leave objdiff below 100;
+- three different C shapes leave objdiff below 100 (at 256 B and up: six shapes, and a check is a new shape only when its `shape:` line's blocks or branches differ from the check before; the first check is the first shape);
 - all 15 check runs are used;
 - about 25 of 30 minutes or 35 of 40 turns are gone;
 - needs flags (no -s), a jump table that cannot lead the unit or has a target outside the function, or another check running in this attempt, each as its section above says.
