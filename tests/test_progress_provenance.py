@@ -187,6 +187,7 @@ def test_load_provenance_agrees_with_stats(tmp_path):
         "unattended": {"functions": 2, "flags_approved": 1,
                        "by_credit": {"Claude Haiku 5.5": 1, "Claude Opus 5.5": 1}},
         "human-hints": {"functions": 1, "flags_approved": 0, "by_credit": {"Claude Opus 5.5": 1}},
+        "tool": {"functions": 0, "flags_approved": 0, "by_credit": {}},
         "human-written": {"functions": 0, "flags_approved": 0, "by_credit": {}},
     }  # fmt: skip
     assert doc["exes"][TACP]["classes"]["unattended"] == {

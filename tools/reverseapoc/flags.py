@@ -1622,8 +1622,9 @@ def _approve_message(land: _Landing, by: str, today: str) -> str:
     """D-25's match message with the approval: subject, what the rule binds, trailers. A sweep
     landing's trailers are the attempts' co-authors and `Matched-By: reverseapoc drive`; a batch
     landing's (07-48c) is `Matched-By: <author>` alone, because the converter or a spike
-    subagent wrote that C, not a driver attempt, so no attempt co-authors it and stats classes
-    the landing human-written, never unattended (AGT-11)."""
+    subagent wrote that C, not a driver attempt, so no attempt co-authors it and stats never
+    classes the landing unattended (AGT-11): `tool` for `reverseapoc lift`, human-written for
+    the other authors (todo stats-tool-class)."""
     p = land.proposal
     lines = [f"feat({p.exe}): match {', '.join(p.functions)} in {p.unit} under approved flags "
              f"{p.id} (C89)", "",

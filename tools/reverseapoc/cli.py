@@ -2889,10 +2889,10 @@ def _stats_compare(args: argparse.Namespace, log: Path) -> int:
 def _add_stats_command(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "stats",
-        help="the research numbers (DEC-07): every match classed unattended, human-hints or "
-        "human-written from git trailers (the flag-approved subset shown apart), and match rate "
-        "by size, per-match cost, regressions, hook blocks, per-model/kind/tier splits from "
-        "progress/attempts.jsonl (host, stdlib; CI)",
+        help="the research numbers (DEC-07): every match classed unattended, human-hints, tool "
+        "(twins, lift) or human-written from git trailers (the flag-approved subset shown "
+        "apart), and match rate by size, per-match cost, regressions, hook blocks, per-model/"
+        "kind/tier splits from progress/attempts.jsonl (host, stdlib; CI)",
     )
     p.add_argument("--json", action="store_true", help="print the report as JSON (sorted keys)")
     p.add_argument("--log", type=Path, default=None, metavar="PATH",
