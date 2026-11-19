@@ -1028,11 +1028,21 @@ _ENVIRONMENT = _shaped({
     "files": _mapping_of(_is_text, _optional(_matches(_SHA256))),  # null: no such file
     "prompt": _matches(_SHA256),
 })  # fmt: skip
-_CONTROLS = _shaped({"exe": _CLAIM_FIELDS["exe"], "unit": _CLAIM_FIELDS["unit"],
-                     "function": _matches(_C_NAME), "gold": _is_int, "null": _is_int,
-                     "null_percent": _is_number})  # fmt: skip
+_CONTROLS_FIELDS = {"exe": _CLAIM_FIELDS["exe"], "unit": _CLAIM_FIELDS["unit"],
+                    "function": _matches(_C_NAME), "gold": _is_int, "null": _is_int,
+                    "null_percent": _is_number}  # fmt: skip
+_CONTROLS_BEFORE_RELOC = _shaped(_CONTROLS_FIELDS)  # before todo relocation-null-control (D-23)
+_CONTROLS_RELOC = _shaped({**_CONTROLS_FIELDS, "reloc": _is_int})  # the relocation control's exit
+
+
+def _controls_shape(value: object) -> bool:
+    """A STARTED record's controls in one of its two shapes: without `reloc` (before todo
+    relocation-null-control; never rewritten, D-23) or with it."""
+    return _CONTROLS_BEFORE_RELOC(value) or _CONTROLS_RELOC(value)
+
+
 # controls null: a --land-held night, which runs no session check and so no control
-_STARTED_FIELDS = {"environment": _ENVIRONMENT, "controls": _optional(_CONTROLS)}
+_STARTED_FIELDS = {"environment": _ENVIRONMENT, "controls": _optional(_controls_shape)}
 
 
 def _strings(value: object) -> Iterable[str]:
@@ -8646,14 +8656,25 @@ def preflight(options: DriveOptions, seams: Seams, *, check_cli: bool,
 # ---- the checker controls (todo nightly-gold-null-controls) ----
 #
 # Before a night starts, the attempt wrapper's check runs as a session runs it (the same argv,
-# claim environment, view of HEAD, plan and note) on the canary's matched function twice: its
-# committed C (gold) must exit 0, and the same unit with one volatile local added to that
+# claim environment, view of HEAD, plan and note) on the canary's matched function three times:
+# its committed C (gold) must exit 0; the same unit with one volatile local added to that
 # function (null: compiled, but not the original bytes) must exit 1, measured below 100% in its
-# checks.jsonl. Anything else refuses the night, so a checker that calls everything exact, or
-# nothing, never judges a session. A --land-held night, which runs no session check, skips it.
+# checks.jsonl; and the same unit with its one data extern pointed at another global of the same
+# type (reloc, todo relocation-null-control: the same bytes and size, another relocation target)
+# must exit 1 with `bytes ok` and `reloc FAILED` in its last checks.jsonl line, since the byte
+# compare masks a relocated field and only the relocation check sees the target. Anything else
+# refuses the night, so a checker that calls everything exact, or nothing, or never compares a
+# relocation target, never judges a session. A --land-held night, which runs no session check,
+# skips it.
 CONTROLS_RUN_DIR = "controls"  # build/driver/controls/<run>/<exe>/<func>/attempt-<n>/
-CONTROL_ATTEMPTS = {"gold": 1, "null": 2}  # each control's attempt number
-CONTROL_EXPECTED = {"gold": EXIT_OK, "null": EXIT_MISMATCH}
+CONTROL_ATTEMPTS = {"gold": 1, "null": 2, "reloc": 3}  # each control's attempt number
+CONTROL_EXPECTED = {"gold": EXIT_OK, "null": EXIT_MISMATCH, "reloc": EXIT_MISMATCH}
+# The reloc control's repointing: the canary's `extern signed char D_0012EFAC`, read by one
+# `movsx eax, byte ptr [D_0012EFAC]`, becomes D_001277E5, which the matched
+# src/ufo2p/u_00092250.c declares `extern signed char` and reads the same way, and which
+# symbols.csv does not rename: the same instruction, another off32 target.
+CONTROL_RELOC_FROM = "D_0012EFAC"
+CONTROL_RELOC_TO = "D_001277E5"
 # The first declaration of the null control's body: valid C89 there, and a stack store the
 # original function does not have (Watcom 10.6 -4r -s compiles it to other bytes).
 CONTROL_NULL_DECLARATION = "volatile int reverseapoc_null_control = 1;"
@@ -8679,13 +8700,58 @@ def null_control_unit(text: str, function: str) -> str:
     return f"{text[:cut]} {CONTROL_NULL_DECLARATION}{text[cut:]}"
 
 
+def reloc_control_unit(text: str) -> str:
+    """`text` with every CONTROL_RELOC_FROM in code (its declaration and its use; a comment or
+    literal is unchanged) renamed CONTROL_RELOC_TO; ValueError when code never names it."""
+    pattern = re.compile(rf"\b{CONTROL_RELOC_FROM}\b")
+    cuts = [m.start() for m in pattern.finditer(_code_only(text))]
+    if not cuts:
+        raise ValueError(f"no {CONTROL_RELOC_FROM} in code to repoint")
+    for cut in reversed(cuts):
+        text = f"{text[:cut]}{CONTROL_RELOC_TO}{text[cut + len(CONTROL_RELOC_FROM):]}"
+    return text
+
+
+def _write_control_unit(kind: str, claim: _Claim) -> None:
+    """Rewrite the view unit (HEAD's) as control `kind`'s; the gold control's stays HEAD's
+    bytes. Refused ("controls") when the null or reloc change cannot be made."""
+    if kind == "gold":
+        return
+    text = claim.view_unit.read_text(encoding="utf-8")
+    try:
+        text = null_control_unit(text, CANARY_FUNC) if kind == "null" else reloc_control_unit(text)
+    except ValueError as exc:
+        raise Refused("controls", f"the {kind} control of {claim.unit_rel}: {exc}") from exc
+    write_atomic(claim.view_unit, text.encode("utf-8"))
+
+
+def _reloc_control_problems(attempt_dir: Path) -> list[str]:
+    """What the reloc control's last checks.jsonl line got wrong: it must exist and say the
+    bytes compared equal and the relocations failed."""
+    path = attempt_dir / attempt.CHECK_LOG
+    raw = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    lines = [line for text in raw.splitlines() if (line := _check_line(text)) is not None]
+    if not lines:
+        return [f"the reloc control has no line in its {attempt.CHECK_LOG} (not compiled?)"]
+    last = lines[-1]
+    wrong = []
+    if last.get("bytes_ok") is not True:
+        wrong.append(f"the reloc control's bytes failed (bytes_ok {last.get('bytes_ok')}), so "
+                     f"{CONTROL_RELOC_TO} did not keep the canary's bytes")  # fmt: skip
+    if last.get("reloc_ok") is not False:
+        wrong.append(f"the reloc control's relocations passed (reloc_ok {last.get('reloc_ok')})"
+                     f" with {CONTROL_RELOC_FROM} pointed at {CONTROL_RELOC_TO}")  # fmt: skip
+    return wrong
+
+
 def run_controls(options: DriveOptions, seams: Seams, arms: Mapping[str, backends.Arm],
                  log: _Log) -> dict:  # fmt: skip
-    """The gold and the null control (see above) under build/driver/controls/<run>/ (an earlier
-    start's directory of the same run is removed first): their exits and the null check's
-    percent as the STARTED record's `controls`, or Refused ("controls") when HEAD has no control
-    unit or row, the null unit cannot be built, an exit is not the expected one, or the null
-    check measured no percent or 100%."""
+    """The gold, null and reloc controls (see above) under build/driver/controls/<run>/ (an
+    earlier start's directory of the same run is removed first): their exits and the null
+    check's percent as the STARTED record's `controls`, or Refused ("controls") when HEAD has no
+    control unit or row, the null or reloc unit cannot be built, an exit is not the expected
+    one, the null check measured no percent or 100%, or the reloc check's last line is missing
+    or does not say bytes ok and reloc FAILED."""
     repo = Path(options.repo)
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
     probe = _probe(options, seams)
@@ -8707,12 +8773,7 @@ def run_controls(options: DriveOptions, seams: Seams, arms: Mapping[str, backend
     for kind, claim in claims.items():
         claim.attempt_dir.mkdir(parents=True)
         probe._make_view(claim)
-        if kind == "null":
-            try:
-                text = null_control_unit(claim.view_unit.read_text(encoding="utf-8"), CANARY_FUNC)
-            except ValueError as exc:
-                raise Refused("controls", f"the null control of {unit_rel}: {exc}") from exc
-            write_atomic(claim.view_unit, text.encode("utf-8"))
+        _write_control_unit(kind, claim)
         write_atomic(claim.attempt_dir / hooks.PLAN_NAME, _canary_plan_text(size).encode("utf-8"))
         write_atomic(claim.attempt_dir / hooks.CHECK_NOTE_NAME, CONTROL_NOTE_TEXT.encode("utf-8"))
         done = log.run([*hooks.ATTEMPT_PREFIX, "check"], env=claim.env(base, arms))
@@ -8727,6 +8788,9 @@ def run_controls(options: DriveOptions, seams: Seams, arms: Mapping[str, backend
                      "(not compiled?)")  # fmt: skip
     elif null_percent >= PERFECT:
         wrong.append(f"the null control measured {null_percent:g}%")
+    # Exit 1 alone is also a byte or compile failure: only bytes ok with reloc FAILED shows the
+    # relocation check caught the other target.
+    wrong += _reloc_control_problems(claims["reloc"].attempt_dir)
     if wrong:
         raise Refused("controls", f"the checker failed its controls on {CANARY_EXE} {CANARY_FUNC}"
                                   f": {'; '.join(wrong)} (see {PREFLIGHT_LOG}); no night runs "

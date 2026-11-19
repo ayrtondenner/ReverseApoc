@@ -1141,6 +1141,8 @@ def _environment_line(entry: Mapping) -> str:
     image = env["image"].removeprefix("sha256:")[:12] if env["image"] else "unknown"
     checked = (f"controls gold {controls['gold']}, null {controls['null']} "
                f"({controls['null_percent']:g}%)" if controls else "no controls")  # fmt: skip
+    if controls and "reloc" in controls:  # absent before todo relocation-null-control
+        checked += f", reloc {controls['reloc']}"
     return (f"  {entry['run']}: digest {env['digest'][:12]}, head {env['head'][:12]}, image "
             f"{image}, cli {cli}; {checked}")
 
