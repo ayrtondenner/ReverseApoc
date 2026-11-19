@@ -806,7 +806,7 @@ def _check_curves(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict
             TOTAL: _curve(matching)}  # fmt: skip
 
 
-# ---- todo held-benchmark-statistics: `stats --compare RUN_A RUN_B` ----
+# ---- todo held-benchmark-statistics: `stats --compare RUN_A RUN_B [RUN ...]` ----
 
 _Z95 = NormalDist().inv_cdf(0.975)  # the two-sided 95% normal quantile, about 1.96
 
@@ -830,6 +830,19 @@ def mcnemar_exact(a_only: int, b_only: int) -> float:
     return float(min(Fraction(1), 2 * tail))
 
 
+def holm(p_values: Sequence[float]) -> list[float]:
+    """The Holm-Bonferroni step-down adjustment of `p_values`, in their order: the i-th
+    smallest of m is multiplied by m - i + 1, never below the adjusted one before it
+    (monotone), and capped at 1. One p-value is its own adjustment."""
+    m = len(p_values)
+    adjusted = [0.0] * m
+    running = 0.0
+    for rank, index in enumerate(sorted(range(m), key=lambda i: p_values[i])):
+        running = max(running, min(1.0, (m - rank) * p_values[index]))
+        adjusted[index] = running
+    return adjusted
+
+
 def _percent(fraction: float) -> str:
     return tenth(Decimal(fraction * 100))
 
@@ -842,9 +855,29 @@ def _proportion(exact: int, n: int) -> dict:
             else [_percent(x) for x in interval]}  # fmt: skip
 
 
-def _run_outcomes(records: Sequence[Mapping], name: str) -> tuple[list[str], dict[Key, bool]]:
-    """The arms of run `name`'s matching attempts and, per function, whether any was exact
-    (MATCHED or HOLD_EXACT); a run with none is a StatsError."""
+@dataclass(frozen=True)
+class _RunOutcomes:
+    """One run of `stats --compare`: its arms, per finished function whether a finished record
+    of it was exact (MATCHED or HOLD_EXACT), and the functions it only has cut-short records
+    of."""
+
+    name: str
+    arms: list[str]
+    exact: dict[Key, bool]
+    cut_short: frozenset[Key]
+
+
+def _run_outcomes(records: Sequence[Mapping], name: str) -> _RunOutcomes:
+    """Run `name`'s matching attempt records (a run with none is a StatsError). RULINGS "Held
+    comparisons" (owner 2026-11-19): a function is finished when the run has a finished record
+    of it, one that is not cut short by driver._cut_short, the rule `hold_progress` attempts a
+    function again by: a record with abort reason guardrail or tool (the night's or its arm's
+    stop reset the session's work), but a Copilot session's guardrail record with a refused
+    call (it ended on a write Copilot denied: the model's own end) is finished. MATCHED,
+    PARTIAL, HOLD_EXACT and GAVE_UP with no abort reason, timeout or lint are finished. A
+    session a usage limit, a stop or an interrupt killed leaves no attempt record (a limit
+    record, or none), so the function has no record at all unless another session finished
+    it."""
     mine = [r for r in records if r["kind"] == driver.KIND_ATTEMPT
             and r.get("session", driver.MATCHING) == driver.MATCHING
             and run_selected(r["run"], [name])]  # fmt: skip
@@ -852,27 +885,62 @@ def _run_outcomes(records: Sequence[Mapping], name: str) -> tuple[list[str], dic
         raise StatsError(f"run {name!r} has no matching attempt record")
     exact: dict[Key, bool] = {}
     for r in mine:
+        if driver._cut_short(r):
+            continue
         exact[_key(r)] = exact.get(_key(r), False) or r["outcome"] in _EXACT
-    return sorted({arm_key(r) for r in mine}), exact
+    cut = frozenset(_key(r) for r in mine) - exact.keys()
+    return _RunOutcomes(name, sorted({arm_key(r) for r in mine}), exact, cut)
 
 
-def compare_runs(records: Sequence[Mapping], run_a: str, run_b: str) -> dict:
-    """Each run's exact functions with a Wilson 95% interval, and the functions both attempted
-    paired: the four cells, each run's interval on them and the exact McNemar p-value."""
-    (arms_a, a), (arms_b, b) = _run_outcomes(records, run_a), _run_outcomes(records, run_b)
-    shared = sorted(a.keys() & b.keys())
-    cells = Counter((a[k], b[k]) for k in shared)
+def _side(run: _RunOutcomes) -> dict:
+    return {"run": run.name, "arms": run.arms,
+            **_proportion(sum(run.exact.values()), len(run.exact))}  # fmt: skip
+
+
+def _left_out(run: _RunOutcomes, keys: Iterable[Key]) -> dict:
+    """Of `keys`, the ones `run` did not finish: cut short, or with no record of it."""
+    unfinished = [k for k in keys if k not in run.exact]
+    cut = sum(k in run.cut_short for k in unfinished)
+    return {"cut_short": cut, "no_record": len(unfinished) - cut}
+
+
+def _pair(a: _RunOutcomes, b: _RunOutcomes) -> dict:
+    """Two runs paired on the functions both finished: the four cells, each run's interval on
+    them, the exact McNemar p-value (its Holm adjustment is set by compare_runs) and the
+    functions either run attempted that are left out, by why."""
+    shared = sorted(a.exact.keys() & b.exact.keys())
+    cells = Counter((a.exact[k], b.exact[k]) for k in shared)
     a_only, b_only = cells[(True, False)], cells[(False, True)]
     both = cells[(True, True)]
+    out = (a.exact.keys() | a.cut_short | b.exact.keys() | b.cut_short) - set(shared)
     return {
-        "a": {"run": run_a, "arms": arms_a, **_proportion(sum(a.values()), len(a))},
-        "b": {"run": run_b, "arms": arms_b, **_proportion(sum(b.values()), len(b))},
+        "a": _side(a), "b": _side(b),
         "paired": {"functions": len(shared), "both": both, "a_only": a_only, "b_only": b_only,
                    "neither": cells[(False, False)],
                    "a": _proportion(both + a_only, len(shared)),
                    "b": _proportion(both + b_only, len(shared)),
-                   "mcnemar_p": f"{mcnemar_exact(a_only, b_only):.4f}"},
+                   "mcnemar_p": mcnemar_exact(a_only, b_only),
+                   "left_out": {"functions": len(out), "a": _left_out(a, out),
+                                "b": _left_out(b, out)}},
     }  # fmt: skip
+
+
+def compare_runs(records: Sequence[Mapping], names: Sequence[str]) -> dict:
+    """`stats --compare` over two or more runs (fewer is a StatsError): each run's exact
+    functions of those it finished with a Wilson 95% interval (`runs`), and every pair of runs,
+    in the order named, paired on the functions both finished (`pairs`, _pair) with the exact
+    McNemar p-value and its Holm-Bonferroni adjustment over all the pairs (`holm_p`; with one
+    pair it is the raw p). With two runs the one pair's `a`, `b` and `paired` are also the
+    doc's own keys, the shape before quick 261119-bho."""
+    if len(names) < 2:
+        raise StatsError("--compare needs at least two runs")
+    runs = [_run_outcomes(records, name) for name in names]
+    pairs = [_pair(a, b) for i, a in enumerate(runs) for b in runs[i + 1:]]
+    raw = [pair["paired"]["mcnemar_p"] for pair in pairs]
+    for pair, p, adjusted in zip(pairs, raw, holm(raw), strict=True):
+        pair["paired"].update(mcnemar_p=f"{p:.4f}", holm_p=f"{adjusted:.4f}")
+    doc = {"runs": [_side(run) for run in runs], "pairs": pairs}
+    return {**doc, **pairs[0]} if len(pairs) == 1 else doc
 
 
 def _interval_text(p: Mapping, unit: str = "") -> str:
@@ -883,25 +951,42 @@ def _interval_text(p: Mapping, unit: str = "") -> str:
     return f"{counted}, {p['rate_percent']}% [{low}%, {high}%]"
 
 
+def _left_out_text(side: str, counts: Mapping) -> str:
+    return f"{side}: {counts['cut_short']} cut short, {counts['no_record']} no record"
+
+
+def _pair_lines(pair: Mapping, letters: Mapping[str, str], count: int) -> list[str]:
+    """One pair's lines; `letters` names each run by its letter, `count` is the pairs Holm
+    adjusts over."""
+    a, b = letters[pair["a"]["run"]], letters[pair["b"]["run"]]
+    paired, out = pair["paired"], pair["paired"]["left_out"]
+    return [f"paired {a} and {b}: {paired['functions']} functions both runs finished; both "
+            f"exact {paired['both']}, {a} only {paired['a_only']}, {b} only "
+            f"{paired['b_only']}, neither {paired['neither']}",
+            f"  left out: {out['functions']} functions not finished by both "
+            f"({_left_out_text(a, out['a'])}; {_left_out_text(b, out['b'])})",
+            f"  {a}: {_interval_text(paired['a'])}", f"  {b}: {_interval_text(paired['b'])}",
+            f"  exact McNemar test (two-sided, {paired['a_only'] + paired['b_only']} discordant "
+            f"pairs): p = {paired['mcnemar_p']}, Holm p = {paired['holm_p']} (Holm-Bonferroni "
+            f"over {count} pair{'' if count == 1 else 's'})"]  # fmt: skip
+
+
 def format_comparison(doc: Mapping) -> str:
-    paired = doc["paired"]
-    lines = ["compare (exact: MATCHED or HOLD_EXACT; Wilson 95% intervals):"]
-    lines += [f"  {side} {doc[key]['run']} ({', '.join(doc[key]['arms'])}): "
-              f"{_interval_text(doc[key], ' functions')}"
-              for side, key in (("A", "a"), ("B", "b"))]  # fmt: skip
-    lines += [f"paired: {paired['functions']} functions both runs attempted; both exact "
-              f"{paired['both']}, A only {paired['a_only']}, B only {paired['b_only']}, neither "
-              f"{paired['neither']}",
-              f"  A: {_interval_text(paired['a'])}", f"  B: {_interval_text(paired['b'])}",
-              f"exact McNemar test (two-sided, {paired['a_only'] + paired['b_only']} discordant "
-              f"pairs): p = {paired['mcnemar_p']}"]  # fmt: skip
+    """The runs lettered A, B, C... in the order named, then every pair."""
+    letters = {side["run"]: chr(ord("A") + i) for i, side in enumerate(doc["runs"])}
+    lines = ["compare (exact: MATCHED or HOLD_EXACT; finished functions only, a record a stop "
+             "cut short is not; Wilson 95% intervals):"]  # fmt: skip
+    lines += [f"  {letters[side['run']]} {side['run']} ({', '.join(side['arms'])}): "
+              f"{_interval_text(side, ' functions')}" for side in doc["runs"]]  # fmt: skip
+    for pair in doc["pairs"]:
+        lines += _pair_lines(pair, letters, len(doc["pairs"]))
     return "\n".join(lines)
 
 
-def compare(log: Path, run_a: str, run_b: str) -> dict:
+def compare(log: Path, names: Sequence[str]) -> dict:
     """`stats --compare`: compare_runs over `log` with the ledger next to it applied."""
     records, _ = apply_errata(read_attempts(log), read_errata(Path(log).parent / ERRATA))
-    return compare_runs(records, run_a, run_b)
+    return compare_runs(records, names)
 
 
 def run_selected(run_id: str, names: Sequence[str]) -> bool:
