@@ -1,7 +1,7 @@
 """tools/progress.py's provenance split (todo progress-provenance-split): every function matched
 in HEAD's status tables classed by the trailers of the commit that last matched it, the way
-`reverseapoc stats` classes it (unattended, human-hints, human-written; the flag-approved subset
-apart), and credited to the model that made it (the timeline's credit rule), per EXE and
+`reverseapoc stats` classes it (unattended, human-hints, tool, human-written; the flag-approved
+subset apart), and credited to the model that made it (the timeline's credit rule), per EXE and
 combined, in progress.json and on the page. The git layer is tested on a synthetic repository
 against reverseapoc.stats on the same history. No game bytes: the tables are made up."""
 
@@ -32,6 +32,8 @@ GLM = "Co-Authored-By: GLM-5.3 <noreply@z.ai>"
 DRIVE = "Matched-By: reverseapoc drive"
 HINTS = "Match-Hints: the owner's notes"
 FLAGS = "Flags-Approved-By: owner (F-0001, 2026-10-05)"
+TWINS = "Matched-By: reverseapoc twins"
+LIFT = "Matched-By: reverseapoc lift"
 _SECTION = re.compile(r'<section class="provenance" aria-labelledby="provenance">(.*?)</section>',
                       re.S)  # fmt: skip
 
@@ -50,11 +52,15 @@ def pairs(*trailers: str) -> tuple[tuple[str, str], ...]:
 
 
 def test_the_classes_are_stats_classes():
-    """The same three classes, by the same trailer rule, flag approval apart (DEC-07, R4)."""
+    """The same four classes, by the same trailer rule, flag approval apart (DEC-07, R4;
+    todo stats-tool-class)."""
     progress = provenance_module()
     assert progress.PROVENANCE_CLASSES == stats.CLASSES
     for trailers in [(DRIVE, HAIKU), (DRIVE, HINTS, OPUS), (OPUS,), (), (DRIVE, OPUS, FLAGS),
-                     ("Matched-By: reverseapoc lift", FLAGS), ("matched-by: reverseapoc drive",),
+                     (LIFT, FLAGS), ("matched-by: reverseapoc drive",), (TWINS,), (TWINS, OPUS),
+                     (DRIVE, LIFT), (DRIVE, HINTS, TWINS), ("Matched-By: reverseapoc twins2",),
+                     ("Matched-By: reverseapoc search", FLAGS),
+                     ("Matched-By: claude subagent (spike 011)", FLAGS),
                      (DRIVE, "Matched-By: z-ai/glm-5.3", GLM), ("Match-Hints: x", OPUS)]:
         assert progress.provenance_class(pairs(*trailers)) == stats.classify(pairs(*trailers)), (
             trailers)
@@ -95,6 +101,7 @@ def test_the_split_counts_each_matched_function_by_its_latest_match(tmp_path):
     assert ufo["classes"] == {
         "unattended": {"functions": 1, "flags_approved": 1, "by_credit": {"Claude Haiku 5.5": 1}},
         "human-hints": {"functions": 0, "flags_approved": 0, "by_credit": {}},
+        "tool": {"functions": 0, "flags_approved": 0, "by_credit": {}},
         "human-written": {"functions": 0, "flags_approved": 0, "by_credit": {}},
     }
     assert doc["exes"][TACP] == {"label": "TACP.EXE", "matched": 0, "unclassed": 0,
@@ -227,7 +234,8 @@ def test_main_publishes_the_split(tmp_path):
     rows = re.findall(r'<tr><th scope="row">(.*?)</th>((?:<td>[^<]*</td>)+)</tr>', section)
     cells = {name: re.findall(r"<td>([^<]*)</td>", tds) for name, tds in rows}
     assert list(cells) == ["unattended", "unattended, under approved flags", "human-hints",
-                           "human-hints, under approved flags", "human-written",
+                           "human-hints, under approved flags", "tool",
+                           "tool, under approved flags", "human-written",
                            "human-written, under approved flags", "matched in status.csv"]
     assert cells["unattended"] == ["2", "1", "3"]
     assert cells["unattended, under approved flags"] == ["1", "0", "1"]
@@ -241,3 +249,60 @@ def test_main_publishes_the_split(tmp_path):
     assert progress.main(["--config", str(plain), "--out", str(alone)]) == 0
     assert json.loads((alone / "progress.json").read_text(encoding="utf-8"))["provenance"] is None
     assert 'class="provenance"' not in (alone / "index.html").read_text(encoding="utf-8")
+
+
+# ---- todo stats-tool-class: twin and lift landings are the tool class ----
+
+
+def tool_repo(tmp_path: Path) -> Path:
+    """UFO2P: U_MATCHED landed by `reverseapoc twins`, U_PARTIAL by `reverseapoc lift` under
+    approved flags, U_UNMATCHED by a spike subagent under approved flags (human-written)."""
+    env = _git_env(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, env, "init", "-q")
+    config = synthetic_config(repo)
+    (config / UFO / "status.csv").unlink()
+    _commit(repo, env, _when("2026-11-01", 10), "feat(05-16): commit the tables")
+    _status(config, UFO, (U_MATCHED, MATCHED, DAY))
+    _commit(repo, env, _when("2026-11-18", 9), "feat(ufo2p): match func_00010000 in u as a twin "
+            "of tacp func_00020000 (C89)", TWINS, "Co-Authored-By: Claude <noreply@anthropic.com>")
+    _status(config, UFO, (U_MATCHED, MATCHED, DAY), (U_PARTIAL, MATCHED, DAY))
+    _commit(repo, env, _when("2026-11-18", 10), "feat(ufo2p): match func_00010010 in u under "
+            "approved flags F-0002 (C89)", LIFT, FLAGS)  # fmt: skip
+    _status(config, UFO, (U_MATCHED, MATCHED, DAY), (U_PARTIAL, MATCHED, DAY),
+            (U_UNMATCHED, MATCHED, DAY))  # fmt: skip
+    _commit(repo, env, _when("2026-11-18", 11), "feat(ufo2p): match func_00010030 in u under "
+            "approved flags F-0003 (C89)", "Matched-By: claude subagent (spike 011)", FLAGS)
+    return repo
+
+
+def test_twin_and_lift_landings_are_tool_on_the_page(tmp_path):
+    """The walk classes twin and lift landings `tool` as stats does, credited to the tool; the
+    page has the tool rows (its flag-approved subset apart) and the caption says what it is."""
+    progress = provenance_module()
+    repo = tool_repo(tmp_path)
+    found = progress.load_provenance(repo, progress.derive(repo / "config"))
+    hist = stats.history(repo)
+    latest = {(e.exe, e.start): (e.cls, e.flags_approved) for e in hist.events}
+    ours = {(e.stem, e.start): (e.cls, e.flagged) for exe in found.exes for e in exe.events}
+    assert ours == {key: latest[key] for key in hist.matched}
+    doc = progress.build_provenance_doc(found)
+    assert doc["exes"][UFO]["classes"]["tool"] == {
+        "functions": 2, "flags_approved": 1,
+        "by_credit": {"reverseapoc lift": 1, "reverseapoc twins": 1}}  # fmt: skip
+    assert doc["exes"][UFO]["classes"]["human-written"]["functions"] == 1
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(repo / "config"), "--out", str(out), "--commit",
+                          SHA]) == 0  # fmt: skip
+    (section,) = _SECTION.findall((out / "index.html").read_text(encoding="utf-8"))
+    rows = re.findall(r'<tr><th scope="row">(.*?)</th>((?:<td>[^<]*</td>)+)</tr>', section)
+    cells = {name: re.findall(r"<td>([^<]*)</td>", tds) for name, tds in rows}
+    assert cells["tool"] == ["2", "0", "2"]
+    assert cells["tool, under approved flags"] == ["1", "0", "1"]
+    assert cells["human-written"] == ["1", "0", "1"]
+    assert "tool: reverseapoc lift 1, reverseapoc twins 1" in section
+    caption = progress.PROVENANCE_CAPTION
+    assert "Tool: a reverseapoc tool wrote the C with no model session" in caption
+    assert "Matched-By: reverseapoc twins" in caption and "Matched-By: reverseapoc lift" in caption
+    assert "converter (reverseapoc lift)" not in caption  # no longer called human-written
