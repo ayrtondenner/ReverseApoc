@@ -136,7 +136,7 @@ def _passing_controls(options, seams, arms, log) -> dict:
     driver.run_controls); the tmp repo holds no control unit."""
     return {"exe": driver.CANARY_EXE, "unit": driver.CANARY_UNIT,
             "function": driver.CANARY_FUNC, "gold": 0, "null": 1,
-            "null_percent": 72.5}  # fmt: skip
+            "null_percent": 72.5, "reloc": 1}  # fmt: skip
 
 
 @dataclass
