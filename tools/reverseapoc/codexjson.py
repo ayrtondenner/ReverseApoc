@@ -22,8 +22,9 @@ the requested model and a null `model`, and runs no init check.
   `write_targets`: every path a `file_change` item names. The driver's Codex audit reads the
   executions and the write targets (D-26). `unknown_items`: every item of a type outside
   KNOWN_ITEMS (an MCP tool call, a web search, ...), each a stray (07.2 review WR-03: fail
-  closed).
-- `failure`: the text of the first `turn.failed` or top-level `error`, else None.
+  closed), but a transport notice `error` item in its exact shape (run 20261119-3s-new).
+- `failure`: the text of the first `turn.failed` or top-level `error`, else None; a
+  "Reconnecting... n/m (" retry event is skipped in a session whose turn completed.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is LIMIT when its text says a usage limit was hit, else STOP (unknown fails closed);
   a session with a completed turn is counted; one with none is TRANSIENT.
@@ -52,6 +53,13 @@ _COMMAND = "command_execution"
 _FILE_CHANGE = "file_change"
 # WR-03: the items the audit reads (the two above) or that do nothing (text, reasoning, a plan)
 KNOWN_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", _COMMAND, _FILE_CHANGE})
+# Run 20261119-3s-new: Codex 0.167.0's transport notices, known in exact shape only. A retry is a
+# top-level {type: "error", message} event; the item {id, type: "error", message} carries a
+# retry or the WebSocket-to-HTTPS fallback. Any other error event or item is read as before.
+_RECONNECT = re.compile(r"Reconnecting\.\.\. [0-9]+/[0-9]+ \(")
+_FALLBACK = "Falling back from WebSockets to HTTPS transport. "
+_NOTICE_EVENT_KEYS = frozenset({"type", "message"})
+_NOTICE_ITEM_KEYS = frozenset({"id", "type", "message"})
 _MS_PER_S = 1000
 # _unwrapped: the shell's program (double-quoted, single-quoted or bare), then its arguments
 _SHELL = re.compile(r"""\s*(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>[^\s"']+))\s""")
@@ -222,7 +230,7 @@ def unknown_items(events: Sequence[dict]) -> list[str]:
             continue
         item = event.get("item")
         kind = item.get("type") if isinstance(item, Mapping) else None
-        if kind in KNOWN_ITEMS:
+        if kind in KNOWN_ITEMS or _notice_item(item):
             continue
         ident = item.get("id") if isinstance(item, Mapping) else None
         if isinstance(ident, str) and ident in seen:
@@ -234,6 +242,24 @@ def unknown_items(events: Sequence[dict]) -> list[str]:
     return out
 
 
+def _notice_item(item: object) -> bool:
+    """A transport notice item: exactly {id: str, type: "error", message}, its message a retry
+    ("Reconnecting... n/m (") or the fallback; it ran nothing (run 20261119-3s-new)."""
+    if not isinstance(item, Mapping) or set(item) != _NOTICE_ITEM_KEYS:
+        return False
+    message = item.get("message")
+    return (item.get("type") == _ERROR and isinstance(item.get("id"), str)
+            and isinstance(message, str)
+            and (_RECONNECT.match(message) is not None or message.startswith(_FALLBACK)))
+
+
+def _reconnect_event(event: Mapping) -> bool:
+    """A top-level retry notice: exactly {type: "error", message: "Reconnecting... n/m (..."}."""
+    message = event.get("message")
+    return (set(event) == _NOTICE_EVENT_KEYS and event.get("type") == _ERROR
+            and isinstance(message, str) and _RECONNECT.match(message) is not None)
+
+
 def _message(value: object) -> str:
     if isinstance(value, str):
         return value
@@ -242,12 +268,15 @@ def _message(value: object) -> str:
 
 
 def failure(events: Sequence[dict]) -> str | None:
-    """The text of the first `turn.failed` error or top-level `error`, else None."""
+    """The text of the first `turn.failed` error or top-level `error`, else None. A retry
+    notice (_reconnect_event) is skipped when the session completed a turn and failed none:
+    the CLI recovered (run 20261119-3s-new); otherwise it is the failure, as before."""
+    recovered = turns(events) > 0 and not any(e.get("type") == _TURN_FAILED for e in events)
     for event in events:
         kind = event.get("type")
         if kind == _TURN_FAILED:
             return _message(event.get("error"))
-        if kind == _ERROR:
+        if kind == _ERROR and not (recovered and _reconnect_event(event)):
             return _message(event.get("message", event))
     return None
 
