@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"made-up-thread-0022"}
+{"type":"turn.started"}
+{"type":"error","message":"Reconnecting... 2/5 (stream disconnected before completion: made-up transport error, request ID made-up-0004.)"}
+{"type":"turn.failed","error":{"message":"made-up turn failure after reconnects"}}

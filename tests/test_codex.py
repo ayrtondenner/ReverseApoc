@@ -23,7 +23,7 @@ import pytest
 
 from reverseapoc import backends, broker, codexjson, driver, session
 from reverseapoc.session import run_session
-from reverseapoc.streamjson import Usage
+from reverseapoc.streamjson import Disposition, Usage
 from reverseapoc.targets import REPO_ROOT
 from test_drive import Rig, _keyed
 from test_driver import EXE, FUNC, LOG, RUN, UNIT, Night, Sess
@@ -1043,6 +1043,98 @@ def test_an_unknown_codex_item_stops_the_night(tmp_path, capsys, monkeypatch):
     assert code != 0
     stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
     assert stopped["reason"] == driver.GUARDRAIL and "mcp_tool_call" in stopped["detail"], stopped
+
+
+# ---- Run 20261119-3s-new: a Codex transport reconnect notice is known in its exact shape ----
+
+_RECONNECT = ("Reconnecting... 2/5 (stream disconnected before completion: made-up transport "
+              "error, request ID made-up-0001.)")  # fmt: skip
+_FALLBACK = ("Falling back from WebSockets to HTTPS transport. stream disconnected before "
+             "completion: made-up transport error, request ID made-up-0003.")  # fmt: skip
+_DONE = {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+
+def test_a_reconnect_notice_in_a_completed_session_is_no_failure():
+    """Codex 0.167.0 streams a top-level `error` event for each transport retry
+    ("Reconnecting... n/5 (...)") and carries on: a session that then completes its turn has
+    no failure and is counted, never a D-08 STOP."""
+    events = _events("reconnect_completed")
+    assert codexjson.failure(events) is None
+    assert codexjson.classify(events, 0, False) is Disposition.ATTEMPT_DONE
+    assert "no signal" in driver.stop_signal(backends.CODEX, events)
+
+
+def test_a_reconnect_notice_keeps_todays_handling_when_the_turn_failed_or_never_ended():
+    """A failed turn after the retries, or a stream with no completed turn, stays a STOP named
+    by its first failure text (the reconnect notice), as before."""
+    failed = _events("reconnect_turn_failed")
+    assert codexjson.failure(failed).startswith("Reconnecting... 2/5 (")
+    assert codexjson.classify(failed, 0, False) is Disposition.STOP
+    unfinished = [{"type": "turn.started"}, {"type": "error", "message": _RECONNECT}]
+    assert codexjson.failure(unfinished) == _RECONNECT
+    assert codexjson.classify(unfinished, 0, False) is Disposition.STOP
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "error", "message": "made-up stream error"},
+    {"type": "error", "message": "Reconnecting... soon"},  # no n/m count
+    {"type": "error", "message": "made-up: Reconnecting... 2/5 (x)"},  # not at the start
+    {"type": "error", "message": _RECONNECT, "code": "made-up"},  # one key more
+    {"type": "error", "message": _FALLBACK},  # the fallback text is an item's, not an event's
+    {"type": "error", "message": ["Reconnecting... 2/5 ("]},
+])  # fmt: skip
+def test_any_other_top_level_error_still_stops_a_completed_session(event):
+    """Only the exact reconnect shape ({type, message}, the message "Reconnecting... n/m (")
+    is let pass; any other top-level error stays the session's failure (fail closed)."""
+    events = [{"type": "turn.started"}, event, _DONE]
+    assert codexjson.failure(events) is not None
+    assert codexjson.classify(events, 0, False) is Disposition.STOP
+
+
+def test_a_transport_notice_item_is_known_in_its_exact_shape():
+    """The `error` item Codex streams for a transport notice ({id, type: "error", message}, the
+    message "Reconnecting... n/m (" or "Falling back from WebSockets to HTTPS transport. ") is
+    no unknown item: it ran nothing. Run 20261119-3s-new's guardrail stray was the fallback."""
+    events = _events("reconnect_completed")
+    assert codexjson.unknown_items(events) == []
+    assert codexjson.unknown_items([_item("item_5", "error", message=_RECONNECT)]) == []
+
+
+@pytest.mark.parametrize("item", [
+    {"id": "a", "type": "error", "message": "Codex is ignoring 1 unrecognized configuration "
+                                            "setting. Check made-up"},  # spike 012's item
+    {"id": "b", "type": "error", "message": "made-up error"},
+    {"id": "c", "type": "error", "message": _FALLBACK, "command": "made-up"},  # one key more
+    {"type": "error", "message": _FALLBACK},  # no id
+    {"id": 7, "type": "error", "message": _RECONNECT},  # an id that is not a string
+    {"id": "d", "type": "error", "message": None},
+    {"id": "e", "type": "error", "message": "made-up " + _FALLBACK},  # not at the start
+])  # fmt: skip
+def test_any_other_error_item_stays_unknown(item):
+    """Fail closed (WR-03): an `error` item of any other shape or text is still a stray."""
+    found = codexjson.unknown_items([{"type": "item.completed", "item": item}])
+    assert len(found) == 1 and "'error'" in found[0], found
+
+
+def test_a_reconnecting_session_that_completes_does_not_stop_the_night(tmp_path, capsys,
+                                                                       monkeypatch):
+    """Run 20261119-3s-new at night: reconnect notices and the fallback item in a session that
+    completes its turn record the attempt; the night ends, never STOPPED."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="reconnect_completed")
+    code, _, err = _run_codex(capsys, rig, env)
+    assert code == 0, err
+    assert not [r for r in night.kinds("run") if r["event"] == "STOPPED"]
+    assert night.kinds("attempt")[0]["turns"] == 1
+
+
+def test_a_reconnecting_session_whose_turn_failed_still_stops_the_night(tmp_path, capsys,
+                                                                        monkeypatch):
+    """A failed turn after reconnects stays a D-08 stop signal at night, as before."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="reconnect_turn_failed")
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.STOP_SIGNAL and "Reconnecting... 2/5" in stopped["detail"]
 
 
 # ---- 07.2 review CR-01: uv never finds its project in the session's workspace ----
