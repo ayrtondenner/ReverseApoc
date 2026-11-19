@@ -1512,10 +1512,11 @@ def test_compare_text(tmp_path, capsys):
                 config=tmp_path / "config") == 0  # fmt: skip
     out = capsys.readouterr().out
     assert "  A held-a (anthropic/claude/claude-opus-5-5): 0 exact of 9 functions, 0.0% " in out
-    assert ("paired: 8 functions both runs attempted; both exact 0, A only 0, B only 6, "
+    assert ("paired A and B: 8 functions both runs finished; both exact 0, A only 0, B only 6, "
             "neither 2") in out
     assert "  B: 6 exact of 8, 75.0% [40.9%, 92.9%]" in out
-    assert "exact McNemar test (two-sided, 6 discordant pairs): p = 0.0312" in out
+    assert ("exact McNemar test (two-sided, 6 discordant pairs): p = 0.0312, Holm p = 0.0312 "
+            "(Holm-Bonferroni over 1 pair)") in out
 
 
 def test_compare_without_discordant_pairs_is_p_one(tmp_path, capsys):
@@ -1547,6 +1548,136 @@ def test_wilson_and_mcnemar_values():
     assert mcnemar_exact(0, 0) == 1.0
     assert mcnemar_exact(1, 4) == 0.375  # 2 * (1 + 5) / 32
     assert mcnemar_exact(5, 0) == 0.0625
+
+
+# ---- quick 261119-bho (RULINGS "Held comparisons"): finished picks, Holm across pairs ----
+
+_COPILOT = {"harness": "copilot", "backend": "github", "credits": 2.0}
+
+
+def _held(start: int, **change) -> dict:
+    return _on_v3(start, hold_run=True, **change)
+
+
+def _cut_log(tmp_path: Path) -> Path:
+    """Run A finishes 0x10000 (timeout), 0x10010 (lint) and 0x10020 (a Copilot session a denied
+    write ended), and is cut short on 0x10030 (guardrail) and 0x10040 (tool); run B finishes
+    0x10000 to 0x10040, exact on 0x10000, and never reaches 0x10050, which A finishes exact."""
+    a = [_held(0x10000, run="a", abort_reason="timeout"),
+         _held(0x10010, run="a", abort_reason="lint"),
+         _held(0x10020, run="a", outcome="GAVE_UP", abort_reason="guardrail", hook_blocks=1,
+               **_COPILOT),
+         _held(0x10030, run="a", outcome="GAVE_UP", abort_reason="guardrail"),
+         _held(0x10040, run="a", outcome="GAVE_UP", abort_reason="tool"),
+         _held(0x10050, run="a", outcome="HOLD_EXACT")]  # fmt: skip
+    b = [_held(0x10000 + 16 * i, run="b", outcome="HOLD_EXACT" if i == 0 else "PARTIAL")
+         for i in range(5)]  # fmt: skip
+    return _log(tmp_path, *a, *b)
+
+
+def test_compare_pairs_only_picks_both_runs_finished(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    doc = _json(capsys, repo, _cut_log(tmp_path), "--compare", "a", "b",
+                config=tmp_path / "config")  # fmt: skip
+    assert (doc["a"]["functions"], doc["a"]["exact"]) == (4, 1)  # 0x10030 and 0x10040 cut
+    assert (doc["b"]["functions"], doc["b"]["exact"]) == (5, 1)
+    paired = doc["paired"]
+    assert paired["functions"] == 3
+    assert (paired["both"], paired["a_only"], paired["b_only"], paired["neither"]) == (0, 0, 1, 2)
+    assert paired["left_out"] == {"functions": 3,
+                                  "a": {"cut_short": 2, "no_record": 0},
+                                  "b": {"cut_short": 0, "no_record": 1}}  # fmt: skip
+
+
+def test_compare_a_copilot_guardrail_without_a_refused_call_is_cut_short(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path,
+               _held(0x10000, run="a", outcome="GAVE_UP", abort_reason="guardrail",
+                     hook_blocks=0, **_COPILOT),
+               _held(0x10000, run="b"))  # fmt: skip
+    doc = _json(capsys, repo, log, "--compare", "a", "b", config=tmp_path / "config")
+    assert doc["paired"]["functions"] == 0
+    assert doc["paired"]["left_out"]["a"] == {"cut_short": 1, "no_record": 0}
+
+
+def test_compare_a_finished_record_beside_a_cut_one_finishes_the_pick(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path,
+               _held(0x10000, run="a", outcome="GAVE_UP", abort_reason="guardrail"),
+               _held(0x10000, run="a", attempt=2, outcome="HOLD_EXACT"),
+               _held(0x10000, run="b"))  # fmt: skip
+    paired = _json(capsys, repo, log, "--compare", "a", "b", config=tmp_path / "config")["paired"]
+    assert (paired["functions"], paired["a_only"]) == (1, 1)
+    assert paired["left_out"]["functions"] == 0
+
+
+def test_two_runs_give_a_holm_p_equal_to_the_raw_p(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    doc = _json(capsys, repo, _paired_log(tmp_path), "--compare", "held-a", "held-b",
+                config=tmp_path / "config")  # fmt: skip
+    assert doc["paired"]["holm_p"] == doc["paired"]["mcnemar_p"] == "0.0312"
+    assert [pair["paired"] for pair in doc["pairs"]] == [doc["paired"]]
+    assert [side["run"] for side in doc["runs"]] == ["held-a", "held-b"]
+
+
+def _three_run_log(tmp_path: Path) -> Path:
+    """Eight picks every run finishes: A none exact, B exact on 0-5, C exact on 0-4."""
+    records = [_on_v3(0x10000 + 16 * i, run=run, hold_run=True,
+                      outcome="HOLD_EXACT" if i < exact else "PARTIAL")
+               for run, exact in (("a", 0), ("b", 6), ("c", 5)) for i in range(8)]  # fmt: skip
+    return _log(tmp_path, *records)
+
+
+def test_compare_three_runs_holm_adjusts_every_pair(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    doc = _json(capsys, repo, _three_run_log(tmp_path), "--compare", "a", "b", "c",
+                config=tmp_path / "config")  # fmt: skip
+    assert "paired" not in doc and "a" not in doc
+    assert [(p["a"]["run"], p["b"]["run"]) for p in doc["pairs"]] == [
+        ("a", "b"), ("a", "c"), ("b", "c")]
+    assert [(p["paired"]["a_only"], p["paired"]["b_only"]) for p in doc["pairs"]] == [
+        (0, 6), (0, 5), (1, 0)]
+    assert [p["paired"]["mcnemar_p"] for p in doc["pairs"]] == ["0.0312", "0.0625", "1.0000"]
+    # Holm over 3: 3 x 0.03125, then max(that, 2 x 0.0625), then max(that, 1 x 1)
+    assert [p["paired"]["holm_p"] for p in doc["pairs"]] == ["0.0938", "0.1250", "1.0000"]
+
+
+def test_compare_three_runs_text(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    assert _run(repo, _three_run_log(tmp_path), "--compare", "a", "b", "c",
+                config=tmp_path / "config") == 0  # fmt: skip
+    out = capsys.readouterr().out
+    assert "  C c (anthropic/claude/claude-opus-5-5): 5 exact of 8 functions" in out
+    assert ("paired A and C: 8 functions both runs finished; both exact 0, A only 0, C only 5, "
+            "neither 3") in out
+    assert "  C: 5 exact of 8, 62.5% " in out
+    assert ("exact McNemar test (two-sided, 5 discordant pairs): p = 0.0625, Holm p = 0.1250 "
+            "(Holm-Bonferroni over 3 pairs)") in out
+
+
+def test_compare_text_names_the_left_out_picks(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    assert _run(repo, _cut_log(tmp_path), "--compare", "a", "b",
+                config=tmp_path / "config") == 0  # fmt: skip
+    out = capsys.readouterr().out
+    assert ("  left out: 3 functions not finished by both (A: 2 cut short, 0 no record; "
+            "B: 0 cut short, 1 no record)") in out
+
+
+def test_compare_needs_two_runs(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    assert _run(repo, _paired_log(tmp_path), "--compare", "held-a",
+                config=tmp_path / "config") == 2  # fmt: skip
+    assert "at least two runs" in capsys.readouterr().err
+
+
+def test_holm_values():
+    from reverseapoc.stats import holm
+
+    assert holm([]) == []
+    assert holm([0.04]) == [0.04]
+    assert holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])  # monotone step-down
+    assert holm([0.5, 0.6]) == [1.0, 1.0]  # capped at 1
 
 
 # ---- U7 (todo held-benchmark-statistics): the frozen held pick set ----
