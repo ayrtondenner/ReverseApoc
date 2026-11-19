@@ -623,7 +623,7 @@ def test_agyjson_knows_the_real_manage_task_status_poll():
     rejection: a poll ending DENIED ran, and one ending ERROR carries an `error` key, which is
     no longer its shape, so it is unknown (as an errored run_command is), even with a
     permission-check message. Anything else is unknown too (fail closed): another action
-    (agy's own skills use `kill`, which stops a task, and `list`), a parameter added or
+    (agy's own skills use `kill`, which stops a task; `list` with a TaskId), a parameter added or
     missing (a CommandLine or a Path among them), a non-string Action or TaskId, a tool_info
     name that is not its tool's, another tool_info key, a subagent's step."""
     path = "C:/x/orig/x.txt"
@@ -655,6 +655,24 @@ def test_agyjson_knows_the_real_manage_task_status_poll():
     for index, text in zip(range(10, 10 + len(unknown)), found, strict=True):
         assert f"step {index}: tool 'manage_task'" in text, (index, text)
     assert agyjson.commands(unknown) == [] and agyjson.denials(unknown) == []
+
+
+def test_agyjson_knows_the_real_manage_task_list():
+    """Run 20261119-quota (gpt-oss, agy 1.5.12) stopped on manage_task tool_info {name,
+    parameters: {Action: "list"}, output: "... No background tasks are currently running."}: a
+    listing of agy's own background tasks, which writes no file, runs no command and stops
+    nothing. That exact shape is known; a list carrying any other parameter (a TaskId, a
+    CommandLine) or a non-string Action stays unknown."""
+    listing = [_task(1, parameters={"Action": "list"}, state="ACTIVE"),
+               _task(2, parameters={"Action": "list"})]
+    listing[0]["step_update"]["tool_info"].pop("output")
+    assert agyjson.unknown_steps(listing) == []
+    assert agyjson.commands(listing) == [] and agyjson.denials(listing) == []
+    assert agyjson.read_targets(listing) == [] and agyjson.write_targets(listing) == []
+    unknown = [_task(3, parameters={"Action": "list", "TaskId": "made-up/task-10"}),
+               _task(4, parameters={"Action": "list", "CommandLine": "x"}),
+               _task(5, parameters={"Action": ["list"]})]
+    assert len(agyjson.unknown_steps(unknown)) == len(unknown)
 
 
 TIMER_OUTPUT = ("Timer cancelled early: its early-termination condition (made-up/task-10) was "

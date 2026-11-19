@@ -292,12 +292,14 @@ _WRITE_TOOLS = frozenset({_WRITE_ACTION, _EDIT_TOOL})
 # outlives its time limit, and the model polls that task with manage_task: tool_info {name,
 # parameters: {Action: "status", TaskId}, output} (the output, once DONE, the task's status
 # and its log's path), the same three tool_info keys as run_command. A status poll reads agy's
-# own task list: no file, no command, no task stopped. Only that action is known; `kill` (agy's
-# own skills use it) stops a task and `list` was never seen, so both stay unknown.
+# own task list: no file, no command, no task stopped. Run 20261119-quota (gpt-oss, agy 1.5.12)
+# added the listing, parameters {Action: "list"} alone, which reads the same task list. Only
+# those two shapes are known; `kill` (agy's own skills use it) stops a task, so it stays unknown.
 _TASK_TOOLS = frozenset({"manage_task"})
 _TASK_ACTION = "Action"
 _TASK_ID = "TaskId"
 _TASK_STATUS = "status"
+_TASK_LIST = "list"
 # spike 012 round 6 (the Claude 4.6 arms through agy 1.5.6): a timer the model sets to wait on a
 # backgrounded command; agy hands the model its own Prompt back after DurationSeconds, or early
 # when the task it waits on reports. No file, no command, no task stopped: only that shape.
@@ -369,12 +371,17 @@ def _real_command(name: str, info: Mapping) -> bool:
 
 
 def _real_task(name: str, info: Mapping) -> bool:
-    """agy 1.5.5's manage_task status poll and nothing more: tool_info names the tool, holds
-    only its name, parameters and output, and its parameters only Action "status" and a
-    string TaskId."""
+    """agy 1.5.5's manage_task status poll or agy 1.5.12's task listing and nothing more:
+    tool_info names the tool, holds only its name, parameters and output, and its parameters
+    are only Action "status" and a string TaskId, or only Action "list"."""
     parameters = info.get(_PARAMETERS)
-    return (info.get(_NAME) == name and set(info) <= _COMMAND_INFO
-            and isinstance(parameters, Mapping) and set(parameters) == {_TASK_ACTION, _TASK_ID}
+    if info.get(_NAME) != name or not set(info) <= _COMMAND_INFO:
+        return False
+    if not isinstance(parameters, Mapping):
+        return False
+    if set(parameters) == {_TASK_ACTION}:
+        return parameters[_TASK_ACTION] == _TASK_LIST
+    return (set(parameters) == {_TASK_ACTION, _TASK_ID}
             and parameters[_TASK_ACTION] == _TASK_STATUS
             and isinstance(parameters[_TASK_ID], str))  # fmt: skip
 

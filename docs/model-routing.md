@@ -547,7 +547,8 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   `parameters` with only `Action` `"status"` and a string `TaskId`, and once DONE `output`
   (the task's status and its log's path). A status poll reads agy's own task list, writes no
   file, runs no command and stops nothing, so that exact shape is known, in no command, read
-  or write list and never a denial. Any other action (`kill` stops a task; `list`), parameter
+  or write list and never a denial. So is the listing `parameters` `{"Action": "list"}` alone (run
+  20261119-quota, agy 1.5.12). Any other action (`kill` stops a task), parameter
   or key, an `error` included, makes it unknown. The Claude 4.6 arms wait on such a task with
   `schedule` instead (spike 012 round 6), a timer that hands the model its own `Prompt` back after
   `DurationSeconds`: `tool_info` holds `name`, `parameters` with only an integer
