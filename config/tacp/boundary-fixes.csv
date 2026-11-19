@@ -1,1 +1,12 @@
 action,row,at,ruled_on,evidence
+split,0x00013160,0x00013520,2026-11-19,call from 0x00011630; ret 0x13517 + filler + aligned push edx
+split,0x0001F270,0x0001F2B0,2026-11-19,call from 0x0005A27D; switch table head then filler + aligned prologue
+split,0x00027C6D,0x00027CB2,2026-11-19,12 calls from row 0x000310F0; leave/ret 0x27CB1 then enter/pushal prologue (hand asm)
+split,0x0002AE60,0x0002B9A0,2026-11-19,calls from 0x000327EA and 0x0002B845; ret 0x2B999 + filler + aligned prologue
+split,0x00038348,0x00038360,2026-11-19,2 calls from row 0x00037B50; switch table head then filler + aligned prologue
+split,0x000CA700,0x000CA723,2026-11-19,3 calls from row 0x000CB465; twin of ufo2p 0x000C7413 (HMI SOS stub)
+split,0x000CA700,0x000CA746,2026-11-19,call from row 0x000CB465; twin of ufo2p 0x000C7436 (HMI SOS stub)
+split,0x000CA700,0x000CA78A,2026-11-19,7 calls from row 0x000CB465; twin of ufo2p 0x000C747A (HMI SOS stub)
+split,0x000CA700,0x000CA7D8,2026-11-19,call from row 0x000CB465; twin of ufo2p 0x000C74C8 (HMI SOS stub)
+split,0x000CA988,0x000CA9BD,2026-11-19,3 calls from row 0x000CB465; twin of ufo2p 0x000C76AD (HMI SOS stub)
+split,0x000CA988,0x000CA9FC,2026-11-19,6 calls from row 0x000CB465; twin of ufo2p 0x000C76EC (HMI SOS stub)

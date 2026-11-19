@@ -1,1 +1,14 @@
 action,row,at,ruled_on,evidence
+split,0x00018005,0x000180D7,2026-11-19,call from 0x00073EAB; ret 4 at 0x180D4 then enter/pushal prologue (hand asm)
+split,0x00018005,0x0001813C,2026-11-19,call from 0x00073ECB; ret at 0x1813B then enter/pushal prologue (hand asm)
+split,0x0002E100,0x0002E310,2026-11-19,call from 0x000955DC; ret 0x2E306 + Watcom filler + aligned push prologue
+split,0x0002E100,0x0002E350,2026-11-19,8 calls from row 0x000946B0; ret 8 0x2E346 + filler + aligned prologue
+split,0x0006D000,0x0006D370,2026-11-19,3 calls from row 0x000709D0; ret 0x6D360 + filler + aligned prologue
+split,0x0007ECA0,0x0007EE70,2026-11-19,call from 0x0007DE3E; ret 0x7EE65 + filler + aligned push edx
+split,0x000BA7F0,0x000BA840,2026-11-19,call from 0x000BCAEE; ret 0xBA837 + filler + aligned prologue
+split,0x000C73F0,0x000C7413,2026-11-19,3 calls from row 0x000C8155; ret 0xC7412 then HMI SOS stub prologue
+split,0x000C73F0,0x000C7436,2026-11-19,call from row 0x000C8155; ret 0xC7435 then HMI SOS stub prologue
+split,0x000C73F0,0x000C747A,2026-11-19,7 calls from row 0x000C8155; ret 0xC7479 then HMI SOS stub prologue
+split,0x000C73F0,0x000C74C8,2026-11-19,call from row 0x000C8155; ret 0xC74C7 then HMI SOS stub prologue
+split,0x000C7678,0x000C76AD,2026-11-19,3 calls from row 0x000C8155; ret 0xC76AC then HMI SOS stub prologue
+split,0x000C7678,0x000C76EC,2026-11-19,6 calls from row 0x000C8155; ret 0xC76EB then HMI SOS stub prologue

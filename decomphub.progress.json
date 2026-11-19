@@ -27,7 +27,7 @@
       "measurement": {
         "kind": "ratio",
         "completed": 141,
-        "total": 1553,
+        "total": 1566,
         "unit": "functions"
       }
     },
@@ -38,7 +38,7 @@
       "measurement": {
         "kind": "ratio",
         "completed": 154,
-        "total": 1526,
+        "total": 1537,
         "unit": "functions"
       }
     }
