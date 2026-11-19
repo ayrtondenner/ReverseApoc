@@ -32,12 +32,16 @@ CHECK_ARGV = [*hooks.ATTEMPT_PREFIX, "check"]
 CONTROL_UNIT_REL = f"src/{driver.CANARY_EXE}/{driver.CANARY_UNIT}.c"
 CONTROL_UNIT = f"""#include "common.h"
 
-int func_000A3990(void);
+void func_000A3990(void);
+
+extern signed char D_0012EFAC;
 
 /* func_000A3980(void) {{ is how a comment may mention it; only the definition is changed */
+/* "D_0012EFAC" in a comment is not a relocation either */
 int {driver.CANARY_FUNC}(void)
 {{
-    return func_000A3990();
+    func_000A3990();
+    return D_0012EFAC;
 }}
 """
 CONTROL_ROWS = ("start,end,name,kind,unit,evidence\n"
@@ -47,8 +51,9 @@ ENVIRONMENT = {"digest": SHA_A, "head": "c" * 40, "image": f"sha256:{SHA_B}",
                "cli": {"claude": "2.1.302", "codex": None},
                "files": {"uv.lock": SHA_A, "config/driver/quota.toml": None},
                "prompt": SHA_B}  # fmt: skip
-CONTROLS = {"exe": "ufo2p", "unit": "u_000a34f0", "function": "func_000A3980", "gold": 0,
-            "null": 1, "null_percent": 72.5}
+CONTROLS_BEFORE_RELOC = {"exe": "ufo2p", "unit": "u_000a34f0", "function": "func_000A3980",
+                         "gold": 0, "null": 1, "null_percent": 72.5}  # fmt: skip
+CONTROLS = {**CONTROLS_BEFORE_RELOC, "reloc": 1}  # todo relocation-null-control on
 
 
 # ---- the record schema ----
@@ -70,6 +75,19 @@ def test_a_started_record_may_carry_its_environment_and_controls():
         driver.validate_record({**_started_v3(), "environment": ENVIRONMENT})
     with pytest.raises(driver.RecordError, match="STARTED"):
         driver.validate_record({**_run_v3(), "environment": ENVIRONMENT, "controls": CONTROLS})
+
+
+def test_controls_from_before_the_relocation_control_stay_valid():
+    """`reloc` is optional (D-23: no line is rewritten): controls without it and with it
+    validate; an unknown key, or a `reloc` that is no exit, does not."""
+    for controls in (CONTROLS_BEFORE_RELOC, CONTROLS):
+        driver.validate_record({**_started_v3(), "environment": ENVIRONMENT,
+                                "controls": controls})  # fmt: skip
+    for controls in ({**CONTROLS, "extra": 1}, {**CONTROLS, "reloc": "1"},
+                     {**CONTROLS, "reloc": True}, {**CONTROLS_BEFORE_RELOC, "extra": 1}):
+        with pytest.raises(driver.RecordError):
+            driver.validate_record({**_started_v3(), "environment": ENVIRONMENT,
+                                    "controls": controls})  # fmt: skip
 
 
 @pytest.mark.parametrize("change", [
@@ -105,13 +123,25 @@ def test_the_night_writes_both_into_started_only(tmp_path):
 @dataclass
 class CheckRunner(Runner):
     """Rig's runner, but the attempt wrapper's check answers `gold` in the gold control's
-    attempt dir (attempt-1) and `null` in the null one's (attempt-2), keeping each env and its
-    view unit's text."""
+    attempt dir (attempt-1), `null` in the null one's (attempt-2) and `reloc` in the
+    relocation one's (attempt-3), keeping each env and its view unit's text."""
 
     gold: int = 0
     null: int = 1
     null_percent: float | None = 72.5  # what the null check logs; None: not compiled
+    reloc: int = 1
+    reloc_ok: bool | None = False  # what the relocation check logs
+    reloc_bytes_ok: bool | None = True
+    reloc_logged: bool = True  # False: the relocation check wrote no checks.jsonl line
     checks: list[dict] = field(default_factory=list)
+
+    def _answer(self, name: str) -> tuple[int, float | None, bool | None, bool | None]:
+        """(exit, percent, reloc_ok, bytes_ok) of the control in attempt dir `name`."""
+        if name == "attempt-1":
+            return self.gold, 100.0, True, True
+        if name == "attempt-2":
+            return self.null, self.null_percent, True, self.null_percent == 100.0
+        return self.reloc, 100.0, self.reloc_ok, self.reloc_bytes_ok
 
     def __call__(self, argv, env=None) -> subprocess.CompletedProcess:
         if list(argv) != CHECK_ARGV:
@@ -120,9 +150,10 @@ class CheckRunner(Runner):
         attempt_dir = Path(env[attempt.DIR_ENV])
         unit = Path(env[hooks.UNIT_FILE_ENV]).read_text(encoding="utf-8")
         self.checks.append({"env": dict(env), "unit": unit, "dir": attempt_dir})
-        gold = attempt_dir.name == "attempt-1"
-        code, percent = (self.gold, 100.0) if gold else (self.null, self.null_percent)
-        line = attempt.CheckLogLine(1, code, False, percent, True, percent == 100.0, True, None,
+        code, percent, reloc_ok, bytes_ok = self._answer(attempt_dir.name)
+        if attempt_dir.name == "attempt-3" and not self.reloc_logged:
+            return subprocess.CompletedProcess(argv, code, "made-up check summary\n", "")
+        line = attempt.CheckLogLine(1, code, False, percent, reloc_ok, bytes_ok, True, None,
                                     "checks/0001.c")  # fmt: skip
         with (attempt_dir / attempt.CHECK_LOG).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line.to_json()) + "\n")
@@ -154,20 +185,23 @@ def _drive_with_controls(rig: Rig, capsys, monkeypatch) -> tuple[int, dict, list
 
 
 def test_a_healthy_checker_passes_and_the_night_gets_the_results(tmp_path, capsys, monkeypatch):
-    """Gold exit 0 and null exit 1 through the session's own wrapper argv and claim env: the
-    night starts with the results; the gold view unit is HEAD's, the null one's definition has
-    the null declaration and its comment is unchanged; each check had its plan and note."""
+    """Gold exit 0, null exit 1 and reloc exit 1 (bytes ok, reloc FAILED) through the session's
+    own wrapper argv and claim env: the night starts with the results; the gold view unit is
+    HEAD's, the null one's definition has the null declaration and its comment is unchanged,
+    the reloc one's names the other symbol; each check had its plan and note."""
     runner = CheckRunner()
     rig = _control_rig(tmp_path, runner)
     code, doc, seen = _drive_with_controls(rig, capsys, monkeypatch)
     assert code == 0, doc
     assert _one(seen).controls == CONTROLS
-    gold, null = runner.checks
+    gold, null, reloc = runner.checks
     assert gold["unit"] == CONTROL_UNIT
     assert null["unit"] != CONTROL_UNIT
     assert null["unit"].count(driver.CONTROL_NULL_DECLARATION) == 1
     assert "func_000A3980(void) { is how a comment" in null["unit"]
-    for check in (gold, null):
+    assert reloc["unit"] == driver.reloc_control_unit(CONTROL_UNIT)
+    assert reloc["dir"].name == "attempt-3"
+    for check in (gold, null, reloc):
         env = check["env"]
         assert env[attempt.CLAIM_ENV] == f"{driver.CANARY_EXE}/{driver.CANARY_UNIT}"
         assert env[attempt.FUNC_ENV] == driver.CANARY_FUNC
@@ -194,6 +228,40 @@ def test_a_broken_checker_refuses_the_night(tmp_path, capsys, monkeypatch, gold,
     assert not seen  # no night, so no run record
     log = rig.repo / "progress" / "attempts.jsonl"
     assert log.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.parametrize(("change", "named"), [
+    # the checker calls a wrong relocation target exact
+    ({"reloc": 0}, "the reloc control exit 0"),
+    # the repointed C did not keep the bytes: the control no longer isolates the relocations
+    ({"reloc_bytes_ok": False}, "the reloc control's bytes failed"),
+    # exit 1 for another reason than the relocation: the relocation compare passed it
+    ({"reloc_ok": True}, "the reloc control's relocations passed"),
+    # exit 1 with no measurement at all (the unit did not compile, or check printed no JSON)
+    ({"reloc_logged": False}, "the reloc control has no line"),
+    ({"reloc_ok": None, "reloc_bytes_ok": None}, "the reloc control's bytes failed"),
+])  # fmt: skip
+def test_a_checker_blind_to_relocations_refuses_the_night(tmp_path, capsys, monkeypatch,
+                                                          change, named):  # fmt: skip
+    rig = _control_rig(tmp_path, CheckRunner(**change))
+    code, doc, seen = _drive_with_controls(rig, capsys, monkeypatch)
+    assert code == driver.EXIT_TOOL
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "controls")
+    assert named in doc["detail"], doc["detail"]
+    assert not seen
+
+
+def test_the_reloc_unit_repoints_only_the_coded_extern():
+    """Its declaration and its use name the other symbol of the same type; a comment that names
+    it is unchanged; a unit without it in code is refused."""
+    text = driver.reloc_control_unit(CONTROL_UNIT)
+    assert f"extern signed char {driver.CONTROL_RELOC_TO};" in text
+    assert f"return {driver.CONTROL_RELOC_TO};" in text
+    assert f'"{driver.CONTROL_RELOC_FROM}" in a comment' in text
+    assert text.count(driver.CONTROL_RELOC_FROM) == 1  # the comment's alone
+    assert text.replace(driver.CONTROL_RELOC_TO, driver.CONTROL_RELOC_FROM) == CONTROL_UNIT
+    with pytest.raises(ValueError, match=driver.CONTROL_RELOC_FROM):
+        driver.reloc_control_unit(f"/* {driver.CONTROL_RELOC_FROM} */\nint f(void);\n")
 
 
 def test_a_second_start_with_the_same_run_id_runs_fresh_controls(tmp_path, capsys, monkeypatch):
@@ -330,19 +398,23 @@ def test_stats_run_prints_each_started_environment(tmp_path, capsys):
     record without them still prints, as such."""
     repo, _ = _repo(tmp_path)
     new = {**_started_v3(), "run": "new1", "environment": ENVIRONMENT, "controls": CONTROLS}
+    mid = {**_started_v3(), "run": "mid1", "environment": ENVIRONMENT,
+           "controls": CONTROLS_BEFORE_RELOC}  # fmt: skip
     old = {**_started_v3(), "run": "old1"}
-    log = _log(tmp_path, new, old)
+    log = _log(tmp_path, new, mid, old)
     config = tmp_path / "config"
     assert _stats_run(repo, log, "--run", "*", config=config) == 0
     out = capsys.readouterr().out.splitlines()
     head = out.index("environment per run:")
     assert out[head + 1].startswith(f"  new1: digest {SHA_A[:12]}")
     assert "claude 2.1.302" in out[head + 1]
-    assert out[head + 1].endswith("controls gold 0, null 1 (72.5%)")
-    assert out[head + 2] == "  old1: no environment recorded"
+    assert out[head + 1].endswith("controls gold 0, null 1 (72.5%), reloc 1")
+    assert out[head + 2].endswith("controls gold 0, null 1 (72.5%)")  # before the reloc control
+    assert out[head + 3] == "  old1: no environment recorded"
     doc = _json(capsys, repo, log, "--run", "*", config=config)
     assert doc["environments"] == [
         {"run": "new1", "environment": ENVIRONMENT, "controls": CONTROLS},
+        {"run": "mid1", "environment": ENVIRONMENT, "controls": CONTROLS_BEFORE_RELOC},
         {"run": "old1", "environment": None, "controls": None}]  # fmt: skip
     assert _json(capsys, repo, log, config=config)["environments"] is None
 

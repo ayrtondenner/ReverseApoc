@@ -25,3 +25,20 @@ Do, test first:
   night, like the other two;
 - record its exit beside `gold` and `null` in the STARTED record's `controls` and in the
   `stats` environment line, keeping older records readable.
+
+## Resolution (2026-11-19)
+
+Done in batch 261119-bhi (quick 261119-bhk): RED 20aff621, GREEN 63ce2399. driver.run_controls
+runs a third control (attempt-3, `reloc`): the canary unit with `extern signed char D_0012EFAC`
+(declaration and use, comments untouched) repointed to `D_001277E5`, the scalar `extern signed
+char` the matched src/ufo2p/u_00092250.c reads, not renamed in symbols.csv. It must exit 1 and
+its last checks.jsonl line must say bytes_ok true and reloc_ok false; exit 0, bytes failed, reloc
+ok or no line refuses the night. STARTED `controls` gains an optional `reloc` exit (records
+without it still validate), and `stats --run` appends `, reloc N`.
+
+Evidence (worktree, Watcom 10.6, no orig/): both units compiled with `reverseapoc cc`; `_TEXT`
+is 24 bytes in each and byte-identical (fixup fields included), publics identical
+(func_000A3980_ at 0xb, 13 bytes, `0f be 05` movsx before the field); the only difference is the
+fixup at _TEXT+0x13 (`_D_0012EFAC` -> `_D_001277E5`), and `reverseapoc compare-objects` reports
+`differ: _TEXT+0x13: relocation: target differs`. The full attempt check against orig/ (bytes ok,
+reloc FAILED) is left to the coordinator in the main checkout.
