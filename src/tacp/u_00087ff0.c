@@ -10,7 +10,6 @@
 INCLUDE_ASM(func_00088040);
 INCLUDE_ASM(func_00088210);
 INCLUDE_ASM(func_00088390);
-INCLUDE_ASM(func_00088450);
 INCLUDE_ASM(func_000884A0);
 INCLUDE_ASM(func_00088830);
 INCLUDE_ASM(func_000888C0);
@@ -73,6 +72,23 @@ void func_00088410(s32 a)
     if (p < D_001CAE18) {
         do {
             if (p->kind != 0 && p->unk_04 == a) {
+                func_00088040(p);
+            }
+            p++;
+        } while (p < D_001CAE18);
+    }
+}
+
+/* void: callers' use of EAX is not read; the target has no explicit result. */
+void func_00088450(s32 a)
+{
+    struct unk_0014 *p;
+
+    p = D_001CA968;
+    if (p < D_001CAE18) {
+        do {
+            if (p->kind != 0 &&
+                (p->unk_04 == a || *(s32 *)p->unk_08 == a)) {
                 func_00088040(p);
             }
             p++;
