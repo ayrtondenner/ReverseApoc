@@ -20,6 +20,14 @@ catches what the whole-EXE SHA-1 cannot: a match reverted to INCLUDE_ASM (its or
 land again, the SHA-1 still matches, but the start is missing from the landed set), a compiled
 unit nobody gated, and a matched row whose function moved to another unit.
 
+The #pragma / inline-asm scan (CLAUDE.md hard rule, owner ruling 2026-11-19): every harness
+(Claude Code, Codex, agy, Copilot, twins, flags) lands through gate, but only Claude Code runs the
+PreToolUse hook. So gate and gate --all run the hook's own scan (hooks.asm_problem, no second
+copy): each gated unit file under the matching layer's strict rule (any #pragma, `_asm`,
+`__asm`, `_Pragma`), every header in include/ under the always layer's lax rule (watcom_compat.h's
+clang #pragma and common.h's `##` stay allowed). A refused file is a mismatch naming the file and
+line; gate runs no check and writes nothing.
+
 `gate --all` re-proves every matched function without writing: check_source for each unit
 with matched rows, then ONE land_all (never check_unit per unit, which would recompile every
 unit for each one), the cross-check, and both SHA-1s through ExeLand.ok. It also compares each
@@ -68,7 +76,7 @@ from typing import Any
 # check_unit, check_source, land_all, load_exe and compile_source are looked up at call time
 # (`check_fn or check_unit`), so a test can stand a fake in for each.
 from . import check as _check  # DEFAULT_SRC, read at call time (tests stand a tree in)
-from . import unitdefs
+from . import hooks, unitdefs
 from .cflags import DEFAULT_CFLAGS
 from .check import (
     EXIT_MISMATCH,
@@ -92,7 +100,7 @@ from .check import (
     source_marks,
     unit_rule_path,
 )
-from .compiler import compile_source
+from .compiler import INCLUDE_DIR, compile_source
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -357,6 +365,31 @@ def _check_names(exe: str, unit: str, owners: Mapping[int, FunctionRow]) -> None
                              "identifier") from None  # fmt: skip
 
 
+# ---- #pragma and inline asm (the CLAUDE.md hard rule, on every harness) ----
+
+
+def unit_asm_problem(src: Path) -> str | None:
+    """Why the unit file `src` may not land, or None: the Claude Code hook's matching-layer scan
+    (hooks.asm_problem, strict: any #pragma, inline asm, `_Pragma`), which a Codex, agy or
+    Copilot session never ran. A missing file is check's to report."""
+    if not Path(src).is_file():
+        return None
+    problem = hooks.asm_problem(read_source(src), any_pragma_aux=True, any_pragma=True)
+    return None if problem is None else f"{src}: {hooks._MATCHING_ASM_RULE}: {problem}"
+
+
+def header_asm_problems(src_root: Path) -> list[str]:
+    """The hook's always-layer scan (lax) of every header in include/ beside `src_root`: a
+    plain #pragma (watcom_compat.h's clang one) and INCLUDE_ASM's `##` (common.h) stay allowed;
+    inline asm and a code-emitting `#pragma aux` do not."""
+    out = []
+    for header in sorted((Path(src_root).parent / INCLUDE_DIR).glob("*.h")):
+        problem = hooks.asm_problem(read_source(header))
+        if problem is not None:
+            out.append(f"{header}: {hooks._ALWAYS_ASM_RULE}: {problem}")
+    return out
+
+
 # ---- the cross-check (D-24) ----
 
 
@@ -613,6 +646,10 @@ def gate_units(
     c_names: dict[str, dict[str, int]] = {}
     for target in resolved:
         _check_names(target.name, target.unit, owners.get(target.name, {}))
+    banned = header_asm_problems(roots.src_root) + [
+        p for t in resolved if (p := unit_asm_problem(roots.unit_file(t.stem, t.unit)))]
+    if banned:
+        return GateResult(MODE_UNIT, labels, EXIT_MISMATCH, problems=tuple(banned))
     for target in resolved:
         matched_here = [r for r in _matched(tables).get(target.name, {}).values()
                         if r.unit == target.unit]  # fmt: skip
@@ -699,6 +736,9 @@ class _AllRun:
         if not src.is_file():
             self.problems.append(f"{name}: unit {unit} has matched rows but {src} is missing")
             return
+        banned = unit_asm_problem(src)
+        if banned is not None:
+            self.problems.append(banned)
         try:
             unit_rows = exe.unit_rows(unit)
         except CheckError as exc:
@@ -748,6 +788,7 @@ def gate_all(
     known = load_manifest(roots.manifest)
     run = _AllRun(roots, check_source_fn or check_source, compile_fn or compile_source,
                   objdiff_runner)  # fmt: skip
+    run.problems += header_asm_problems(roots.src_root)
     matched = _matched(_tables(roots.config_root, known))
     loaded, owners = {}, _owners(roots.config_root, known)
     for target in known:

@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import compiler, x86
+from . import compiler, hooks, x86
 from .cflags import Rule, parse_cflags, select_rule
 from .check import (
     DEFAULT_CONFIG,
@@ -649,16 +649,14 @@ def with_source(record: dict[str, Any], path: Path, text: str | None) -> dict[st
 
 # ---- source intake ----
 
-# The CLAUDE.md hard rule: no inline assembly to force a match.
-_BANNED = re.compile(r"#\s*pragma|\b_asm\b|\b__asm\b")
-
-
 def refusal(text: str) -> str | None:
-    """Why `text` may not be compiled (a #pragma or inline assembly), or None."""
-    hit = _BANNED.search(text)
-    if hit is None:
+    """Why `text` may not be compiled (a #pragma or inline assembly), or None. The CLAUDE.md
+    hard rule (no inline assembly to force a match) through the one scan the hook and gate use:
+    hooks.asm_problem, strict like the matching layer."""
+    problem = hooks.asm_problem(text, any_pragma_aux=True, any_pragma=True)
+    if problem is None:
         return None
-    return f"{hit.group(0)!r}: #pragma and inline assembly are not allowed"
+    return f"{problem}: #pragma and inline assembly are not allowed"
 
 
 def read_ascii(path: Path) -> str:
