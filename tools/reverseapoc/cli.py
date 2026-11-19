@@ -29,6 +29,7 @@ from . import (
     compare_objects,
     driver,
     flags,
+    handoff,
     lift,
     locate,
     mechanics,
@@ -2914,6 +2915,40 @@ def _add_stats_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_stats)
 
 
+# ---- handoff: the long-tail threshold of the hand-off board (owner ruling 2026-11-19) ----
+
+
+def _cmd_handoff(args: argparse.Namespace) -> int:
+    """Exit 0 done, 2 when the board, the attempt log, a status table, a hint file or the
+    tooling ledger cannot be read."""
+    config = REPO_ROOT / "config"
+    try:
+        done = handoff.plan(config, REPO_ROOT / attempt.ATTEMPT_LOG, datetime.now().date())
+    except (handoff.HandoffError, picker.PickerError, stats.StatsError, StatusError,
+            FunctionsError, ContextPackError) as exc:  # fmt: skip
+        print(f"reverseapoc handoff: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    written = handoff.write(config, done) if args.write else None
+    print(json.dumps(done.to_json(written is not None), indent=2, sort_keys=True) if args.json
+          else handoff.format_plan(done, written))  # fmt: skip
+    return 0
+
+
+def _add_handoff_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "handoff",
+        help="the hand-off board's threshold: list the functions with 24+ matching attempts "
+        "whose best did not rise over their last 9 (to retire onto config/handoff.csv) and the "
+        "long-tail rows an owner hint or landed tooling returns (host, stdlib)",
+    )
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true", help="list them; write nothing")
+    mode.add_argument("--write", action="store_true",
+                      help="remove the returned rows and add the retired ones")  # fmt: skip
+    p.add_argument("--json", action="store_true", help="print the plan as JSON (sorted keys)")
+    p.set_defaults(func=_cmd_handoff)
+
+
 # ---- causes: failed builds and mismatches by cause over drive runs (999.8; plan 07.2-04) ----
 
 
@@ -3179,6 +3214,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mechanics_command(sub)
     _add_flags_command(sub)
     _add_stats_command(sub)
+    _add_handoff_command(sub)
     _add_causes_command(sub)
     _add_requests_command(sub)
     _add_compare_objects_command(sub)
