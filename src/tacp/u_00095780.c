@@ -111,7 +111,6 @@ int func_00096B40(int a)
 }
 INCLUDE_ASM(func_00096C50);
 INCLUDE_ASM(func_00096F50);
-INCLUDE_ASM(func_00097370);
 
 extern float D_0030AB34[];
 extern char D_0030AB4C[];
@@ -136,4 +135,53 @@ void func_00096BB0(int a, int b, int row, float *out)
         }
         *out /= sum;
     }
+}
+
+extern unsigned char D_000EA08B;
+extern int D_002A1788;
+extern int D_0030C81C;
+extern char D_0030C7B8[];
+extern float D_0030C7A0[];
+/* EAX is unused after this call, so its result type is undetermined. */
+void func_0009CAC0(int, int, int *);
+int func_000974D0(int, int, int, int, int, int *, char *);
+
+int func_00097370(int a, int b, int row, int d, int e, int f,
+                  int *pos, float *out)
+{
+    int i;
+    float sum;
+    int handle;
+    float w;
+
+    if (D_000EA08B != 0 || a == 27) {
+        D_002A1788 = -1;
+        return 0;
+    }
+    if (D_002A1788 == -1) {
+        func_0009CAC0(a, 1, &D_0030C81C);
+        if (D_0030C81C == 0) {
+            *pos = -1;
+            *out = 0;
+            return 0;
+        }
+        D_002A1788 = 0;
+    }
+    *pos = D_002A1788;
+    *out = 0;
+    if (func_000974D0(a, b, D_002A1788, e, f, &handle, D_0030C7B8) == 0) {
+        func_0009F330(d, handle, D_0030C7B8, 6, D_0030C7A0);
+        sum = 0;
+        for (i = 0; i < 3; i++) {
+            w = D_0030C7A0[row * 3 + i];
+            *out += i * w;
+            sum += w;
+        }
+        *out /= sum;
+    }
+    D_002A1788++;
+    if (D_002A1788 < D_0030C81C)
+        return 1;
+    D_002A1788 = -1;
+    return 0;
 }
