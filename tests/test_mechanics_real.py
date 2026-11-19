@@ -10,7 +10,8 @@ bytes, so a failure never prints game code.
   kind of 07-05 is left out of the pin). Research Q1's numbers, except UFO2P's table step (see
   REACH_DIRECT_POINTER_TABLE).
 - The graph's direct edges are exactly contextpack.CallIndex's callees onto game/thunk rows, and
-  CallIndex's edge count is research's 5,288 / 4,885.
+  CallIndex's edge count is research's 5,288 / 4,885, moved by splits batch 1 (see
+  CALLINDEX_EDGES).
 - When config/mechanics-members.csv is committed, regenerating it gives the same bytes (the
   drift test). Before plan 07-22 writes it there is nothing to compare, and the test passes (F32).
 """
@@ -30,15 +31,24 @@ from reverseapoc.functions import read_symbols_csv
 CONFIG = REPO_ROOT / "config"
 MANIFEST = CONFIG / "targets.toml"
 EXES = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}
-# research 07-R1 Q1: game + thunk rows reachable from main_
-REACH_DIRECT = {"ufo2p": 1_128, "tacp": 1_224}
-REACH_DIRECT_POINTER = {"ufo2p": 1_412, "tacp": 1_479}
+# research 07-R1 Q1: game + thunk rows reachable from main_ (1,128 / 1,224, 1,412 / 1,479,
+# 1,429 / 1,479). Splits batch 1 (2026-11-19, 24 call-split rows) moved every step to the measured
+# value (direct +5 / +5, pointer and table +11 / +22): each reached new row is one more row
+# (with pointer edges ufo2p 11 of 13, 0x0007EE70 and 0x000BA840 stay unreached; tacp 11 of 11),
+# and in TACP the new rows 0x0001F2B0 and 0x00038360 also reach their switch-table heads and the
+# case-body rows of their pending merges (11 more). Removing the new rows from today's
+# direct + pointer graph gives the old 1,412 / 1,479 again.
+REACH_DIRECT = {"ufo2p": 1_133, "tacp": 1_229}
+REACH_DIRECT_POINTER = {"ufo2p": 1_423, "tacp": 1_501}
 # Research's table step reached 1,471 in UFO2P. callgraph.py (plan 07-05) wires a pointer run only
 # from the game/thunk rows that reference it, so the 31 game targets of runs referenced only from
 # runtime code are not reached, and the step stops at 1,429 (taking those runs as reached gives
 # 1,480). The pin follows the built rule; plan 07-22 records the difference (07-10 SUMMARY).
-REACH_DIRECT_POINTER_TABLE = {"ufo2p": 1_429, "tacp": 1_479}
-CALLINDEX_EDGES = {"ufo2p": 5_288, "tacp": 4_885}
+REACH_DIRECT_POINTER_TABLE = {"ufo2p": 1_440, "tacp": 1_501}
+# Research's 5,288 / 4,885; splits batch 1 (2026-11-19) adds the calls onto the new row starts
+# (ufo2p 13, tacp 12) and, in UFO2P, 3 callees now called from two pieces of one old row
+# (0x000187B8, 0x00027020, 0x00018005).
+CALLINDEX_EDGES = {"ufo2p": 5_304, "tacp": 4_897}
 TOLERANCE = 0.01
 
 
