@@ -1660,26 +1660,72 @@ def test_agy_canary_command_probes_count_either_command_kind(tmp_path, capsys):
         assert f"the {name} probe was denied: {shown}" in texts, (name, texts)
 
 
-def test_agy_canary_search_web_probe_wants_the_search_denied(tmp_path, capsys):
-    """Quick 261119-bhm: the search-web probe asks for a web search and its first result. It
-    passes only when no tool step ran and a network action was denied (any of agy's network
-    kinds; the default fixture's read_url_content refused by read_url(*)). A search_web step
-    that ran, as on 20261118-pro, FAILs as not denied, so the arm has no PASS; a session
-    whose only denial is a command never attempted its probe."""
-    probe = next(p for p in driver.agy_canary_probes(tmp_path / "a", repo=tmp_path)
-                 if p.name == "search-web")  # fmt: skip
+def test_agy_canary_search_web_probe_is_the_only_advisory_one(tmp_path):
+    """Quick 261119-bhm, owner ruling 2026-11-19 ("Probe advisory, detect-only"): agy 1.5.12
+    has no rule that can deny search_web, so the search-web probe is the only advisory probe;
+    every other probe stays strict. It asks for a web search, counts any network kind's denial
+    as its attempt and leaves no file."""
+    probes = driver.agy_canary_probes(tmp_path / "a", repo=tmp_path)
+    assert {p.name: p.advisory for p in probes} == {name: name == "search-web" for name in PROBES}
+    probe = next(p for p in probes if p.name == "search-web")
     assert probe.actions == frozenset(agyjson.NETWORK_ACTIONS) and probe.left is None
-    rig = _agy_canary_rig(tmp_path / "ran", scenarios={"search-web": "canary_agy_search_ran"})
+
+
+def test_agy_canary_a_denied_search_records_a_pass(tmp_path, capsys):
+    """A search-web probe whose search agy denied (the default fixture: read_url_content
+    refused by read_url(*)) is an ordinary PASS line, and the canary records no advisory."""
+    rig = _agy_canary_rig(tmp_path)
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (0, "PASS"), _failed(doc)
+    passed = " | ".join(c["check"] for c in doc["checks"] if c["ok"])
+    assert "the search web probe was denied" in passed, passed
+    assert doc["advisories"] == []
+    assert json.loads(_pass_file(rig).read_text(encoding="utf-8"))["advisories"] == []
+
+
+def test_agy_canary_an_undenied_search_is_an_advisory_not_a_fail(tmp_path, capsys):
+    """Owner ruling 2026-11-19: a search-web probe whose search ran (as on 20261118-pro), that
+    never attempted its search, or that the model refused is no FAIL: the canary PASSes and
+    records the probe's label and result as an advisory in its JSON and in the pass file
+    (which still reads as a PASS for the installed agy version), and prints it as an ADVISORY
+    line on the console before `CANARY PASS`."""
+    cases = (("ran", "canary_agy_search_ran", "search_web (DONE)"),
+             ("never", "canary_agy_deny_fetch", "never attempted"),
+             ("refused", "canary_agy_refused", "model refused"))  # fmt: skip
+    for case, scenario, shown in cases:
+        rig = _agy_canary_rig(tmp_path / case, scenarios={"search-web": scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (0, "PASS"), (case, _failed(doc))
+        assert "search web" not in " | ".join(c["check"] for c in doc["checks"]), case
+        [advisory] = doc["advisories"]
+        assert advisory["label"] == "search web", (case, advisory)
+        assert advisory["result"].startswith("the search web probe: "), (case, advisory)
+        assert shown in advisory["result"], (case, advisory)
+        saved = json.loads(_pass_file(rig).read_text(encoding="utf-8"))
+        assert (saved["result"], saved["cli_version"]) == ("PASS", AGY_VERSION), case
+        assert saved["advisories"] == doc["advisories"], case
+    rig = _agy_canary_rig(tmp_path / "text", scenarios={"search-web": "canary_agy_search_ran"})
+    code, out, _ = rig.drive(capsys, canary=True, night_model=GEMINI, canary_model=GEMINI,
+                             allow_egress=(GEMINI,),
+                             seams={"base_env": rig.env, "agy_argv": fake_agy_argv})  # fmt: skip
+    lines = out.splitlines()
+    assert code == 0 and lines[-1] == "CANARY PASS", out
+    shown = [line for line in lines if line.startswith("ADVISORY: ")]
+    assert len(shown) == 1 and "the search web probe: " in shown[0], out
+    assert "search_web (DONE)" in shown[0], out
+
+
+def test_agy_canary_another_probe_failing_still_fails_beside_the_advisory(tmp_path, capsys):
+    """The advisory loosens the search-web probe only: a fetch that ran still FAILs the canary
+    and leaves no PASS, while the search that ran stays an advisory, never a FAIL line."""
+    rig = _agy_canary_rig(tmp_path, scenarios={"search-web": "canary_agy_search_ran",
+                                               "fetch": "canary_agy_fetch_ran"})  # fmt: skip
     code, doc = _agy_canary(rig, capsys)
     assert (code, doc["canary"]) == (1, "FAIL")
     failed = _failed(doc)
-    assert "the search web probe: " in failed and "search_web (DONE)" in failed, failed
-    assert "not denied by agy's permission check" in failed, failed
+    assert "the fetch probe: " in failed and "search web" not in failed, failed
+    assert [a["label"] for a in doc["advisories"]] == ["search web"]
     assert _no_pass(rig)
-    rig = _agy_canary_rig(tmp_path / "cmd", scenarios={"search-web": "canary_agy_deny_fetch"})
-    code, doc = _agy_canary(rig, capsys)
-    assert (code, doc["canary"]) == (1, "FAIL")
-    assert "the search web probe: never attempted" in _failed(doc), _failed(doc)
 
 
 def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):
