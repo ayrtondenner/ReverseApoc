@@ -70,6 +70,7 @@ from .discover import DiscoverError, discover
 from .elf import ElfError
 from .fileio import write_atomic
 from .functions import (
+    BOUNDARY_FIXES_CSV,
     KIND_DATA_IN_CODE,
     KINDS,
     RUNTIME_VERSION,
@@ -77,8 +78,10 @@ from .functions import (
     FunctionRow,
     FunctionsError,
     Reconciled,
+    apply_boundary_fixes,
     functions_csv_path,
     read_boundaries_csv,
+    read_boundary_fixes_csv,
     read_functions_csv,
     read_symbols_csv,
     read_units_csv,
@@ -128,7 +131,7 @@ from .readlint import ReadlintError, run_readlint
 from .relocs import RelocError
 from .score import ScoreError, ScoreReport, assess
 from .splice import DEFAULT_OUT, SpliceError, rebuild
-from .status import StatusError
+from .status import MATCHED, STATUS_FILE, StatusError, read_status
 from .symbols import SymbolError, SymbolTable
 from .target import TargetError
 from .targets import (
@@ -696,6 +699,19 @@ def _format_functions_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _boundary_fixed(result: Reconciled, out_dir: Path, committed: Path) -> Reconciled:
+    """`result` with the owner's boundary-fixes.csv rulings applied (none: unchanged); a ruling
+    on a status.csv `matched` row is refused."""
+    fixes = _existing(out_dir / BOUNDARY_FIXES_CSV, committed / BOUNDARY_FIXES_CSV)
+    if fixes is None:
+        return result
+    status = _existing(out_dir / STATUS_FILE, committed / STATUS_FILE)
+    rows = read_status(status) if status else []
+    matched = frozenset(row.start for row in rows if row.status == MATCHED)
+    return dataclasses.replace(result, functions=apply_boundary_fixes(
+        result.functions, read_boundary_fixes_csv(fixes), matched=matched))  # fmt: skip
+
+
 def _cmd_functions(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
     out_dir = config_dir(target.name) if args.write else Path(args.output)
@@ -709,6 +725,7 @@ def _cmd_functions(args: argparse.Namespace) -> int:
     result = reconcile(le, read_ghidra_export(args.ghidra_export), found, runtime_rows,
                        existing=read_boundaries_csv(kept) if kept else (),
                        modules=matches)  # fmt: skip
+    result = _boundary_fixed(result, out_dir, config_dir(target.name))
     units = _existing(out_dir / "units.csv", config_dir(target.name) / "units.csv")
     rows = assign_units(result.functions, read_units_csv(units)) if units else result.functions
     write_functions_csv(out_dir / "functions.csv", rows, target.name)
