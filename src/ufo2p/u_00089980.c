@@ -17,7 +17,6 @@
 #define PAGER_INDEX_PAGE -1
 
 INCLUDE_ASM(pager_screen_run);
-INCLUDE_ASM(func_0008A0C0);
 INCLUDE_ASM(func_0008A1E0);
 INCLUDE_ASM(func_0008A420);
 INCLUDE_ASM(func_0008A900);
@@ -27,6 +26,15 @@ INCLUDE_ASM(func_0008B530);
 
 /* void: EAX only holds the callee's result at ret; the callers decide. */
 void pager_screen_run(int section, int page);
+
+/* void: EAX only holds the callee's result at ret; the callers decide. */
+void func_0008A0C0(void)
+{
+    extern short pager_screen_action;
+
+    pager_screen_run(0, PAGER_INDEX_PAGE);
+    pager_screen_action = 0;
+}
 
 /* pager_open_section_4: open paged screen section 4
  * Address: UFO2P.EXE 0x0008A100
