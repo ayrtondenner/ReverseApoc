@@ -2889,14 +2889,14 @@ def _cmd_stats(args: argparse.Namespace) -> int:
 
 
 def _stats_compare(args: argparse.Namespace, log: Path) -> int:
-    """Todo held-benchmark-statistics: exit 0 done, 2 when the log cannot be read, a run has
-    no matching attempt or --min-unattended is given too."""
+    """Todo held-benchmark-statistics: exit 0 done, 2 when the log cannot be read, fewer than
+    two runs are named, a run has no matching attempt or --min-unattended is given too."""
     if args.min_unattended is not None:
         print("reverseapoc stats: error: --compare does not take --min-unattended",
               file=sys.stderr)  # fmt: skip
         return EXIT_TOOL
     try:
-        doc = stats.compare(log, *args.compare)
+        doc = stats.compare(log, args.compare)
     except stats.StatsError as exc:
         print(f"reverseapoc stats: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
@@ -2925,10 +2925,12 @@ def _add_stats_command(sub: argparse._SubParsersAction) -> None:
     runs.add_argument("--run", action="append", default=None, metavar="RUN",
                       help="only the records of run RUN (repeatable; a trailing * names a "
                       "prefix, as in spike012-*), matched by their own logged matches")  # fmt: skip
-    runs.add_argument("--compare", nargs=2, default=None, metavar=("RUN_A", "RUN_B"),
-                      help="only compare two runs (a trailing * names a prefix): each run's "
-                      "exact functions with a Wilson 95%% interval, and the functions both "
-                      "attempted paired, with an exact McNemar test")  # fmt: skip
+    runs.add_argument("--compare", nargs="+", default=None, metavar="RUN",
+                      help="only compare two or more runs (a trailing * names a prefix): each "
+                      "run's exact functions with a Wilson 95%% interval, and every pair of "
+                      "runs on the functions both finished (a record a stop cut short is not), "
+                      "with an exact McNemar test and its Holm-Bonferroni adjustment over the "
+                      "pairs")  # fmt: skip
     p.set_defaults(func=_cmd_stats)
 
 

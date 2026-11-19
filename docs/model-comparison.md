@@ -605,9 +605,22 @@ matched functions. `stats` classes the twin landings as human-written (todo
    `--arm` per arm (see [model-routing.md](model-routing.md#several-arms-in-one-drive)).
 3. Before landing, save `reverseapoc stats --run '<id>-*'` as text and with `--json` under
    `build/gate/<id>/`; after `drive --land-held '<id>-*'`, run it again for the matched credit.
-4. Read the quota meters before and after (the Claude weekly bar, Codex's two windows, agy's
+4. For the paired test, run `reverseapoc stats --compare <id>-<arm1> <id>-<arm2> [...]` (two or
+   more arm runs), as text and with `--json`, beside the stats files. It compares every pair of
+   runs with the exact McNemar test and reports each pair's raw p and its Holm-Bonferroni p over
+   all the pairs (owner ruling 2026-11-19). With two runs the Holm p equals the raw p. Read the
+   Holm p when you rank more than two arms.
+   A pair counts only the picks both runs finished. A pick is finished in a run when the run has
+   an attempt record of it that a stop did not cut short (`driver._cut_short`, the rule a held
+   run uses to try a function again). MATCHED, HOLD_EXACT, PARTIAL and GAVE_UP count when the
+   abort reason is none, timeout or lint, and so does a Copilot GAVE_UP guardrail record with a
+   refused call (the session ended on a denied write). A record with abort reason guardrail or
+   tool does not count. A session that a usage limit, a stop or an interrupt killed leaves no attempt
+   record. So an arm that was dropped or ran out of quota enters a pair only on the picks it
+   finished. Each pair names how many picks it left out, per run, as cut short or no record.
+5. Read the quota meters before and after (the Claude weekly bar, Codex's two windows, agy's
    `/usage` groups, OpenRouter's credits) and write them down with the time.
-5. Add a new dated section above "Adding the next comparison" with the same tables, mark every
+6. Add a new dated section above "Adding the next comparison" with the same tables, mark every
    list-price, screenshot, recomputed and derived figure, and keep the older sections as they
    are. If a measurement fault is fixed in between (such as the Codex double count), say which
    figures it changes.
