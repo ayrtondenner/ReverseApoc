@@ -11,6 +11,19 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-19: splits batch 1, and most merge suspects are shared epilogues
+
+- The first boundary fixes went through `config/<exe>/boundary-fixes.csv`: 24 call splits (ufo2p 13,
+  tacp 11). Twelve are HMI SOS sound-driver stubs (ufo2p unit u_000c7140, tacp u_000ca450, the same
+  code at the same unit offsets), each called from one dispatcher row and each with its own prologue
+  and ret. ufo2p 0x00018005 is three back-to-back hand-asm VESA routines, not text read as code; the
+  text sits in unit u_00018970. The tail of partial row ufo2p 0x00073E60 holds two small C functions
+  (0x73EA0, 0x73EC0), which likely explains its 30% best.
+- Of 22 merge suspects only 6 were real: switch case bodies cut out of their function. Most of the
+  rest are a Watcom pattern `mechanics interior` reads as a merge: a function jumps into another
+  function's shared `ret` or matching epilogue. Their rows went back to the queues; a filter for the
+  pattern is todo shared-epilogue-filter.
+
 ## 2026-11-18: the three-shapes stop rule ends every Terra session at 3 checks
 
 - Part C (run 20261118-flags): a Sol near-miss pass on 4 flag-blocked rows matched 2 under the

@@ -23,3 +23,24 @@ Status (batch 2026-11-18, U15): `reverseapoc mechanics interior` reports 114 UFO
 ## Status (2026-11-19)
 
 Status (batch 261119-bhi, quick 261119-bhq): the supported fix input landed: `config/<exe>/boundary-fixes.csv` (`action,row,at,ruled_on,evidence`; split or merge), applied by `functions --write` right after reconcile, refusing matched rows (docs/toolchain.md, "Function boundaries"). Both files are header only. All 122 unmatched rows of the current `mechanics interior` split and merge fixes (76 UFO2P, 46 TACP; 14 of them call-split targets) sit on config/handoff.csv with return rule "boundary fixed". Rows only on `review` fixes (a matched row is involved, so no boundary fix will land) stay in the agent queues. Left: the owner's rulings written into boundary-fixes.csv, functions.csv regenerated in the container, and the board rows of each landed fix deleted (a merged-away start is no row start any more, so the drive would refuse its board row).
+
+## Status (2026-11-19, batch 1 landed)
+
+- Splits batch 1 (owner: "Yes, land and re-sign"): the 24 call-split fixes (ufo2p 13, tacp 11) in
+  config/<exe>/boundary-fixes.csv, `functions --write` for both EXEs, 14 INCLUDE_ASM markers, the four touched units
+  re-gated, cd-map, asm list and tiers 1-3 re-signed (1384736e, 3af7191a, ad55f17a, 3142500d, de90352a, 39afad5f,
+  325e2989). tacp 0x000B12E0 at 0x000B13E0 was skipped (a jmp, not a call). Moved pins: asmclass unaligned rows
+  213->221 / 216->223; REACH_DIRECT 1128->1133 / 1224->1229; REACH_DIRECT_POINTER 1412->1423 / 1479->1501;
+  REACH_DIRECT_POINTER_TABLE 1429->1440 / 1479->1501; CALLINDEX_EDGES 5288->5304 / 4885->4897. Proof: gate --all and
+  ninja verify OK (UFO2P e7488bf3... landed 141, TACP 48ef0096... landed 154); host and container suites green
+  after the three real-file tests that the splits move were fixed (325e2989). `mechanics interior`: suspects
+  202 -> 128, fixes 51 -> 28.
+- Merge review: 6 of 22 merge fixes APPLY (ufo2p 0x24470, 0x7DD64; tacp 0x1F2B0 chain from 0x1F270, 0x24B30,
+  0x38360 chain from 0x38348, 0x43C00), plus 2 splits surfaced (tacp 0x00038610, ufo2p 0x0002E280); owner ruled
+  "Yes, land and re-sign" for batch 2 after the drives. The other 16 were skipped and their 76 board rows returned
+  to the queues (owner: "Return them to the queues"): shared-epilogue false positives (ufo2p 0x18577, 0x21800,
+  0x28E20, 0x4A9D0, 0x7BB23, 0xAEAB0, 0xAF700; tacp 0x27DB3, 0x34450), callback rows (ufo2p 0x50D70), the
+  8-9-row spans (ufo2p 0x51DD0, 0xBBF90, 0xBC220; tacp 0xAFDF0), text noise (ufo2p 0x189C0), and tacp 0x28A13
+  (a correct merge held because it crosses units and gains nothing for matching). Evidence:
+  the 2026-11-19 merge review (docs/learnings.md, 2026-11-19).
+- Left: batch 2; todo shared-epilogue-filter.
