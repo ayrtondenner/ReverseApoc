@@ -915,6 +915,8 @@ PLAN_TYPES = ("docs",)
 CO_AUTHOR, MATCHED_BY = "co-authored-by", "matched-by"
 MATCHED_BY_TOOL = "reverseapoc "  # Matched-By: reverseapoc drive / lift name the tool, no model
 MATCHED_BY_DRIVE = MATCHED_BY_TOOL + "drive"  # the driver ran the session; the model wrote the C
+# twins (the twin lander) and lift (the converter) wrote the C themselves: the tool class
+MATCHED_BY_WRITERS = (MATCHED_BY_TOOL + "twins", MATCHED_BY_TOOL + "lift")
 RUN_KIND, RUN_FINAL = "run", ("ENDED", "STOPPED")  # STARTED alone is a run still going
 _GIT_SAFE = ("-c", "safe.directory=*")
 _RECORD, _UNIT_SEP, _TRAILER_SEP = "\x1e", "\x1f", "\x1d"
@@ -1450,8 +1452,8 @@ def load_timeline(repo: Path, asm: Iterable[tuple[str, int]]) -> Timeline | None
 # function counts once, by its latest event; one status.csv calls matched with no event (a
 # history cut short) is unclassed, so the classes and unclassed add up to the matched count.
 
-PROVENANCE_CLASSES = ("unattended", "human-hints", "human-written")  # stats.CLASSES
-UNATTENDED, HUMAN_HINTS, HUMAN_WRITTEN = PROVENANCE_CLASSES
+PROVENANCE_CLASSES = ("unattended", "human-hints", "tool", "human-written")  # stats.CLASSES
+UNATTENDED, HUMAN_HINTS, TOOL, HUMAN_WRITTEN = PROVENANCE_CLASSES
 MATCH_HINTS, FLAGS_APPROVED_BY = "match-hints", "flags-approved-by"
 STATUS_PATHS = {f"config/{stem}/{STATUS_CSV}": stem for stem, _label in EXES}
 _NO_BLOB = re.compile(r"0+")  # --raw's id of the side a commit adds or deletes
@@ -1490,13 +1492,14 @@ class Provenance:
 
 def provenance_class(trailers: Iterable[tuple[str, str]]) -> tuple[str, bool]:
     """A match commit's class and whether it is flag-approved (stats.classify's rule): the
-    driver's Matched-By without Match-Hints is unattended, with it human-hints, no driver
-    Matched-By human-written."""
+    driver's Matched-By without Match-Hints is unattended, with it human-hints; no driver
+    Matched-By but a reverseapoc twins or lift one is tool, else human-written."""
     pairs = [(key.strip().lower(), value.strip()) for key, value in trailers]
     keys = {key for key, _value in pairs}
     flagged = FLAGS_APPROVED_BY in keys
     if (MATCHED_BY, MATCHED_BY_DRIVE) not in pairs:
-        return HUMAN_WRITTEN, flagged
+        tool = any(key == MATCHED_BY and value in MATCHED_BY_WRITERS for key, value in pairs)
+        return (TOOL if tool else HUMAN_WRITTEN), flagged
     return (HUMAN_HINTS if MATCH_HINTS in keys else UNATTENDED), flagged
 
 
@@ -3048,10 +3051,12 @@ PROVENANCE_CAPTION = (
     "trailers the way reverseapoc stats classes it. Unattended: the driver ran the session "
     "(Matched-By: reverseapoc drive) and no human hint went in. Human-hints: the driver ran the "
     "session with the owner's notes (Match-Hints). "
-    "Human-written: no driver session, so a person in an AI-assisted session, a converter "
-    "(reverseapoc lift) or a spike wrote it. Each match is credited to the model that made it "
-    "(the commit's first co-author) or to the converter. Under approved flags: the owner "
-    "approved compiler flags for the match's unit (Flags-Approved-By), a subset of its class.")
+    "Tool: a reverseapoc tool wrote the C with no model session (Matched-By: reverseapoc twins, "
+    "the twin lander, or Matched-By: reverseapoc lift, the converter). "
+    "Human-written: no driver session and no tool, so a person in an AI-assisted session or a "
+    "spike wrote it. Each match is credited to the model that made it (the commit's first "
+    "co-author) or to the tool. Under approved flags: the owner approved compiler flags for the "
+    "match's unit (Flags-Approved-By), a subset of its class.")
 # The table's class rows: (row header, its number in one _split_doc), each class then its
 # flag-approved subset.
 _PROVENANCE_ROWS: tuple[tuple[str, Callable[[Mapping], int]], ...] = tuple(

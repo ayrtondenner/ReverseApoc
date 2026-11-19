@@ -1,5 +1,5 @@
 """`reverseapoc stats` (DEC-07, plan 07-37): the attempt log read through the driver's own
-validator, every match classed from git trailers (unattended, human-hints, human-written; the
+validator, every match classed from git trailers (unattended, human-hints, tool, human-written; the
 flag-approved subset of research R4 shown on its own), and the research metrics.
 
 Every git test runs on a synthetic repository; only test_committed_history_classes reads the
@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import reverseapoc
-from reverseapoc import cli  # imports reverseapoc.stats with the verb
+from reverseapoc import cli, flags, twins  # cli imports reverseapoc.stats with the verb
 from reverseapoc.attempt import ATTEMPT_LOG
 from reverseapoc.functions import FunctionRow, format_functions_csv
 from reverseapoc.mechanics import MemberRow, write_members
@@ -94,7 +94,7 @@ def _json(capsys, repo: Path, log: Path, *extra: str, config: Path | None = None
 def test_classes_from_trailers(tmp_path, capsys):
     repo = _classed_repo(tmp_path)
     report = _json(capsys, repo, _empty_log(tmp_path))
-    assert report["classes"] == {"human-hints": 1, "human-written": 1, "unattended": 2}
+    assert report["classes"] == {"human-hints": 1, "human-written": 1, "tool": 0, "unattended": 2}
     assert report["flags_approved"] == 1
     events = report["events"]
     assert [(e["exe"], e["start"], e["class"], e["flags_approved"]) for e in events] == [
@@ -168,6 +168,73 @@ def test_min_unattended_with_json(tmp_path, capsys):
     repo = _classed_repo(tmp_path)
     assert _run(repo, _empty_log(tmp_path), "--json", "--min-unattended", "3") == 1
     assert json.loads(capsys.readouterr().out)["classes"]["unattended"] == 2
+
+
+# ---- todo stats-tool-class (ruling 2026-11-19): twin and lift landings are "tool" ----
+
+_TWINS = twins.MATCHED_BY  # "Matched-By: reverseapoc twins"
+_LIFT = f"Matched-By: {flags.AUTHORS[0]}"  # "Matched-By: reverseapoc lift"
+_FLAGGED = "Flags-Approved-By: NAME (F-0001, 2026-11-01)"
+
+
+def _tool_repo(tmp_path: Path) -> Path:
+    """One match each: a twin landing, a lift landing under approved flags, a spike subagent's
+    and a search's batch landings, a drive match that also names lift (the driver wins) and a
+    plain drive match."""
+    repo, env = _repo(tmp_path)
+    rows: dict[int, str] = {}
+    for start, trailers in [(0x10010, (_TWINS,)), (0x10020, (_LIFT, _FLAGGED)),
+                            (0x10030, ("Matched-By: claude subagent (spike 011)", _FLAGGED)),
+                            (0x10040, ("Matched-By: reverseapoc search", _FLAGGED)),
+                            (0x10050, (_DRIVE, _LIFT)), (0x10060, (_DRIVE,))]:  # fmt: skip
+        rows[start] = "matched"
+        _commit(repo, env, "ufo2p", dict(rows), f"feat(ufo2p): match {start:x}", *trailers)
+    return repo
+
+
+def test_twin_and_lift_landings_are_the_tool_class(tmp_path, capsys):
+    """Only `reverseapoc twins` and `reverseapoc lift` without the driver's Matched-By are
+    tool-written; a spike subagent's or a search's landing stays human-written, and the
+    driver's trailer wins over a tool's. Flags-Approved-By stays the orthogonal flag of the
+    event; the top-level flag-approved count stays the unattended subset (R4)."""
+    assert reverseapoc.stats.CLASSES == ("unattended", "human-hints", "tool", "human-written")
+    report = _json(capsys, _tool_repo(tmp_path), _empty_log(tmp_path))
+    assert [(e["start"], e["class"], e["flags_approved"]) for e in report["events"]] == [
+        ("0x00010010", "tool", False),
+        ("0x00010020", "tool", True),
+        ("0x00010030", "human-written", True),
+        ("0x00010040", "human-written", True),
+        ("0x00010050", "unattended", False),
+        ("0x00010060", "unattended", False),
+    ]
+    assert report["classes"] == {"unattended": 2, "human-hints": 0, "tool": 2, "human-written": 2}
+    assert report["flags_approved"] == 0
+
+
+def test_tool_needs_the_exact_value(tmp_path):
+    """A Matched-By that only starts like a tool's, or a driver match with hints that names a
+    tool, is not the tool class."""
+    assert reverseapoc.stats.classify([("Matched-By", "reverseapoc twins2")])[0] == "human-written"
+    assert reverseapoc.stats.classify([("matched-by", " reverseapoc lift ")])[0] == "tool"
+    hinted = [("Matched-By", "reverseapoc drive"), ("Match-Hints", "x"),
+              ("Matched-By", "reverseapoc twins")]  # fmt: skip
+    assert reverseapoc.stats.classify(hinted) == ("human-hints", False)
+
+
+def test_text_names_the_tool_class(tmp_path, capsys):
+    assert _run(_tool_repo(tmp_path), _empty_log(tmp_path)) == 0
+    lines = capsys.readouterr().out.splitlines()
+    i = lines.index("  human-hints: 0")
+    assert lines[i + 1 : i + 3] == ["  tool: 2", "  human-written: 2"]
+
+
+def test_min_unattended_does_not_count_tool_matches(tmp_path, capsys):
+    """AGT-11: --min-unattended counts unattended matches only, never tool ones."""
+    repo = _tool_repo(tmp_path)
+    log = _empty_log(tmp_path)
+    assert _run(repo, log, "--min-unattended", "3") == 1
+    assert "unattended 2 is below --min-unattended 3" in capsys.readouterr().err
+    assert _run(repo, log, "--min-unattended", "2") == 0
 
 
 def _attempt_v1(**change) -> dict:
@@ -289,7 +356,7 @@ def test_a_refused_landing_is_no_match(tmp_path, capsys):
 def test_empty(tmp_path, capsys):
     repo, _ = _repo(tmp_path)
     report = _json(capsys, repo, _empty_log(tmp_path))
-    assert report["classes"] == {"human-hints": 0, "human-written": 0, "unattended": 0}
+    assert report["classes"] == {"human-hints": 0, "human-written": 0, "tool": 0, "unattended": 0}
     assert report["flags_approved"] == 0
     assert report["events"] == []
     assert report["attempts"]["records"] == 0
@@ -466,7 +533,7 @@ def test_tier_split(tmp_path, capsys):
             "feat: three matches", _DRIVE)  # fmt: skip
     _members(repo / "config", [(0x10000, (2, 3)), (0x10100, (1,))])
     report = _json(capsys, repo, _empty_log(tmp_path))
-    zero = dict.fromkeys(("human-hints", "human-written"), 0)
+    zero = dict.fromkeys(("human-hints", "tool", "human-written"), 0)
     assert report["by_tier"] == {
         "1": {**zero, "unattended": 1},
         "2": {**zero, "unattended": 1},
@@ -514,7 +581,7 @@ def test_rematch_counted_once(tmp_path, capsys):
     _commit(repo, env, "ufo2p", {0x10000: "matched"}, "feat: match again by hand")
     report = _json(capsys, repo, _empty_log(tmp_path))
     assert [e["class"] for e in report["events"]] == ["unattended", "human-written"]
-    assert report["classes"] == {"human-hints": 0, "human-written": 1, "unattended": 0}
+    assert report["classes"] == {"human-hints": 0, "human-written": 1, "tool": 0, "unattended": 0}
     assert report["re_matched"] == ["ufo2p 0x00010000"]
     assert report["reverted"] == []
 
@@ -688,7 +755,7 @@ def test_a_merged_history_classes_every_match(tmp_path, capsys):
     classes = {e["start"]: e["class"] for e in report["events"]}
     assert classes == {"0x00000100": "unattended", "0x00000108": "human-written",
                        "0x00000300": "unattended"}  # fmt: skip
-    assert report["classes"] == {"human-hints": 0, "human-written": 1, "unattended": 2}
+    assert report["classes"] == {"human-hints": 0, "human-written": 1, "tool": 0, "unattended": 2}
     assert report["reverted"] == []
 
 
@@ -707,7 +774,7 @@ def test_a_revert_on_one_branch_is_not_counted(tmp_path, capsys):
     assert ("ufo2p", 0x100) not in _head_matched(repo, env)
     report = _json(capsys, repo, _empty_log(tmp_path))
     assert report["reverted"] == ["ufo2p 0x00000100"]
-    assert report["classes"] == {"human-hints": 0, "human-written": 0, "unattended": 1}
+    assert report["classes"] == {"human-hints": 0, "human-written": 0, "tool": 0, "unattended": 1}
 
 
 # ---- Phase 07.2 (D-16, D-22): stats --run and the model x size-bucket table ----

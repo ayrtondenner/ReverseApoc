@@ -8,9 +8,12 @@ data only, so CI can run it.
   config/<exe>/status.csv oldest first, a start that becomes `matched` in a commit is a match
   event, classed by that commit's trailers: `Matched-By: reverseapoc drive` without
   `Match-Hints:` is `unattended`; with `Match-Hints:` it is `human-hints` (the committed carrier
-  of the owner's notes in manual packs, which CI cannot read); no driver `Matched-By` is
+  of the owner's notes in manual packs, which CI cannot read); no driver `Matched-By` but
+  `Matched-By: reverseapoc twins` or `Matched-By: reverseapoc lift` is `tool` (a tool wrote the
+  C, no person or session; todo stats-tool-class, ruling 2026-11-19); anything else is
   `human-written`. A missing trailer is not an error. `Flags-Approved-By:` keeps the class
-  `unattended` (research R4, D-13) and is reported as its own subset, never hidden in it.
+  (`unattended` stays `unattended`, research R4, D-13) and is reported as its own subset of
+  the unattended matches, never hidden in it.
 - A function counts once in the class totals, by its latest event; one matched again after a
   revert is listed under re-matched, one not matched in HEAD's status tables under
   reverted (and is not counted). AGT-11 is the unattended count.
@@ -47,16 +50,19 @@ from fractions import Fraction
 from pathlib import Path
 from statistics import NormalDist
 
-from . import backends, driver
+from . import backends, driver, twins
 from .functions import FunctionsError, read_functions_csv
 from .mechanics import EXES, MEMBERS_CSV, MechanicsError, read_members
 from .streamjson import TOKENS_PER_MTOK
 
-CLASSES = ("unattended", "human-hints", "human-written")
-UNATTENDED, HUMAN_HINTS, HUMAN_WRITTEN = CLASSES
+CLASSES = ("unattended", "human-hints", "tool", "human-written")
+UNATTENDED, HUMAN_HINTS, TOOL, HUMAN_WRITTEN = CLASSES
 STATUS_PATHS = tuple(f"config/{exe}/status.csv" for exe in EXES)
 _SAFE = ("-c", "safe.directory=*")  # ruling F13
 _MATCHED_BY_KEY, _DRIVE = (part.strip() for part in driver.MATCHED_BY.split(":", 1))
+# The Matched-By values of tool landings (ruling 2026-11-19): the twin lander's and the converter's
+_LIFT = "reverseapoc lift"  # the converter, a batch landing's author in flags.AUTHORS
+_TOOLS = (twins.MATCHED_BY.split(":", 1)[1].strip(), _LIFT)
 _HINTS_KEY = "match-hints"
 _FLAGS_KEY = "flags-approved-by"
 _RECORD, _UNIT = "\x1e", "\x1f"  # the log format's record and field separators
@@ -291,7 +297,8 @@ def classify(trailers: Iterable[tuple[str, str]]) -> tuple[str, bool]:
     keys = {key for key, _ in pairs}
     driven = (_MATCHED_BY_KEY.lower(), _DRIVE) in pairs
     if not driven:
-        return HUMAN_WRITTEN, _FLAGS_KEY in keys
+        tool = any(key == _MATCHED_BY_KEY.lower() and value in _TOOLS for key, value in pairs)
+        return (TOOL if tool else HUMAN_WRITTEN), _FLAGS_KEY in keys
     return (HUMAN_HINTS if _HINTS_KEY in keys else UNATTENDED), _FLAGS_KEY in keys
 
 
@@ -1086,6 +1093,7 @@ def _class_lines(d: Mapping) -> list[str]:
     lines = [f"matches classed from git trailers: {sum(classes.values())} functions",
              f"  unattended: {classes[UNATTENDED]} (flag-approved {d['flags_approved']})",
              f"  human-hints: {classes[HUMAN_HINTS]}",
+             f"  tool: {classes[TOOL]}",
              f"  human-written: {classes[HUMAN_WRITTEN]}",
              f"  re-matched: {', '.join(d['re_matched']) or 'none'}",
              f"  reverted: {', '.join(d['reverted']) or 'none'}"]  # fmt: skip
