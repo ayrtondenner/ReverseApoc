@@ -1,0 +1,19 @@
+# Tooling landed per failure class, for the hand-off board (config/handoff.csv). A long-tail
+# row there (reason "long tail: ...", return_rule "hint or tooling:<category>") returns to the
+# agent queues when an entry here names its category with a landed day after its retired_on:
+# `uv run reverseapoc handoff --dry-run` lists it, `--write` removes it from the board.
+#
+# One [[tooling]] table per landing, exactly these four keys:
+#   category  one of attempt.GIVEUP_CATEGORIES: flags, block_layout, stack_layout,
+#             register_allocation, instruction_idiom, types_or_struct, call_convention,
+#             compile_error, other
+#   landed    the day it landed, a bare TOML day (no quotes)
+#   commit    the commit that landed it
+#   note      what it does for that failure class
+# For example:
+#
+# [[tooling]]
+# category = "register_allocation"
+# landed = 2026-11-25
+# commit = "abc1234"
+# note = "a register-allocation sweep in the attempt check"

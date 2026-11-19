@@ -153,7 +153,7 @@ def test_a_matched_row_is_never_retired(tmp_path):
     config, log = _world(tmp_path, _attempts(FA, FLAT) + _attempts(FB, FLAT))
     matched = StatusRow(FA, f"func_{FA:08X}", "u_00010000", "matched", 100.0, 25, "0" * 64,
                         "2026-11-18")  # fmt: skip
-    (config / "ufo2p" / "status.csv").write_text(format_status([matched]), encoding="utf-8")
+    (config / "ufo2p" / "status.csv").write_bytes(format_status([matched]).encode("utf-8"))
     assert _keys(handoff.plan(config, log, TODAY)) == [("ufo2p", FB)]
 
 
@@ -249,7 +249,7 @@ def test_the_latest_landing_per_category_counts(tmp_path):
     ("[[tooling]]\ncategory = \"flags\"\nlanded = 2026-11-20\nnote = \"n\"\n", "keys"),
     ("[[tooling]]\ncategory = \"flags\"\nlanded = 2026-11-20\ncommit = \" \"\nnote = \"n\"\n",
      "commit"),
-    ("other = 1\n", "only [[tooling]]"),
+    ("other = 1\n", r"only \[\[tooling\]\] tables"),
     ("[[tooling]\n", "TOML"),
 ], ids=["unknown-category", "string-date", "missing-commit", "blank-commit", "other-table",
         "not-toml"])  # fmt: skip
