@@ -18,7 +18,9 @@ ufo2p,0x00028E20,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00028F80,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00029790,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00029830,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x000298E0,"long tail: 26 attempts, best 75.56%, mostly flags",2026-11-19,hint or tooling:flags
 ufo2p,0x0002E100,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x00048830,"long tail: 31 attempts, best 89.72%, mostly register_allocation",2026-11-19,hint or tooling:register_allocation
 ufo2p,0x0004A9D0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0004AAB0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0004AAF0,suspected bad split,2026-11-19,boundary fixed
@@ -28,6 +30,7 @@ ufo2p,0x00050EA0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00050EB0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00050EC0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00050EE0,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x00051110,"long tail: 34 attempts, best 97.93%, mostly flags",2026-11-19,hint or tooling:flags
 ufo2p,0x00051DD0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051E60,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051E80,suspected bad split,2026-11-19,boundary fixed
@@ -37,7 +40,10 @@ ufo2p,0x00051F70,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051F80,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051F90,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00051FA0,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x00052100,"long tail: 48 attempts, best 97.06%, mostly other",2026-11-19,hint or tooling:other
+ufo2p,0x00060500,"long tail: 40 attempts, best 98.03%, mostly register_allocation",2026-11-19,hint or tooling:register_allocation
 ufo2p,0x0006D000,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x00078400,"long tail: 24 attempts, best 94.90%, mostly instruction_idiom",2026-11-19,hint or tooling:instruction_idiom
 ufo2p,0x0007BB23,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007BDA8,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007BDB0,suspected bad split,2026-11-19,boundary fixed
@@ -47,6 +53,7 @@ ufo2p,0x0007E4FA,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007E57B,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007E5F9,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x0007ECA0,suspected bad split,2026-11-19,boundary fixed
+ufo2p,0x00080910,"long tail: 36 attempts, best 97.78%, mostly block_layout",2026-11-19,hint or tooling:block_layout
 ufo2p,0x000AEAB0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AECA0,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000AECF0,suspected bad split,2026-11-19,boundary fixed
@@ -82,6 +89,7 @@ tacp,0x0001F828,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F83B,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F88C,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F8DB,suspected bad split,2026-11-19,boundary fixed
+tacp,0x00021440,"long tail: 27 attempts, best 98.33%, mostly instruction_idiom",2026-11-19,hint or tooling:instruction_idiom
 tacp,0x00024B30,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00024B7D,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00024B86,suspected bad split,2026-11-19,boundary fixed
