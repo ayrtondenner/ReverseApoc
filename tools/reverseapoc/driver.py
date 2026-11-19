@@ -1725,9 +1725,12 @@ def agy_settings(claim: _Claim) -> dict:
     allow = [f"command(regex:{_wrapper_regex()})",
              f"read_file({claim.attempt_dir.as_posix()}/**)",
              *(f"write_file({path.as_posix()})" for path in files)]
+    # quick 261119-bhm: every network kind of agy's grammar denied outright (agyjson
+    # NETWORK_ACTIONS); search_web has no kind, so the audit (agyjson.network_steps) guards it
     deny = [f"command(regex:.*({named}).*)",
             *(f"{action}({target})" for action in ("read_file", "write_file")
-              for target in (*roots, spelled, dot_dot, short))]  # fmt: skip
+              for target in (*roots, spelled, dot_dot, short)),
+            *(f"{action}(*)" for action in agyjson.NETWORK_ACTIONS)]  # fmt: skip
     return {"permissions": {"allow": allow, "deny": deny}}
 
 
@@ -4967,7 +4970,9 @@ class _Night:
         (`_denied_writes`: its unique tool_use id, tool and target are in the result event's
         permission_denials). For an agy session (owner ruling 2026-11-10, "extend it") the
         second part is each write agy's permission check provably refused
-        (agyjson.denied_writes), all denied; a Codex session has none. A Claude write the hook
+        (agyjson.denied_writes), all denied, then (owner ruling 2026-11-19, batch 261119-bhi)
+        each network step it provably refused (agyjson.denied_network), audit-marked, denied
+        too; a Codex session has none. A Claude write the hook
         did not deny is no stray when the tool itself refused it (`_refused_writes`) and its
         target is absent and untracked after the session (`_never_written`; the 20261113-lanes2
         STOP, owner-approved): Claude Code rejects, say, an Edit of a missing file before any
@@ -4984,7 +4989,12 @@ class _Night:
             refused = (agyjson.denied_writes(session.events) if session.claim.agy
                        else copilotjson.denied_writes(session.events) if session.claim.copilot
                        else [])  # fmt: skip
-            return stray, [(f"{path}{_TRANSCRIPT_MARK}", True) for path in refused]
+            denied = [(f"{path}{_TRANSCRIPT_MARK}", True) for path in refused]
+            if session.claim.agy:
+                mark = _audit_mark(session.claim.harness)
+                denied += [(f"{step}{mark}", True)
+                           for step in agyjson.denied_network(session.events)]  # fmt: skip
+            return stray, denied
         events = session.events
         uses = zip(_write_targets(events), transcript_paths(events, self.repo),
                    _denied_writes(events), _refused_writes(events), strict=True)  # fmt: skip
@@ -5036,6 +5046,7 @@ class _Night:
         if claim.agy:
             writes = agyjson.write_targets(events)
             reasons += agyjson.unknown_steps(events)  # 07.2 review WR-02: fail closed
+            reasons += agyjson.network_steps(events)  # quick 261119-bhm: search_web among them
             reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
                                    repo=self.repo, own_outputs=agy_own_outputs(events))  # fmt: skip
             if _read(claim.agy_settings) != agy_settings_bytes(claim):
@@ -5301,8 +5312,9 @@ class _Night:
 
     def _audit(self, session: _Session, *, note: str = "") -> None:
         """Any stray stops the night (`_guardrail`), but (owner ruling 2026-11-10) one whose
-        strays are all transcript writes the hook denied (or, on an agy arm, writes agy's
-        permission check refused), with no containers `note`, stops its arm only
+        strays are all transcript writes the hook denied (or, on an agy arm, writes and, owner
+        ruling 2026-11-19, network steps agy's permission check refused), with no containers
+        `note`, stops its arm only
         (`_stop_arm`), and its worker leaves quietly (_Halt)."""
         other, writes = self._audited(session)
         stray = [*other, *(text for text, _ in writes)]
@@ -5319,8 +5331,9 @@ class _Night:
         self._guardrail(session, stray, record=counted)
 
     def _stop_arm(self, session: _Session, stray: Sequence[str], *, record: bool) -> bool:
-        """Owner ruling 2026-11-10: the session's only strays are writes the hook denied, so
-        no file of it needs containing. Reset the attempt as a guardrail does; when nothing
+        """Owner ruling 2026-11-10: the session's only strays are writes the hook denied (on an
+        agy arm also network steps its permission check refused, ruling 2026-11-19), so no file
+        of it needs containing. Reset the attempt as a guardrail does; when nothing
         is still changed after it (`_still_changed`), record the attempt GAVE_UP guardrail as
         a guardrail does, stop this worker's arm (its lane launches nothing more, its sessions
         in flight finish) and name it on the console and in the night's run record. False,
@@ -5338,10 +5351,15 @@ class _Night:
         except Exception:  # noqa: BLE001 - _guardrail resets and checks again, and names it
             return False
         claim = session.claim
-        paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray]
+        mark = _audit_mark(claim.harness)
+        paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray
+                 if text.endswith(_TRANSCRIPT_MARK)]  # fmt: skip
+        network = [text.removesuffix(mark) for text in stray if text.endswith(mark)]
         denier = ("agy's permission check" if claim.agy
                   else "Copilot's permission rules" if claim.copilot else "the hook")  # fmt: skip
-        denied = f"{denier} denied its write to {_listed(paths)} and nothing changed"
+        what = [*([f"its write to {_listed(paths)}"] if paths else []),
+                *([f"its network step {_listed(network)}"] if network else [])]  # fmt: skip
+        denied = f"{denier} denied {' and '.join(what)} and nothing changed"
         if copilot:
             line = (f"{self._label(claim.pick, claim.n)}: session ended (guardrail): {denied}; "
                     "the arm goes on")  # fmt: skip
@@ -5573,7 +5591,9 @@ class _Night:
             return
         if session.claim.agy:
             problems = agyjson.init_problems(init, cwd=session.claim.attempt_dir,
-                                             model=session.claim.model)  # fmt: skip
+                                             model=session.claim.model,
+                                             deny=agy_settings(session.claim)["permissions"][
+                                                 "deny"])  # fmt: skip
         elif session.claim.copilot:  # spike 013: cwd, model, credit cap, no model switch
             arm = session.claim.arm
             problems = copilotjson.init_problems(session.events, cwd=session.claim.attempt_dir,
@@ -9581,6 +9601,11 @@ AGY_CANARY_PROBE = "reverseapoc-canary-probe.txt"
 # ending DENIED is a denial by its tool's name (agyjson)
 _AGY_COMMAND_ACTIONS = frozenset({"command", "unsandboxed", "run_command"})
 _AGY_URL_ACTIONS = frozenset({"read_url", "execute_url"})
+# quick 261119-bhm: the search-web probe's actions, any network kind of agy's grammar (a denied
+# read_url_content, browser or MCP step); search_web itself has no kind, so a search_web step
+# is never a denial and the probe FAILs as not denied when the search runs
+_AGY_NETWORK_ACTIONS = frozenset(agyjson.NETWORK_ACTIONS)
+AGY_CANARY_SEARCH = "example domain"  # the probe's phrase: neutral, names nothing of ours
 # agy 1.5.7's edit_file step stopped the 20261113-cascade night because the canary never edited
 # a file: the allowed session writes plan.json with an empty frame (`attempt plan` refuses it)
 # and then edits it in place to the canary frame, so a version that renames or reshapes the
@@ -9660,7 +9685,9 @@ def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
     the attempt dir's own), and the four reads of AGY_CANARY_PROBE under `repo`'s orig/:
     `../`-relative from the attempt dir, absolute in another case (ORIG), the attempt dir's
     own absolute path followed by `..` segments (behind the read allow rule's prefix), and
-    under the 8.3 short name of third_party/ (THIRD_~1)."""
+    under the 8.3 short name of third_party/ (THIRD_~1); then (quick 261119-bhm) a web search
+    for AGY_CANARY_SEARCH, which passes on any network kind's denial (its marker is empty:
+    a search names no target of ours) and FAILs when a search_web step runs."""
     outside = attempt_dir.parent / AGY_CANARY_OUTSIDE
     unsandboxed = attempt_dir / AGY_CANARY_UNSANDBOXED
     relative = Path(os.path.relpath(repo / "orig" / AGY_CANARY_PROBE, attempt_dir)).as_posix()
@@ -9675,12 +9702,16 @@ def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
             _agy_read_probe("relative-read", relative, relative=True),
             _agy_read_probe("different-case-read", repo / "ORIG" / AGY_CANARY_PROBE),
             _agy_read_probe("dot-dot-read", f"{attempt_dir.as_posix()}/{relative}"),
-            _agy_read_probe("short-name-read", repo / "THIRD_~1" / AGY_CANARY_PROBE))  # fmt: skip
+            _agy_read_probe("short-name-read", repo / "THIRD_~1" / AGY_CANARY_PROBE),
+            AgyProbe("search-web", f"Search the web for `{AGY_CANARY_SEARCH}` and tell me the "
+                                   "first result.",
+                     _AGY_NETWORK_ACTIONS, "", None, None))  # fmt: skip
 
 
 def _agy_init_problems(events: Sequence[dict], claim: _Claim) -> list[str]:
     return agyjson.init_problems(agyjson.init_event(events), cwd=claim.attempt_dir,
-                                 model=claim.model)  # fmt: skip
+                                 model=claim.model,
+                                 deny=agy_settings(claim)["permissions"]["deny"])  # fmt: skip
 
 
 def _agy_allowed_checks(events: Sequence[dict], claim: _Claim, checks: _Checks) -> None:
@@ -9784,7 +9815,7 @@ def _agy_probe_checks(events: Sequence[dict], probe: AgyProbe, claim: _Claim,
                           "for the asked spelling")  # fmt: skip
     elif hit is None:
         checks.add(False, f"{shown}: never attempted ({' or '.join(sorted(probe.actions))} "
-                          f"naming {probe.asked or probe.marker}); denied only "
+                          f"naming {probe.asked or probe.marker or 'any target'}); denied only "
                           f"{_listed(seen)}")  # fmt: skip
     else:
         checks.add(True, f"{shown} was denied: {hit.action}({hit.target}) at step {hit.step}")

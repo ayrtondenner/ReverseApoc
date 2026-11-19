@@ -13,8 +13,8 @@ no event. The envelope, the init and result fields and a write step's
 the CLI's docs (RESEARCH) and the owner's canary proves them.
 
 - `init_event`/`init_problems`: the driver's init check (a STOP condition like check_init): the
-  init must exist, its cwd be the attempt dir, its model the requested slug, and its permission
-  mode no bypass.
+  init must exist, its cwd be the attempt dir, its model the requested slug, its permission
+  mode no bypass, and its tool list no network tool the settings do not deny.
 - `has_result`: whether a result event ended the session (the driver's `measured`).
 - `usage`/`turns`: the last result's `usage`: `input_tokens` as input, `output_tokens` plus
   `thinking_tokens` as output, `cache_read_tokens` as cache read, no cache creation, no cost (an
@@ -57,6 +57,11 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   step's tool, the quoted and bare targets agree, and the target is the step's own request (a
   command as written; a path as agy canonicalizes it, round 3: slashes forward and `..`
   folded, case kept).
+- Network (quick 261119-bhm): `NETWORK_TOOLS` names agy's network tools, each with the
+  permission kind of `NETWORK_ACTIONS` that denies it, or None (search_web: no kind can);
+  `init_problems` refuses a network-looking init tool the settings' deny rules do not cover;
+  `network_steps` names each network step that ran (a stray that stops the night) and
+  `denied_network` each one agy's permission check refused in its exact form (its arm stops).
 - `rejections` (owner ruling 2026-11-10, the relative read probe's evidence): each path step
   agy 1.5.5 rejected for its relative path before its permission check (round 3: ERROR,
   TOOL_ERROR, the whole message `declaring permissions: failed to parse path: <request> must
@@ -77,7 +82,7 @@ import json
 import os
 import posixpath
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -148,8 +153,59 @@ def _same_dir(raw: object, path: Path) -> bool:
     return isinstance(raw, str) and bool(raw) and _norm(raw) == _norm(str(path))
 
 
-def init_problems(init: Mapping | None, *, cwd: Path, model: str) -> list[str]:
-    """Why the init event is not this session's, one text per problem; [] when it is clean."""
+# Quick 261119-bhm (run 20261118-pro: gpt-oss ran search_web at step 44, DONE, before the audit
+# stopped the night). agy 1.5.12's permission grammar (its binary, as agy 1.5.9's):
+# `^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$`;
+# the network kinds are the four below, and the session's settings deny each as `<kind>(*)`.
+NETWORK_ACTIONS = ("read_url", "execute_url", "download_url", "mcp")
+_BROWSER_TOOLS = (
+    "browser_click_element", "browser_drag_pixel_to_pixel", "browser_get_dom",
+    "browser_get_network_request", "browser_input", "browser_list_network_requests",
+    "browser_mouse_down", "browser_mouse_up", "browser_move_mouse", "browser_press_key",
+    "browser_refresh_page", "browser_resize_window", "browser_scroll", "browser_scroll_dom",
+    "browser_select_option", "browser_subagent", "capture_browser_console_logs",
+    "capture_browser_screenshot", "click_browser_pixel", "execute_browser_javascript",
+    "list_browser_pages", "open_browser_url", "read_browser_page")  # fmt: skip
+# Each network tool of agy 1.5.11's init list, with the permission kind that denies it: a URL
+# fetch is read_url, a browser page execute_url (agy's own browser text: "user denied permission
+# for execute_url(<site>)"), an MCP call or resource mcp. None: no kind of the grammar names it,
+# so no settings rule can deny it and the audit is its only guard. search_web runs as a model
+# call with no permission check (it ran DONE under request-review, where headless agy
+# soft-denies whatever needs a confirmation); search_marketplace has no kind either.
+NETWORK_TOOLS: Mapping[str, str | None] = {
+    "search_web": None, "search_marketplace": None, "read_url_content": "read_url",
+    **dict.fromkeys(_BROWSER_TOOLS, "execute_url"),
+    "call_mcp_tool": "mcp", "read_resource": "mcp", "list_resources": "mcp"}  # fmt: skip
+# a tool name that looks like a network one: a later agy's new tool must be listed above first
+_NETWORK_LOOKING = re.compile(
+    r"web|url|browser|mcp|http|fetch|download|internet|network|online|remote|marketplace|resource",
+    re.I)  # fmt: skip
+
+
+def _network_problems(tools: object, deny: Collection[str]) -> list[str]:
+    """Each init tool that looks like a network one the settings do not deny: one not in
+    NETWORK_TOOLS, or one whose kind's `<kind>(*)` rule is not in `deny`."""
+    problems = []
+    for tool in tools if isinstance(tools, list) else ():
+        if not isinstance(tool, str) or not _NETWORK_LOOKING.search(tool):
+            continue
+        if tool not in NETWORK_TOOLS:
+            problems.append(f"init tool {tool!r} looks like a network tool the agy audit does "
+                            "not know (add it to agyjson.NETWORK_TOOLS with the rule that "
+                            "denies it)")  # fmt: skip
+            continue
+        action = NETWORK_TOOLS[tool]
+        if action is not None and f"{action}(*)" not in deny:
+            problems.append(f"init tool {tool!r} is a network tool the settings do not deny "
+                            f"(no {action}(*) deny rule)")  # fmt: skip
+    return problems
+
+
+def init_problems(init: Mapping | None, *, cwd: Path, model: str,
+                  deny: Collection[str]) -> list[str]:  # fmt: skip
+    """Why the init event is not this session's, one text per problem; [] when it is clean.
+    `deny` is the session settings' deny rules: every network-looking tool the init lists must
+    be a known one its `<kind>(*)` rule denies, or one no rule can deny (the audit's)."""
     if init is None:
         return ["no init event"]
     problems = []
@@ -160,7 +216,7 @@ def init_problems(init: Mapping | None, *, cwd: Path, model: str) -> list[str]:
     mode = init.get("permission_mode")
     if not isinstance(mode, str) or _BYPASS.search(mode):
         problems.append(f"init permission_mode {mode!r} bypasses or skips approvals")
-    return problems
+    return problems + _network_problems(init.get("tools"), deny)
 
 
 def _result(events: Sequence[dict]) -> Mapping | None:
@@ -406,10 +462,33 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
     tool name is missing or unknown, its shape is not its tool's, or a subagent ran it."""
     out = []
     for step in _steps(events):
-        if _ran(step) and not _known(step):
+        if _ran(step) and not _known(step) and not _network(step):
             keys = sorted(_mapping(step.get("tool_info")))
             out.append(f"step {step.get('step_index')!r}: tool {step.get('tool_name')!r} with "
                        f"{keys} is not a tool step the agy audit knows")  # fmt: skip
+    return out
+
+
+def _network(step: Mapping) -> bool:
+    name = step.get("tool_name")
+    return isinstance(name, str) and name in NETWORK_TOOLS
+
+
+def network_steps(events: Sequence[dict]) -> list[str]:
+    """Quick 261119-bhm (fail closed): each network tool's step that ran (anything but a
+    network denial, `_network_denial`), a subagent's included, named with the rule that should
+    have refused it or as one no agy rule can deny (search_web): a stray that stops the night.
+    `unknown_steps` leaves these steps to this list."""
+    out = []
+    for step in _steps(events):
+        if not _network(step) or not _ran(step):
+            continue
+        name = step["tool_name"]
+        action = NETWORK_TOOLS[name]
+        why = ("no agy permission rule can deny it" if action is None
+               else f"its {action}(*) deny rule did not refuse it")  # fmt: skip
+        out.append(f"step {step.get('step_index')!r}: network tool {name!r} ran "
+                   f"({step.get('state')}; {why})")  # fmt: skip
     return out
 
 
@@ -448,6 +527,13 @@ _DENIAL_FORMS = {"read_file": (_denial_form("read_file", r"for read_file\((.*)\)
                  _EDIT_TOOL: (_deny_rule_form("write_file"),),
                  "run_command": (_denial_form("unsandboxed|command",
                                               r"to run command:\n(.*)"),)}  # fmt: skip
+# Quick 261119-bhm: a network step's refusal in the same two forms, by its tool's kind
+# (NETWORK_TOOLS). No network refusal has been captured yet: the session's `<kind>(*)` deny
+# rules should meet the deny-rule form, and the owner's canary (its search-web probe) is the
+# proof. Its shape is search_web's of 20261118-pro, tool_info {name, parameters}, plus error.
+_NETWORK_FORMS = {action: (_denial_form(action, rf"for {action}\((.*)\)"),
+                           _deny_rule_form(action)) for action in NETWORK_ACTIONS}  # fmt: skip
+_NETWORK_INFO = frozenset({_NAME, _PARAMETERS, _ERROR})
 
 
 class Denial(NamedTuple):
@@ -502,7 +588,10 @@ def _refused(step: Mapping, tool: str, request: str) -> tuple[str, str] | None:
 def _denial(step: Mapping) -> Denial | None:
     """The step as a denial, or None: only a known tool in its known shape (its error aside)
     with a permission kind can be one (security review: a denial leaves the audit, so this
-    fails closed; agy asks no permission for a manage_task status poll, so it always ran)."""
+    fails closed; agy asks no permission for a manage_task status poll, so it always ran), or a
+    network tool's exact refusal (`_network_denial`)."""
+    if _network(step):
+        return _network_denial(step)
     info = {k: v for k, v in _mapping(step.get("tool_info")).items() if k != _ERROR}
     if not _known({**step, "tool_info": info}) or step["tool_name"] not in _DENIAL_FORMS:
         return None
@@ -514,6 +603,29 @@ def _denial(step: Mapping) -> Denial | None:
         return Denial(index, tool, tool, request, request)
     found = _refused(step, tool, request)
     return None if found is None else Denial(index, tool, *found, request)
+
+
+def _network_denial(step: Mapping) -> Denial | None:
+    """A network tool's step as a denial, or None (it ran): its tool has a kind (search_web
+    has none, so it always ran), no subagent, tool_info only its name, a parameters mapping and
+    an error, state ERROR, error type TOOL_ERROR, and the whole message one of _NETWORK_FORMS
+    for its tool's kind with the quoted and bare targets the same. Its request (a URL or an MCP
+    call) has no captured parameter name, so the Denial carries none."""
+    name, info = step["tool_name"], _mapping(step.get("tool_info"))
+    action = NETWORK_TOOLS[name]
+    error = _mapping(info.get(_ERROR))
+    message = error.get(_MESSAGE)
+    if (action is None or step.get("subagent_info") or info.get(_NAME) != name
+            or not set(info) <= _NETWORK_INFO or not isinstance(info.get(_PARAMETERS), Mapping)
+            or step.get("state") != _ERROR_STATE or error.get(_TYPE) != _TOOL_ERROR
+            or not isinstance(message, str)):  # fmt: skip
+        return None
+    found = next((m for form in _NETWORK_FORMS[action] if (m := form.fullmatch(message))), None)
+    if found is None or _unquote(found.group(2)) != found.group(3):
+        return None
+    index = step.get("step_index")
+    index = index if isinstance(index, int) and not isinstance(index, bool) else None
+    return Denial(index, name, found.group(1), found.group(3), None)
 
 
 def denials(events: Sequence[dict]) -> list[Denial]:
@@ -570,6 +682,14 @@ def denied_writes(events: Sequence[dict]) -> list[str]:
     "extend it")."""
     return [d.request for d in denials(events) if d.tool in _WRITE_TOOLS
             and d.action in (d.tool, _WRITE_ACTION) and d.request is not None]  # fmt: skip
+
+
+def denied_network(events: Sequence[dict]) -> list[str]:
+    """`<tool> <kind>(<target>)` for every network step agy's permission check refused
+    (`denials`), in order: the night audit's denied network steps (owner ruling 2026-11-19,
+    batch 261119-bhi: like a denied write, one stops only its arm)."""
+    return [f"{d.tool} {d.action}({d.target})" for d in denials(events)
+            if d.tool in NETWORK_TOOLS]  # fmt: skip
 
 
 def _undenied(step: Mapping) -> str:
