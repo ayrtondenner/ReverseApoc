@@ -75,6 +75,7 @@ ufo2p,0x000BC270,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BC280,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000BC290,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F270,suspected bad split,2026-11-19,boundary fixed
+tacp,0x0001F2B0,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F7F2,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F828,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0001F83B,suspected bad split,2026-11-19,boundary fixed
@@ -98,6 +99,7 @@ tacp,0x00034D90,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00034DC0,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00034DD0,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00038348,suspected bad split,2026-11-19,boundary fixed
+tacp,0x00038360,suspected bad split,2026-11-19,boundary fixed
 tacp,0x000384E5,suspected bad split,2026-11-19,boundary fixed
 tacp,0x0003852D,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00038574,suspected bad split,2026-11-19,boundary fixed
