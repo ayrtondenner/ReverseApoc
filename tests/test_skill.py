@@ -477,6 +477,26 @@ def test_skill_stop_rules_are_the_goal_stop_rules():
         assert bullet.startswith(rule), (bullet, rule)
 
 
+def test_skill_counts_shapes_by_the_shape_line_at_256_bytes_and_up():
+    """261119-bhp (owner ruling 2026-11-19): at 256 B and up a new shape counts only when the
+    check's `shape:` line (blocks, branches) changes, with at most six shapes; under 256 B the
+    three-shapes rule is unchanged and the 15-run budget stays."""
+    text = _text()
+    clause = (
+        "(at 256 B and up: six shapes, and a check is a new shape only when its `shape:` line's "
+        "blocks or branches differ from the check before; the first check is the first shape)"
+    )
+    shapes = next(r for r in session.STOP_RULES if r.startswith("three different C shapes"))
+    assert shapes == "three different C shapes leave objdiff below 100 " + clause
+    assert clause in _section(text, "When to give up")
+    wrapper = _section(text, "The attempt wrapper")
+    outline = next(line for line in wrapper.splitlines() if "**Control-flow outline**" in line)
+    assert "six shapes at most" in outline and "new shape" in outline
+    mismatch = wrapper[wrapper.index("### From a mismatch to the instruction") :]
+    assert "a step within the same shape, not a new shape" in mismatch
+    assert "all 15 check runs are used" in session.STOP_RULES
+
+
 def test_skill_stops_after_a_sweep_hit():
     """261109-gzx: after a sweep hit the session writes it in notes.md and stops, because the
     driver parks the function (261109-gzu); a stop names its rule in the last message, and a
