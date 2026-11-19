@@ -68,3 +68,29 @@ Recorded cost is $112.04. 41 of the 100 sessions hit the 1,800 s limit (9 of 57 
 **Match commits:** `e2f21708`, `071b176c`, `3f813f8c`, `ab029123`, `5fa52871`, `9037a98b`, `9cd8851b`, `9476608c`, `95bad271`, `eac3eb43`, `541449d3`. Attempt log: `cfa21ed9`.
 
 **Sweep hits.** 47 sessions logged one. 25 functions with a hit stay unmatched, waiting for `flags propose --from-attempts 20261107-170844`: 17 at `-4r -oneatx -s -fpi`, 4 at `-4r -ox -s -fpi` and 5 at `-4r -ot -s -fpi` (`func_00041660` hit both `-oneatx` and `-ot`).
+
+## Run 20261118-256 (2026-11-18)
+
+One `openai/codex/gpt-6.1-terra` arm, 5 workers, on the frozen list `build/driver/20261118-256-picks.txt`: 45 near-miss rows of 256-1023 B and 5 of 1 KB and up. It is the first night at 256 B and up on the batch's new tooling (todo `first-matching-night-256b`). Near-miss rows replaced the tier queue because 38 of the queue's first 40 unattempted rows at 256 B and up had context packs over the 24,576-byte cap.
+
+**Outcome.** ENDED `queue exhausted`: 36 sessions on 14 functions, 0 matched, in 57.9 min of drive wall time. No failed check, nothing uncommitted, nothing quarantined, no hook block; the gate stopped 1 regression. The 5 rows of 1 KB and up and 31 of the 256-1023 B picks got no session: 36 is exactly the arm's budget cap (9% of the week at 0.25% a session), with up to 3 attempts per function; the driver labels a capped arm `queue exhausted`.
+
+**Controls and environment.** Gold exit 0, null exit 1, environment digest `f0016097a26c` at head `42b79aed`, Codex CLI 0.167.0.
+
+**End checks (the driver's).** `ninja verify` exit 0, both EXEs at their SHA-1, landed units 140 (UFO2P) and 153 (TACP). `gate --all` exit 0.
+
+**Tier 1.** The night matched nothing, so it moved no Tier 1 count. This log has no entries between 2026-11-07 and this night, so the stall count above is not brought up to date here.
+
+| Size | Sessions | Functions | Matched | Rate per session | API-equivalent per session |
+|---|---|---|---|---|---|
+| Under 64 B | 0 | 0 | 0 | none | none |
+| 64-255 B | 0 | 0 | 0 | none | none |
+| 256-1023 B | 36 | 14 | 0 | 0.0% | $1.17 |
+| 1 KB and up | 0 | 0 | 0 | none | none |
+| Total | 36 | 14 | 0 | 0.0% | $1.17 |
+
+API-equivalent is $42.03 (Terra's list price; the arm runs on ChatGPT Plus and paid nothing per token), with 1.10M input tokens a session. The Codex week went from 22% to 6% over 39 Codex sessions (owner's reading): about 0.41% a session, against 0.25% on smaller rows.
+
+**Three checks a session.** Every session used exactly 3 of its 15 checks (108 in all) and stopped on the skill's rule "three different C shapes leave objdiff below 100". Six rows raised their best percent: tacp func_0001E660 86.67 to 93.89, func_0003D160 85.62 to 91.95, func_000677E0 89.48 to 91.31, func_00049C30 87.15 to 87.58, func_0005EFD0 84.29 to 84.31, and ufo2p func_0006A410 88.49 to 88.57.
+
+**Commits:** attempt log `cd8b7803`. No match commits.

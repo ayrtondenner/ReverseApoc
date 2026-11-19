@@ -33,3 +33,24 @@ Upgrade if expected matches per week at the volume the machine can run beat the 
 per dollar (for example the same $80 on OpenRouter DeepSeek). Volume Terra fits best on
 functions the other arms already gave up on, or as its own lane, so it does not spend the
 attempt-1 slots a stronger arm converts better. Record the verdict in docs/model-comparison.md.
+
+## Result (2026-11-18): run 20261118-pro
+
+A `--hold` drive on 6 frozen near-miss picks (`build/driver/20261118-pro-picks.txt`: 2 under 64 B, 2 at 64-255 B, 2 at 256-1023 B), one attempt per arm and function:
+
+| Arm | Sessions | Held exact | API-equivalent | Per session |
+|---|---|---|---|---|
+| GPT-6.1 Sol | 6 | 0 | $10.52 | $1.75 |
+| GPT-6 Astra | 6 | 0 | $57.46 | $9.58 |
+| GPT-6.1 Terra | 6 | 0 | $7.41 | $1.24 |
+| Haiku 5.5 (Claude control) | 5 | 0 | $0.19 | $0.04 |
+| Gemini 3.8 Flash (agy) | 4 | 0 | $2.21 | $0.55 |
+| GPT-OSS 120B (agy) | 4 | 0 | $0.11 | $0.03 |
+
+No arm held an exact match, so there are 0 discordant pairs: a null that cannot separate the arms. Nothing shows Sol or Astra matching more than Terra, and they cost about 1.4x and 7.8x Terra's list price a session.
+
+The run stopped once on a guardrail (GPT-OSS ran agy's `search_web`; the owner dropped GPT-OSS). The Codex 5-hour window ran out at 19:08, the Codex week at 22:19 (the owner used one limit reset), and Gemini ran out of agy's weekly quota; an owner-approved console Ctrl-C ended the run. The worker-count and repeat questions above were not measured. The 256 B night the same day gave the Plus quota figure: about 0.41% of the Codex week a Terra session at 256 B and up, against 0.25% on smaller rows.
+
+## Resolution (2026-11-19)
+
+The data gives no case for upgrading to ChatGPT Pro. Six picks are too few to settle it, but Sol and Astra cost much more per session than Terra and matched nothing, and Terra itself matched 0 of 14 at 256-1023 B the same day. More Terra volume pays only where Terra matches. Verdict recorded in docs/model-comparison.md, "The 256 B night and a held Codex-tier comparison (2026-11-18/19)". Reopen it only with a larger held list or a queue where Terra matches again.

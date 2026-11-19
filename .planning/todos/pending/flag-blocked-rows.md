@@ -30,3 +30,12 @@ proposals F-0004 (ufo2p func_0004DFD0, Opus) and F-0002 (tacp func_000779C0, Son
 on 20261114-opus-near. Left: func_0005DB80 (F-0029), func_0008A0C0 (F-0037), func_000B4B80
 (F-0072), tacp func_00088450 and func_000AB650. Before repairing a rule, give the row a near-miss
 pass with a strong model: a better source may match under the default.
+
+## Update (2026-11-19): run 20261118-flags
+
+The near-miss pass the update above asked for ran on Sol (one worker, 4 picks, `build/driver/20261118-flag-picks.txt`). It ENDED `queue exhausted` after 4 sessions:
+- **Matched on attempt 1 under the default rule:** ufo2p func_0008A0C0 (F-0037, `ea7d2a60`) and tacp func_00088450 (never proposed, `4c4de2db`). F-0037's unit-split question is moot for this row.
+- **Still blocked (parked):** ufo2p func_0005DB80 (F-0029) reached 100% again only under `-4r -ox -s -fpi`, and ufo2p func_000B4B80 (F-0072) only under `-5r -oneatx -s -fpi`. Their repairs in the table above stand.
+- **Not in the queue:** `--picks` refused tacp func_000AB650. Its row in `config/mechanics-members.csv` has role `closure` (reached only by item 997's full closure, a member of no item's hub-stopped set), and the tier queue holds only `member` and `hub` rows (`picker.py`: "asm and closure rows are never in a group"), so `refuse_picks` finds it outside the queue. It needs another route to a session: a hand pass, or a pick source that admits closure rows.
+
+Left: func_0005DB80 (F-0029), func_000B4B80 (F-0072) and tacp func_000AB650.

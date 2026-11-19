@@ -11,6 +11,20 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-18: the three-shapes stop rule ends every Terra session at 3 checks
+
+- Part C (run 20261118-flags): a Sol near-miss pass on 4 flag-blocked rows matched 2 under the
+  default rule, ufo2p func_0008A0C0 (F-0037) and tacp func_00088450 (never proposed), as todo
+  flag-blocked-rows predicted. ufo2p func_0005DB80 and func_000B4B80 still reach 100% only under
+  their rules.
+- Run 20261118-256 gave GPT-6.1 Terra 14 near-miss functions of 256-1023 B: 36 sessions, 0 exact,
+  6 rows raised (tacp func_0001E660 86.67 to 93.89). All 36 sessions used exactly 3 checks (108
+  in all) and each named the watcom-decomp stop rule "three different C shapes leave objdiff
+  below 100", so the 15-check budget never came into play.
+- At 256 B and up the rule, not the budget, sets how far a session gets. Todo
+  three-shapes-rule-256b asks the owner whether to count shapes differently there; any change
+  goes through writing-skills. Tables in docs/model-comparison.md, 2026-11-18/19 section.
+
 ## 2026-11-18: agy's GPT-OSS ran a web search mid-session
 
 - Run 20261118-pro stopped on a guardrail after 9 sessions. GPT-OSS 120B (agy 1.5.11) ran agy's

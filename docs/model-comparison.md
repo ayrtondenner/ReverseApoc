@@ -498,6 +498,104 @@ Terra 1 match in 262 sessions, and Copilot Haiku none in 127 on rows the stronge
 already worked down. The first Copilot night with no audit stop came after the 2026-11-16
 fixes.
 
+## The 256 B night and a held Codex-tier comparison (2026-11-18/19)
+
+Two runs on 2026-11-18: the first night at 256 B and up on the new tooling (todo
+`first-matching-night-256b`), and a held comparison of the Codex models for the Plus or Pro
+question (todo `codex-pro-held-comparison`). Figures marked (T) come from
+`reverseapoc stats --run '<id>*'`, (S) from the owner's meter readings, and list price is the
+arm's tokens at its API price (API-equivalent).
+
+**Run `20261118-256`.** One GPT-6.1 Terra arm, 5 workers, on a frozen list
+(`build/driver/20261118-256-picks.txt`): 45 near-miss rows of 256-1023 B and 5 of 1 KB and up.
+The tier queue could not supply them: of its first 40 unattempted rows at 256 B and up, 38 had
+context packs over the 24,576-byte cap. The run ENDED `queue exhausted` after 36 sessions on 14
+functions, all 256-1023 B. The 1 KB rows and 31 of the other 256-1023 B picks got no session:
+36 is exactly the arm's budget cap (`--arm-budget gpt-6.1-terra=9%week` at 0.25% a session), and
+each function took up to 3 attempts before the next was picked. The driver labels an arm that
+reached its cap `queue exhausted`, which reads as if the picks had run out.
+
+| Size | Functions | Sessions | Exact | Checks | API-equivalent (T) | Tokens in a session (T) | Drive wall (T) |
+|---|---|---|---|---|---|---|---|
+| 256-1023 B | 14 | 36 | 0 | 108 (3 in every session) | $42.03 | 1.10M input | 57.9 min |
+| 1 KB and up | 0 | 0 | none | none | none | none | none |
+
+Six of the 14 rows raised their best percent in status.csv:
+
+| Row | Before | After |
+|---|---|---|
+| tacp func_0001E660 | 86.67 | 93.89 |
+| tacp func_0003D160 | 85.62 | 91.95 |
+| tacp func_000677E0 | 89.48 | 91.31 |
+| tacp func_00049C30 | 87.15 | 87.58 |
+| ufo2p func_0006A410 | 88.49 | 88.57 |
+| tacp func_0005EFD0 | 84.29 | 84.31 |
+
+Gold and null controls passed (gold exit 0, null exit 1), environment digest `f0016097a26c`.
+The end checks passed: `ninja verify` exit 0 with both EXEs at their SHA-1, and `gate --all`
+exit 0.
+
+**Three shapes, three checks.** Every session stopped after exactly 3 checks. Each one named
+the skill's stop rule "three different C shapes leave objdiff below 100"
+(`.claude/skills/watcom-decomp/SKILL.md`, "When to give up"), so the 15-check budget never
+came into play. A reading, not a measurement: at 256 B and up a function can take many local
+changes before its shape is right, so a session that counts each change as a shape stops
+before the structure is settled.
+The baseline is spike 011's 2 of 5 at 256-1023 B, which does not compare like for like:
+spike 011 sampled 5 of 188 rows that no agent had worked yet and gave them to Claude agents,
+and this night gave Terra near-miss rows that earlier sessions had failed, at 3 checks each.
+The owner's question is in todo `three-shapes-rule-256b`.
+
+**Quota calibration.** The Codex week went from 22% to 6% over 39 Codex sessions (S): about
+0.41% a session at 256 B and up, against the 0.25% a session measured on smaller rows (the
+section above). One session at 256 B uses about 1.10M input tokens (T).
+
+**Run `20261118-pro` (held).** Six near-miss picks (`build/driver/20261118-pro-picks.txt`): 2
+under 64 B, 2 at 64-255 B, 2 at 256-1023 B, none on the 256 B night's list. One attempt per
+arm and function, Haiku as the Claude control.
+
+| Arm | Sessions | Held exact | API-equivalent (T) | Per session | Against Terra |
+|---|---|---|---|---|---|
+| GPT-6.1 Sol | 6 | 0 | $10.52 | $1.75 | 1.4x |
+| GPT-6 Astra | 6 | 0 | $57.46 | $9.58 | 7.8x |
+| GPT-6.1 Terra | 6 | 0 | $7.41 | $1.24 | 1.0x |
+| Haiku 5.5 (control) | 5 | 0 | $0.19 | $0.04 | - |
+| Gemini 3.8 Flash (agy) | 4 | 0 | $2.21 | $0.55 | - |
+| GPT-OSS 120B (agy) | 4 | 0 | $0.11 | $0.03 | - |
+
+No arm held an exact match, so there are 0 discordant pairs, and a null that cannot separate the arms
+says nothing about which is better. The run gives no sign that Sol or Astra match more than
+Terra, and they cost about 1.4x and 7.8x Terra's list price a session.
+
+How the run went:
+- It stopped once on a guardrail after 9 sessions: GPT-OSS ran agy's `search_web` (learnings,
+  2026-11-18; todo `agy-search-web-guard`). The owner dropped GPT-OSS and restarted the run.
+- The Codex 5-hour window ran out at 19:08, before the week did (S).
+- The Codex week ran out at 22:19, and the owner used one limit reset (S).
+- Gemini ran out of agy's weekly quota. The run ended by an owner-approved console Ctrl-C
+  (STOPPED `interrupted`, 22 sessions after the restart).
+
+**Pro verdict.** The data gives no case for upgrading to ChatGPT Pro. Six picks cannot settle
+it, but nothing in them points to Pro. The arms Pro would add volume for cost more per session
+than Terra, and none of them matched. Pro's extra volume pays only if Terra matches, and on
+this queue Terra matched 0 of 14 at 256 B and up and 1 of 262 sessions on the tier queue
+(section above).
+
+**Run `20261118-flags` (todo `flag-blocked-rows`).** Sol, one worker, 4 picks; `--picks`
+refused tacp func_000AB650 as not in the queue.
+
+| Row | Proposal | Result |
+|---|---|---|
+| ufo2p func_0008A0C0 | F-0037 | matched on attempt 1 under the default rule (`ea7d2a60`) |
+| tacp func_00088450 | none | matched on attempt 1 under the default rule (`4c4de2db`) |
+| ufo2p func_0005DB80 | F-0029 | parked: 100% only under `-4r -ox -s -fpi` |
+| ufo2p func_000B4B80 | F-0072 | parked: 100% only under `-5r -oneatx -s -fpi` |
+
+**Twins.** The same days landed 59 functions by `reverseapoc twins` (37 TACP from UFO2P, 4
+UFO2P from TACP, 18 UFO2P within UFO2P), and 13 were refused. status.csv now counts 295
+matched functions. `stats` classes the twin landings as human-written (todo
+`stats-tool-class`).
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
