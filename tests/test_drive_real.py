@@ -71,14 +71,15 @@ def test_real_tier_queue_holds_the_signed_tiers_members(worlds):
     assert signed and signed[0] == 1
     queue = driver.tier_source(config_root, worlds)({})
     held = set(queue.held)
+    board = driver.handoff_keys(config_root)  # the hand-off board's rows are never queued
     queued = {i.key for i in queue.items if not i.hub}
     expected: set[tuple[str, int]] = set()
     for tier_id in signed:
         expected |= _member_keys(mech, rows, tier_id)
-    assert queued == expected - held
-    assert not {i.key for i in queue.items} & held
+    assert queued == expected - held - board
+    assert not {i.key for i in queue.items} & (held | board)
     tier1 = {i.key for i in queue.items if i.tier == 1 and not i.hub}
-    assert tier1 == _member_keys(mech, rows, 1) - held
+    assert tier1 == _member_keys(mech, rows, 1) - held - board
     listed = {(r.exe, r.address): r for r in
               mechanics.read_asm_list(config_root / mechanics.ASM_CSV)}  # fmt: skip
     for key in held:  # each held key: on the signed list, `unclear`, with a data tag

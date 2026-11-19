@@ -179,7 +179,8 @@ SPLIT_REASON, SPLIT_RULE = "suspected bad split", "boundary fixed"
 def test_the_committed_suspected_splits_are_unmatched_function_rows():
     """Ruling 2026-11-19: until its boundary fix lands, every unmatched row of a fix that
     `mechanics interior` proposes sits on the board, sorted by EXE then address. The drive
-    refuses a board row that is no functions.csv row start of its EXE."""
+    refuses a board row that is no functions.csv row start of its EXE, and the progress page
+    one that is no game or thunk row (a data-in-code row is neither)."""
     path = REPO_ROOT / "config" / picker.HANDOFF_CSV
     with path.open(encoding="utf-8", newline="") as handle:
         suspects = [row for row in csv.DictReader(handle) if row["reason"] == SPLIT_REASON]
@@ -189,7 +190,8 @@ def test_the_committed_suspected_splits_are_unmatched_function_rows():
     assert keys == sorted(keys, key=lambda key: (picker.EXE_ORDER.index(key[0]), key[1]))
     for exe in picker.EXE_ORDER:
         config = REPO_ROOT / "config" / exe
-        starts = {row.start for row in read_functions_csv(config / "functions.csv")}
+        starts = {row.start for row in read_functions_csv(config / "functions.csv")
+                  if row.kind in ("game", "thunk")}  # fmt: skip
         matched = {row.start for row in read_status(config / STATUS_FILE)
                    if row.status == MATCHED}  # fmt: skip
         mine = {address for owner, address in keys if owner == exe}
