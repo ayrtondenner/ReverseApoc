@@ -1898,6 +1898,37 @@ def test_an_agy_soft_denied_write_stops_its_arm_only(tmp_path):
         driver.validate_record(record)
 
 
+def test_an_agy_denied_network_step_stops_its_arm_only(tmp_path):
+    """Owner ruling 2026-11-19 (batch 261119-bhi): a network step agy's permission check
+    refused (agyjson.denied_network; here read_url_content under the read_url(*) deny rule),
+    with nothing else stray, stops only that arm, like a denied write: GAVE_UP guardrail, the
+    Claude arm attempts every pick, the night ENDS, and the console line names the arm and
+    the refused network step."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = AgyArmNight(tmp_path, picks=picks, agy_scenarios=["network_denied"])
+    lines: list[str] = []
+    report = night.run(config={"arms": ((HAIKU, 1), (GEMINI, 1)), "hold": True},
+                       say=lines.append)  # fmt: skip
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(GEMINI)) == 1
+    assert _runs_launched(night, _arm_run(HAIKU)) == 3
+    (stopped,) = [r for r in night.kinds("attempt") if r["run"] == _arm_run(GEMINI)]
+    assert (stopped["outcome"], stopped["abort_reason"]) == ("GAVE_UP", "guardrail")
+    said = [line for line in lines if "stopped" in line and GEMINI in line]
+    assert len(said) == 1 and "read_url(made-up.invalid)" in said[0], lines
+    assert "agy's permission check denied its network step" in said[0], said
+
+
+def test_an_agy_network_step_that_ran_stops_every_arm(tmp_path):
+    """A network step that ran (search_web, which no agy rule can deny) stops the whole
+    multi-arm drive at the guardrail."""
+    night = AgyArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
+                        agy_scenarios=["network_ran"])  # fmt: skip
+    report = night.run(config={"arms": ((HAIKU, 1), (GEMINI, 1)), "hold": True})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert "search_web" in report.detail
+
+
 @pytest.mark.parametrize("scenario", ["stray_write", "soft_denied_write_beside_ran"])
 def test_an_agy_write_that_ran_stops_every_arm(tmp_path, scenario):
     """A write an agy session ran (no denial), even beside a write agy refused, stops the
