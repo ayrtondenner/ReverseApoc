@@ -14,8 +14,8 @@ schema = 1
 
 [asm_list]
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-31
-list_sha256 = "332908805a55b7c73def9f7e99586ef110efab913285771a3fb2827475376488"
+signed_off_date = 2026-11-19
+list_sha256 = "25257703e658d453d86081d69817e7b7f213ecae2d996a3025487795231ac189"
 
 # D-22, signed with Tier 1 by the owner on 2026-10-27, values kept at the re-sign on 2026-10-30
 # (plan 07-22): a reached row with at least 20 direct callers, or whose own closure covers more
@@ -34,8 +34,8 @@ min_items = 0
 id = 1
 title = "Tick rate and battlescape training"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-31
-members_sha256 = "5334aaf5b0c0ef0b2233b52a78e87d7f7f29ef589380ebdd72cd4afcc1f52c69"
+signed_off_date = 2026-11-19
+members_sha256 = "c19bee58790ef2a45bfa786bb5e9920d999e8acc7cbb8736b066a3cebb2ab1dc"
 
 [[item]]
 id = "997"
@@ -296,8 +296,8 @@ source = "spike 007 q3"
 id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-31
-members_sha256 = "a49192bfb6b392ed93dfa88eb9adb9aa44036aaa73a8708e1bcb3e32e9bbc333"
+signed_off_date = 2026-11-19
+members_sha256 = "54ea0f7ae7c901461e5fe427ddf5f32823339cf56946259c436aa5c8140ac14b"
 
 [[item]]
 id = "263-2"
@@ -700,8 +700,8 @@ source = "mechanics locate; research Q2"
 id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-31
-members_sha256 = "e53efeeef88245471835b9b3b482674cd70bcc0ebdcf23765f36ae6a358c4a62"
+signed_off_date = 2026-11-19
+members_sha256 = "c9ed7dde2a471191833fb3d5cbc3d758e86bae90aeac7dffce3431b94972be98"
 
 [[item]]
 id = "264-1"
