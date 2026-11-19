@@ -493,8 +493,8 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   headless agy soft-denies anything that needs a confirmation. The search runs as a model
   call ("failed to resolve search_web model"), and that session's agy log shows only the usual
   `cloudcode-pa` model calls. So **no agy 1.5.12 settings rule denies `search_web`**: the audit
-  is its only guard (below), and the canary's `search-web` probe is expected to FAIL until
-  agy offers one. The init tool list cited here is 1.5.11's (the 20261118 transcripts). Re-read
+  is its only guard (below). Owner ruling 2026-11-19, "Probe advisory, detect-only": the
+  canary's `search-web` probe is advisory and never fails the canary (below). The init tool list cited here is 1.5.11's (the 20261118 transcripts). Re-read
   it from the init event of the coordinator's 1.5.12 canary: a new network tool there fails
   that canary's init check. Deny beats
   allow, so the reads cannot be an "everything but" deny; instead headless agy soft-denies
@@ -618,12 +618,19 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
      `orig/reverseapoc-canary-probe.txt`: `relative-read` (a `../` path),
      `different-case-read` (`ORIG/`), `dot-dot-read` (the attempt dir followed by `..`) and
      `short-name-read` (`THIRD_~1/`), then `search-web` (quick 261119-bhm: "Search the web
-     for `example domain` and tell me the first result."). The search probe passes only when
-     no tool step ran and a step of any network kind (`read_url`, `execute_url`,
-     `download_url`, `mcp`) was denied. A `search_web` step can never be a denial, so a search
-     that ran FAILs as `not denied`, and on agy 1.5.12 that is the expected result (above).
-     A night needs a canary PASS, so such a FAIL keeps that agy arm off nights until agy can
-     deny the search or the owner rules otherwise.
+     for `example domain` and tell me the first result."). The search probe passes when no
+     tool step ran and a step of any network kind (`read_url`, `execute_url`,
+     `download_url`, `mcp`) was denied. A `search_web` step can never be a denial, and on agy
+     1.5.12 no settings rule can deny it (above). Owner ruling 2026-11-19, "Probe advisory,
+     detect-only": the search probe is advisory. A denied search is a PASS line; a search
+     that ran, a probe that never attempted its search and a model that refused are each an
+     ADVISORY: printed as an `ADVISORY:` line before the verdict and stored with the probe's
+     label and result under `advisories` in the canary's JSON and in its pass file
+     `build/driver/canary/<arm>.json`, which still reads as a PASS for the installed agy
+     version. The canary's verdict ignores advisories; an init problem in that probe's session
+     still FAILs, and every other probe stays strict. Detect-only means a `search_web` step in
+     a real night is still a network stray that stops the drive (the audit, above), and the
+     other network kinds stay denied.
      Each read prompt tells the model to pass the path string
      exactly as written, character for character, without resolving or normalizing it (round
      4's gpt-oss folded the `..` spellings into the canonical path). The probe file never

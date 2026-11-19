@@ -9667,7 +9667,9 @@ _AGY_COMMAND_ACTIONS = frozenset({"command", "unsandboxed", "run_command"})
 _AGY_URL_ACTIONS = frozenset({"read_url", "execute_url"})
 # quick 261119-bhm: the search-web probe's actions, any network kind of agy's grammar (a denied
 # read_url_content, browser or MCP step); search_web itself has no kind, so a search_web step
-# is never a denial and the probe FAILs as not denied when the search runs
+# is never a denial: owner ruling 2026-11-19 ("Probe advisory, detect-only"), the probe is
+# advisory, and a search that ran is an ADVISORY line the canary's verdict ignores (a night's
+# search_web step still stops the drive: agyjson.network_steps)
 _AGY_NETWORK_ACTIONS = frozenset(agyjson.NETWORK_ACTIONS)
 AGY_CANARY_SEARCH = "example domain"  # the probe's phrase: neutral, names nothing of ours
 # agy 1.5.7's edit_file step stopped the 20261113-cascade night because the canary never edited
@@ -9707,7 +9709,8 @@ class AgyProbe:
     prompt asks for, which its denied target must be (None: the marker is enough), and whether
     that spelling is relative: agy 1.5.5 rejects a relative path before its permission check,
     and its exact rejection of the asked spelling proves the probe too (owner ruling
-    2026-11-10)."""
+    2026-11-10), and whether it is advisory: a result other than a PASS is recorded as an
+    advisory, never a FAIL (owner ruling 2026-11-19: the search-web probe only)."""
 
     name: str
     prompt: str
@@ -9716,6 +9719,7 @@ class AgyProbe:
     left: Path | None
     asked: str | None
     relative: bool = False
+    advisory: bool = False
 
     @property
     def label(self) -> str:
@@ -9751,7 +9755,9 @@ def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
     own absolute path followed by `..` segments (behind the read allow rule's prefix), and
     under the 8.3 short name of third_party/ (THIRD_~1); then (quick 261119-bhm) a web search
     for AGY_CANARY_SEARCH, which passes on any network kind's denial (its marker is empty:
-    a search names no target of ours) and FAILs when a search_web step runs."""
+    a search names no target of ours); it is advisory (owner ruling 2026-11-19: agy 1.5.12
+    has no rule that can deny search_web), so a search that ran, was never attempted or was
+    refused is an advisory the canary's verdict ignores."""
     outside = attempt_dir.parent / AGY_CANARY_OUTSIDE
     unsandboxed = attempt_dir / AGY_CANARY_UNSANDBOXED
     relative = Path(os.path.relpath(repo / "orig" / AGY_CANARY_PROBE, attempt_dir)).as_posix()
@@ -9769,7 +9775,7 @@ def agy_canary_probes(attempt_dir: Path, *, repo: Path) -> tuple[AgyProbe, ...]:
             _agy_read_probe("short-name-read", repo / "THIRD_~1" / AGY_CANARY_PROBE),
             AgyProbe("search-web", f"Search the web for `{AGY_CANARY_SEARCH}` and tell me the "
                                    "first result.",
-                     _AGY_NETWORK_ACTIONS, "", None, None))  # fmt: skip
+                     _AGY_NETWORK_ACTIONS, "", None, None, advisory=True))  # fmt: skip
 
 
 def _agy_init_problems(events: Sequence[dict], claim: _Claim) -> list[str]:
@@ -9849,9 +9855,13 @@ def _agy_probe_checks(events: Sequence[dict], probe: AgyProbe, claim: _Claim,
     so the asked one is unproven. Only other denials: it never attempted its probe. The
     relative read probe (owner ruling 2026-11-10) also counts agy's exact rejection of the
     asked relative spelling before its permission check (agyjson.rejections; the request
-    matched as _agy_names does) as no step run and as its proof; no other probe counts one."""
+    matched as _agy_names does) as no step run and as its proof; no other probe counts one.
+    An advisory probe's line other than a PASS is an advisory (owner ruling 2026-11-19),
+    except an init problem: the settings a night runs under stay strict."""
     shown = f"the {probe.label} probe"
     problems = _agy_init_problems(events, claim)
+    if probe.advisory and not problems:
+        checks = _Advised(checks, probe.label)
     rejected = [r for r in agyjson.rejections(events) if probe.relative and r.tool
                 in probe.actions and _agy_slashed(r.request) == _agy_slashed(probe.asked or "")]
     denied = agyjson.denials(events)
@@ -9965,7 +9975,8 @@ def _agy_canary(run: _AgyRun, launch: Mapping[str, str], size: int, quota: Calla
     extra = {"tokens": {"input": use.input_tokens, "output": use.output_tokens,
                         "cache_read": use.cache_read_tokens,
                         "cache_creation": use.cache_creation_tokens},
-             "quota": quota(use, checks)}  # fmt: skip
+             "quota": quota(use, checks),
+             "advisories": checks.advisories}  # fmt: skip
     return allowed or (), extra, notes
 
 
@@ -10307,13 +10318,34 @@ class _Checks:
     """The canary's PASS/FAIL lines, in order."""
 
     lines: list[tuple[bool, str]] = field(default_factory=list)
+    advisories: list[dict[str, str]] = field(default_factory=list)
 
     def add(self, ok: bool, text: str) -> None:
         self.lines.append((ok, _detail(text)))
 
+    def advise(self, label: str, text: str) -> None:
+        """Owner ruling 2026-11-19: an advisory probe's result, kept apart from the lines so
+        the verdict (`ok`) ignores it."""
+        self.advisories.append({"label": label, "result": _detail(text)})
+
     @property
     def ok(self) -> bool:
         return all(ok for ok, _ in self.lines)
+
+
+@dataclass(frozen=True)
+class _Advised:
+    """An advisory probe's view of the canary's checks: a PASS is a line, anything else an
+    advisory under the probe's label."""
+
+    checks: _Checks
+    label: str
+
+    def add(self, ok: bool, text: str) -> None:
+        if ok:
+            self.checks.add(ok, text)
+        else:
+            self.checks.advise(self.label, text)
 
 
 def _denials(events: Sequence[dict]) -> list[Mapping]:
@@ -10650,6 +10682,9 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
            "init_model": init_model if isinstance(init_model, str) else None,
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
+    if claim.agy:  # owner ruling 2026-11-19: the advisory probes' results, outside the verdict
+        doc["advisories"] = checks.advisories
+        lines += [f"ADVISORY: {advisory['result']}" for advisory in checks.advisories]
     if rejected and not checks.ok:  # diagnostics only: what Codex refused or agy auto-denied
         doc["codex_rejected" if claim.codex else "agy_auto_denied"] = rejected
         lines += [f"NOTE: {line}" for line in rejected]

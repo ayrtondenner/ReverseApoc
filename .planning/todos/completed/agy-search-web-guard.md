@@ -45,5 +45,9 @@ Quick task 261119-bhm (batch 261119-bhi), RED 2e44be29, GREEN and docs on branch
   nothing else stray stops only its arm (owner ruling 2026-11-19), like a denied write.
 - **Canary.** New `search-web` probe; passes only on a denied network-kind step with no step
   run. Expected to FAIL on 1.5.12 (a search_web step runs).
+- **Owner ruling 2026-11-19, "Probe advisory, detect-only"** (quick batch 261119-adv): the
+  search-web probe never fails the canary; a denied search is a PASS, anything else an
+  ADVISORY (console line, `advisories` in the canary JSON and pass file) the verdict ignores,
+  and a night's search_web step still stops the drive.
 - **Pending: the live canary on agy 1.5.12** (the coordinator runs it; it also gives the 1.5.12
   init tool list and the first captured network refusal, if any).
