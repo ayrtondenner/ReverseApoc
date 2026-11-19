@@ -3,13 +3,16 @@ from every agent queue, and every queue skips them. Every address below is made 
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
 import pytest
 
 from reverseapoc import driver, picker
+from reverseapoc.functions import read_functions_csv
 from reverseapoc.picker import PickerError
+from reverseapoc.status import MATCHED, STATUS_FILE, read_status
 from reverseapoc.targets import REPO_ROOT
 from test_driver_pick import (
     TA,
@@ -168,3 +171,27 @@ def test_a_board_row_must_be_a_function_row(tmp_path, capsys):
     doc = json.loads(out)
     assert (doc["event"], doc["reason"]) == ("REFUSED", "handoff")
     assert f"ufo2p 0x{TA + 1:08X}" in doc["detail"]
+
+
+SPLIT_REASON, SPLIT_RULE = "suspected bad split", "boundary fixed"
+
+
+def test_the_committed_suspected_splits_are_unmatched_function_rows():
+    """Ruling 2026-11-19: until its boundary fix lands, every unmatched row of a fix that
+    `mechanics interior` proposes sits on the board, sorted by EXE then address. The drive
+    refuses a board row that is no functions.csv row start of its EXE."""
+    path = REPO_ROOT / "config" / picker.HANDOFF_CSV
+    with path.open(encoding="utf-8", newline="") as handle:
+        suspects = [row for row in csv.DictReader(handle) if row["reason"] == SPLIT_REASON]
+    assert suspects
+    assert {row["return_rule"] for row in suspects} == {SPLIT_RULE}
+    keys = [(row["exe"], int(row["address"], 16)) for row in suspects]
+    assert keys == sorted(keys, key=lambda key: (picker.EXE_ORDER.index(key[0]), key[1]))
+    for exe in picker.EXE_ORDER:
+        config = REPO_ROOT / "config" / exe
+        starts = {row.start for row in read_functions_csv(config / "functions.csv")}
+        matched = {row.start for row in read_status(config / STATUS_FILE)
+                   if row.status == MATCHED}  # fmt: skip
+        mine = {address for owner, address in keys if owner == exe}
+        assert mine <= starts, sorted(mine - starts)
+        assert not mine & matched, sorted(mine & matched)
