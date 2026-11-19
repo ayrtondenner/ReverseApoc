@@ -223,14 +223,16 @@ def test_agyjson_init_problems(tmp_path):
     name the problem; no init event is a problem."""
     good = {"type": "init", "cwd": str(tmp_path), "model": GEMINI_MODEL, "tools": ["x"],
             "permission_mode": "default"}  # fmt: skip
-    assert agyjson.init_problems(good, cwd=tmp_path, model=GEMINI_MODEL) == []
+    assert agyjson.init_problems(good, cwd=tmp_path, model=GEMINI_MODEL, deny=[]) == []
     for change, word in (({"cwd": str(tmp_path / "other")}, "cwd"),
                          ({"model": "gemini-3.8-flash-high"}, "model"),
                          ({"permission_mode": "bypassPermissions"}, "permission"),
                          ({"permission_mode": "dangerously_skip_permissions"}, "permission")):
-        problems = agyjson.init_problems({**good, **change}, cwd=tmp_path, model=GEMINI_MODEL)
+        problems = agyjson.init_problems({**good, **change}, cwd=tmp_path, model=GEMINI_MODEL,
+                                         deny=[])  # fmt: skip
         assert len(problems) == 1 and word in problems[0], (change, problems)
-    assert agyjson.init_problems(None, cwd=tmp_path, model=GEMINI_MODEL) == ["no init event"]
+    assert agyjson.init_problems(None, cwd=tmp_path, model=GEMINI_MODEL,
+                                 deny=[]) == ["no init event"]  # fmt: skip
     assert agyjson.init_event(_events("gemini_success"))["permission_mode"] == "default"
 
 
@@ -796,6 +798,185 @@ def test_agyjson_an_edit_file_step_of_another_shape_is_unknown():
                                                        EDITED)]
 
 
+# ---- quick 261119-bhm: agy's network tools (run 20261118-pro: search_web ran at step 44) ----
+
+# agy 1.5.11's init tool list on run 20261118-pro (tacp func_00087090 attempt 1), as it streamed
+INIT_TOOLS_1_5_11 = (
+    "ask_custom_permission", "ask_permission", "ask_question", "browser_click_element",
+    "browser_drag_pixel_to_pixel", "browser_get_dom", "browser_get_network_request",
+    "browser_input", "browser_list_network_requests", "browser_mouse_down", "browser_mouse_up",
+    "browser_move_mouse", "browser_press_key", "browser_refresh_page", "browser_resize_window",
+    "browser_scroll", "browser_scroll_dom", "browser_select_option", "browser_subagent",
+    "call_mcp_tool", "capture_browser_console_logs", "capture_browser_screenshot",
+    "click_browser_pixel", "command_status", "define_subagent", "delete_knowledge",
+    "execute_browser_javascript", "find_by_name", "finish", "generate_image", "grep_search",
+    "invoke_subagent", "list_browser_pages", "list_dir", "list_permissions",
+    "list_plugin_accounts", "list_resources", "manage_inbox", "manage_subagents", "manage_task",
+    "multi_replace_file_content", "notebook_edit", "notebook_execution", "open_browser_url",
+    "read_browser_page", "read_resource", "read_url_content", "replace_file_content",
+    "run_command", "run_workflow", "schedule", "search_marketplace", "search_web", "sed_file",
+    "send_command_input", "send_message", "view_file", "wait", "wait_5_seconds", "write_to_file")
+NETWORK_DENY = ["read_url(*)", "execute_url(*)", "download_url(*)", "mcp(*)"]
+
+
+def _network_step(index: int, tool: str, *, state: str = "DONE", **info) -> dict:
+    """A network tool's step in the shape agy 1.5.11 streamed search_web (tool_info {name,
+    parameters}), its parameters made up."""
+    return _step(index, tool, state=state, name=tool,
+                 parameters=info.pop("parameters", {"query": "made-up query"}), **info)
+
+
+def _network_denied(index: int, tool: str, action: str, target: str, *, rule: bool = True,
+                    **info) -> dict:  # fmt: skip
+    """A network step agy's permission check refused: the deny-rule form (`rule`, the form the
+    session's `<action>(*)` deny rules meet, as 1.5.8's read and edit captures show it) or the
+    soft-deny form with its warning line."""
+    message = (f"permission check failed for {action} {json.dumps(target)}: Permission denied "
+               f"for {action}({target}). Matches user-configured deny rule." if rule
+               else _deny_message(action, target))  # fmt: skip
+    return _network_step(index, tool, state="ERROR", parameters={"Url": f"https://{target}/"},
+                         error={"type": "TOOL_ERROR", "message": message}, **info)
+
+
+def test_agyjson_network_tools_are_listed_explicitly():
+    """The network tools are named one by one, each with the agy permission action that
+    denies it, or None when no rule of agy's grammar can (1.5.12's binary:
+    `^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\\s*\\(.*\\)$`):
+    search_web runs as a model call with no permission check (it ran DONE under
+    request-review on 20261118-pro). The network actions are exactly agy's four network
+    kinds, and every tool of agy 1.5.11's real init list that looks like a network tool is
+    listed, the rest not."""
+    assert agyjson.NETWORK_ACTIONS == ("read_url", "execute_url", "download_url", "mcp")
+    assert agyjson.NETWORK_TOOLS["search_web"] is None
+    assert agyjson.NETWORK_TOOLS["read_url_content"] == "read_url"
+    assert agyjson.NETWORK_TOOLS["open_browser_url"] == "execute_url"
+    assert agyjson.NETWORK_TOOLS["call_mcp_tool"] == "mcp"
+    assert set(agyjson.NETWORK_TOOLS.values()) <= {*agyjson.NETWORK_ACTIONS, None}
+    browser = {t for t in INIT_TOOLS_1_5_11 if "browser" in t}
+    assert len(browser) == 23 and browser <= set(agyjson.NETWORK_TOOLS), browser
+    assert set(agyjson.NETWORK_TOOLS) <= set(INIT_TOOLS_1_5_11)
+    for tool in ("run_command", "view_file", "write_to_file", "grep_search", "manage_task",
+                 "schedule", "generate_image", "send_message"):  # fmt: skip
+        assert tool not in agyjson.NETWORK_TOOLS, tool
+
+
+def test_agyjson_init_refuses_an_undenied_network_tool(tmp_path):
+    """agy 1.5.11's real init list is clean under the session's network deny rules: each
+    network tool there is denied by its action's `(*)` rule or (search_web, search_marketplace:
+    no rule can) audited instead. Without a tool's deny rule its init is refused naming the
+    tool and the rule; a tool that looks like a network one and is not listed (a new one in a
+    later agy) is refused as one the audit does not know; a non-network tool is not."""
+    good = {"type": "init", "cwd": str(tmp_path), "model": GEMINI_MODEL,
+            "tools": list(INIT_TOOLS_1_5_11), "permission_mode": "request-review"}  # fmt: skip
+    assert agyjson.init_problems(good, cwd=tmp_path, model=GEMINI_MODEL, deny=NETWORK_DENY) == []
+    short = [rule for rule in NETWORK_DENY if rule != "read_url(*)"]
+    problems = agyjson.init_problems(good, cwd=tmp_path, model=GEMINI_MODEL, deny=short)
+    assert len(problems) == 1 and "read_url_content" in problems[0], problems
+    assert "read_url(*)" in problems[0], problems
+    for tool in ("fetch_remote_page", "web_fetch", "download_file_from_url", "http_get",
+                 "mcp_list_servers"):  # fmt: skip
+        problems = agyjson.init_problems({**good, "tools": ["run_command", tool]}, cwd=tmp_path,
+                                         model=GEMINI_MODEL, deny=NETWORK_DENY)  # fmt: skip
+        assert len(problems) == 1 and tool in problems[0], (tool, problems)
+        assert "network tool" in problems[0], problems
+    plain = {**good, "tools": ["run_command", "sed_file", "made_up_local_tool"]}
+    assert agyjson.init_problems(plain, cwd=tmp_path, model=GEMINI_MODEL, deny=[]) == []
+
+
+def test_agyjson_a_search_web_step_is_a_network_stray():
+    """The real step of 20261118-pro (search_web, tool_info {name, parameters: {query}}, DONE)
+    ran: `network_steps` names it as a network tool no agy rule can deny, and `unknown_steps`
+    leaves it to that list (named once). No rule can deny search_web, so even an ERROR in a
+    denial's exact form is a step that ran. A browser or MCP step that ran is named with the
+    deny rule that should have refused it."""
+    events = [_network_step(44, "search_web"),
+              _network_denied(45, "search_web", "read_url", "made-up.invalid"),
+              _network_step(46, "open_browser_url", parameters={"Url": "https://x.invalid/"}),
+              _network_step(47, "call_mcp_tool", parameters={"ServerName": "x"})]
+    found = agyjson.network_steps(events)
+    assert [text.split(":")[0] for text in found] == ["step 44", "step 45", "step 46", "step 47"]
+    assert "'search_web'" in found[0] and "no agy permission rule" in found[0], found
+    assert "execute_url(*)" in found[2] and "mcp(*)" in found[3], found
+    assert agyjson.unknown_steps(events) == []
+    assert agyjson.denials(events) == [] and agyjson.denied_network(events) == []
+
+
+def test_agyjson_a_denied_network_step_never_ran():
+    """A network step agy's permission check refused with its own tool's action (the deny-rule
+    form the session's `<action>(*)` rules meet, or the soft-deny form with its warning line),
+    in the shape {name, parameters, error}, no subagent, ERROR, TOOL_ERROR, its quoted and bare
+    targets the same, never ran: it is in `denials` and `denied_network` and in no stray list.
+    Anything less exact ran (fail closed): another action than its tool's, a mismatched
+    target, a subagent's step, another error type, text around the message, DONE."""
+    denied = [_network_denied(2, "read_url_content", "read_url", "made-up.invalid"),
+              _network_denied(3, "open_browser_url", "execute_url", "x.invalid", rule=False),
+              _network_denied(4, "call_mcp_tool", "mcp", "made-up/tool")]
+    assert agyjson.denials(denied) == [
+        agyjson.Denial(2, "read_url_content", "read_url", "made-up.invalid", None),
+        agyjson.Denial(3, "open_browser_url", "execute_url", "x.invalid", None),
+        agyjson.Denial(4, "call_mcp_tool", "mcp", "made-up/tool", None)]
+    assert agyjson.denied_network(denied) == ["read_url_content read_url(made-up.invalid)",
+                                              "open_browser_url execute_url(x.invalid)",
+                                              "call_mcp_tool mcp(made-up/tool)"]  # fmt: skip
+    assert agyjson.network_steps(denied) == [] and agyjson.unknown_steps(denied) == []
+    assert agyjson.undenied_steps(denied) == []
+    wrong_target = _network_denied(6, "read_url_content", "read_url", "made-up.invalid")
+    error = wrong_target["step_update"]["tool_info"]["error"]
+    error["message"] = error["message"].replace("read_url(made-up.invalid)", "read_url(x.invalid)")
+    other_type = _network_denied(7, "read_url_content", "read_url", "made-up.invalid")
+    other_type["step_update"]["tool_info"]["error"]["type"] = "MADE_UP_ERROR"
+    wrapped = _network_denied(8, "read_url_content", "read_url", "made-up.invalid")
+    wrapped["step_update"]["tool_info"]["error"]["message"] = (
+        "made-up: " + wrapped["step_update"]["tool_info"]["error"]["message"])
+    done = _network_denied(9, "read_url_content", "read_url", "made-up.invalid")
+    done["step_update"]["state"] = "DONE"
+    ran = [_network_denied(5, "read_url_content", "execute_url", "made-up.invalid"),
+           wrong_target, other_type, wrapped, done,
+           _network_denied(10, "read_url_content", "read_url", "made-up.invalid",
+                           subagent={"name": "made-up"})]  # fmt: skip
+    assert agyjson.denials(ran) == [] and agyjson.denied_network(ran) == []
+    assert [t.split(":")[0] for t in agyjson.network_steps(ran)] == [
+        f"step {n}" for n in range(5, 11)]
+
+
+def test_session_settings_deny_every_network_kind(tmp_path, capsys, monkeypatch):
+    """The session's settings deny each of agy's network permission kinds outright
+    (read_url(*), execute_url(*), download_url(*), mcp(*)) and allow none: search_web has no
+    kind, so the audit is its only guard."""
+    rig, night, env = agy_night(tmp_path, monkeypatch)
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code == 0, err
+    path = night.repo / "build" / "driver" / RUN / "agy" / SETTINGS_NAME
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    allow, deny = doc["permissions"]["allow"], doc["permissions"]["deny"]
+    assert set(NETWORK_DENY) <= set(deny), deny
+    for action in agyjson.NETWORK_ACTIONS:
+        assert not _rule(allow, action), (action, allow)
+
+
+def test_an_agy_network_step_that_ran_stops_the_night(tmp_path, capsys, monkeypatch):
+    """Run 20261118-pro: a search_web step that ran stops the night at the guardrail, named as
+    a network step (no agy rule can deny it), not as an unknown tool."""
+    rig, night, env = agy_night(tmp_path, monkeypatch, scenario="network_ran")
+    code, _, _ = _run_agy(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL, stopped
+    assert "search_web" in stopped["detail"] and "network tool" in stopped["detail"], stopped
+    assert "is not a tool step the agy audit knows" not in stopped["detail"], stopped
+
+
+def test_an_agy_init_naming_an_unknown_network_tool_stops_the_night(tmp_path, capsys,
+                                                                    monkeypatch):  # fmt: skip
+    """A later agy's new network-looking tool in the init list stops the night with reason
+    init before the session's steps are judged."""
+    rig, night, env = agy_night(tmp_path, monkeypatch, scenario="init_network_tool")
+    code, _, _ = _run_agy(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.INIT and "fetch_remote_page" in stopped["detail"], stopped
+
+
 def test_an_agy_edit_is_judged_as_a_write(tmp_path, capsys, monkeypatch):
     """At night an edit_file step in 1.5.8's shape is a write the audit judges: an edit of the
     session's own notes.md stops nothing, and an edit a deny rule refused is a denied write
@@ -1111,12 +1292,14 @@ USAGE_ARGV = ["agy", "-p", "/usage"]
 
 ALLOWED = "allowed"
 PROBES = ("outside-write", "fetch", "unsandboxed", "relative-read", "different-case-read",
-          "dot-dot-read", "short-name-read")  # fmt: skip
+          "dot-dot-read", "short-name-read", "search-web")  # fmt: skip
 # each session's default scenario: the allowed path's wrapper flow and each probe denied the
-# way spike 012 captured it (the step ends ERROR with the permission check's message)
+# way spike 012 captured it (the step ends ERROR with the permission check's message); the
+# search-web probe's is a made-up read_url_content step its read_url(*) deny rule refused
 SCENARIOS = {ALLOWED: "canary_agy_allowed", "outside-write": "canary_agy_soft_denied",
              "fetch": "canary_agy_deny_fetch", "unsandboxed": "canary_agy_deny_unsandboxed",
-             **{name: "canary_agy_deny_read" for name in PROBES if name.endswith("-read")}}
+             **{name: "canary_agy_deny_read" for name in PROBES if name.endswith("-read")},
+             "search-web": "canary_agy_deny_search"}
 # each probe's file and whether it sits in the workspace itself (the attempt dir; else one
 # directory above it)
 CANARY_LEFT = {"outside-write": ("agy-canary-outside.txt", False),
@@ -1341,7 +1524,8 @@ def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
              "relative-read": f"../../../orig/{driver.AGY_CANARY_PROBE}",
              "different-case-read": str(tmp_path / "ORIG" / driver.AGY_CANARY_PROBE),
              "dot-dot-read": f"{attempt_dir.as_posix()}/../../../orig/{driver.AGY_CANARY_PROBE}",
-             "short-name-read": str(tmp_path / "THIRD_~1" / driver.AGY_CANARY_PROBE)}
+             "short-name-read": str(tmp_path / "THIRD_~1" / driver.AGY_CANARY_PROBE),
+             "search-web": f"Search the web for `{driver.AGY_CANARY_SEARCH}`"}
     for probe in probes:
         assert wants[probe.name] in probe.prompt, probe
         others = [want for name, want in wants.items()  # the `..` read holds the relative one
@@ -1474,6 +1658,28 @@ def test_agy_canary_command_probes_count_either_command_kind(tmp_path, capsys):
         assert (code, doc["canary"]) == (0, "PASS"), (name, _failed(doc))
         texts = " | ".join(c["check"] for c in doc["checks"] if c["ok"])
         assert f"the {name} probe was denied: {shown}" in texts, (name, texts)
+
+
+def test_agy_canary_search_web_probe_wants_the_search_denied(tmp_path, capsys):
+    """Quick 261119-bhm: the search-web probe asks for a web search and its first result. It
+    passes only when no tool step ran and a network action was denied (any of agy's network
+    kinds; the default fixture's read_url_content refused by read_url(*)). A search_web step
+    that ran, as on 20261118-pro, FAILs as not denied, so the arm has no PASS; a session
+    whose only denial is a command never attempted its probe."""
+    probe = next(p for p in driver.agy_canary_probes(tmp_path / "a", repo=tmp_path)
+                 if p.name == "search-web")  # fmt: skip
+    assert probe.actions == frozenset(agyjson.NETWORK_ACTIONS) and probe.left is None
+    rig = _agy_canary_rig(tmp_path / "ran", scenarios={"search-web": "canary_agy_search_ran"})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = _failed(doc)
+    assert "the search web probe: " in failed and "search_web (DONE)" in failed, failed
+    assert "not denied by agy's permission check" in failed, failed
+    assert _no_pass(rig)
+    rig = _agy_canary_rig(tmp_path / "cmd", scenarios={"search-web": "canary_agy_deny_fetch"})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    assert "the search web probe: never attempted" in _failed(doc), _failed(doc)
 
 
 def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):

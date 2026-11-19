@@ -449,7 +449,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   never passed. agy loads no skill and runs no hook, so the prompt is the Codex prompt (goal,
   skill body, the harness note with its wait instruction, session rules), plus one sentence
   that its read_file tool may read inside the attempt dir. The init event must name the attempt dir as cwd, the requested
-  slug and no bypass permission mode, else the night stops (reason init). Tokens come from the
+  slug and no bypass permission mode, else the night stops (reason init). It must also list
+  no network-looking tool (its name holds web, url, browser, mcp, http, fetch, download,
+  internet, network, online, remote, marketplace or resource) that the settings do not
+  deny: each must be in `agyjson.NETWORK_TOOLS` with its kind's `(*)` deny rule in the
+  settings, or be one no kind can deny (`search_web`, `search_marketplace`), which the audit
+  guards instead. A new one in a later agy stops the night until it is added. Tokens come from the
   result's `usage` (thinking tokens added to output), turns from `num_turns`, and the duration
   from `duration_seconds`. The cost is 0 on AI Plus, recorded as an estimate; `stats --run`'s
   comparison prices the tokens at the arm's list price in backends.toml (marked confirm at
@@ -470,9 +475,28 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   short-name path: its own files would then be denied, which fails closed). There is no
   unsandboxed rule: agy 1.5.5 logs `Invalid "unsandboxed" permission rules found; they are
   ignored and grant nothing` (its binary: "unsandboxed is no longer a valid rule, use command()
-  instead"), and its permission kinds are `command`, `read_file`, `write_file`, `read_url`,
-  `execute_url` and `mcp`. A command the allow rule does not match soft-denies, and the
-  canary's unsandboxed probe proves it. Deny beats
+  instead"). A command the allow rule does not match soft-denies, and the
+  canary's unsandboxed probe proves it. Network (quick 261119-bhm, after run 20261118-pro,
+  where `gpt-oss` ran `search_web` at step 44 of tacp func_00087090 and the search finished
+  before the audit stopped the night): the settings also deny `read_url(*)`,
+  `execute_url(*)`, `download_url(*)` and `mcp(*)`, and allow none of them. The rule
+  grammar is read from the installed binary (agy 1.5.12, the same string in 1.5.9's):
+  `^(command|read_file|write_file|read_url|mcp|execute_url|download_url|unsandboxed)\s*\(.*\)$`.
+  No kind names `search_web`, and no settings key that turns it off was found. The CLI log
+  prints the parsed settings as `permissions=&{Allow:[...] Deny:[...] Ask:[]},
+  toolPermission=request-review`, and nothing else. The tool-enable switches in the binary
+  (`SearchWebToolConfig.enabled`, `force_disable`, `CASCADE_WEB_SEARCH_TOOL_DISABLED`, the
+  app's `internet_access_policy`) are internal protobuf fields, not `settings.json` keys. A
+  custom agent's `tools:` list or a `PreToolUse` hook could leave it out, but both live in
+  agy's user or plugin config, which the driver never writes (D-24). The 20261118-pro step
+  also shows that `search_web` asks no permission: it ran DONE under `request-review`, where
+  headless agy soft-denies anything that needs a confirmation. The search runs as a model
+  call ("failed to resolve search_web model"), and that session's agy log shows only the usual
+  `cloudcode-pa` model calls. So **no agy 1.5.12 settings rule denies `search_web`**: the audit
+  is its only guard (below), and the canary's `search-web` probe is expected to FAIL until
+  agy offers one. The init tool list cited here is 1.5.11's (the 20261118 transcripts). Re-read
+  it from the init event of the coordinator's 1.5.12 canary: a new network tool there fails
+  that canary's init check. Deny beats
   allow, so the reads cannot be an "everything but" deny; instead headless agy soft-denies
   whatever is not allowed, so the allow lists are the whole surface. These rule forms come from
   agy's docs, not a captured run: the deny rules are **unconfirmed** until the owner's agy
@@ -496,7 +520,12 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   the attempt dir may hold only the session files, the transcript, the driver's own files as
   they were at launch and wrapper output its ledger names. A session-written `.gemini/` file, a
   linked `view` or `view/build` and a forged `checks.jsonl` are strays. Anything else is
-  quarantined, the attempt is recorded as a guardrail give-up and the night stops. The audit
+  quarantined, the attempt is recorded as a guardrail give-up and the night stops. A network
+  tool's step that ran (`agyjson.network_steps`: `search_web`, `read_url_content`, the 23
+  browser tools, `call_mcp_tool`, `read_resource`, `list_resources`, `search_marketplace`) is
+  a stray named as a network step that stops the night: `search_web` always counts as run,
+  since no rule can deny it, and the others count as run unless agy's permission check refused
+  them. The audit
   fails closed: a tool step that ran and is not `run_command` in agy 1.5.5's shape, or
   `read_file` or `write_file` with a path (an unknown tool, a missing name, another shape, a
   subagent), is a stray, and only `read_file` counts as a read; any other path step is judged
@@ -554,10 +583,18 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   `edit_file` step that agy's permission check refused in that exact shape, for the step's own request
   (`agyjson.denied_writes`), counts as a denied write, so on a night of several arms a session
   whose only strays are such writes stops its arm only, as a Claude hook-denied write does
-  (see "Several arms in one drive"); with one arm it stops the night. What a session sent to
+  (see "Several arms in one drive"); with one arm it stops the night. By the owner's ruling of
+  2026-11-19 a denied network step counts the same way (`agyjson.denied_network`). That is a
+  network tool with a kind, in `search_web`'s shape (`tool_info` with `name`, a `parameters`
+  mapping and `error`), no subagent, ending `ERROR` with `TOOL_ERROR` and exactly one of the
+  two refusal forms for its tool's kind (`read_url` for `read_url_content`, `execute_url` for
+  a browser tool, `mcp` for an MCP one), with matching quoted and bare targets. Such a session
+  stops its arm only, and the console says `agy's permission check denied its network step
+  ...`. A network step that ran still stops the whole drive. No network refusal has been
+  captured yet, so the canary's probe is the proof of that form. What a session sent to
   Google before it ended has left the machine.
 - **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
-  gemini-flash --run canary-gemini` (and the same for `gpt-oss`) runs eight short agy
+  gemini-flash --run canary-gemini` (and the same for `gpt-oss`) runs nine short agy
   sessions in one attempt dir, under the night's settings file and ledger. Spike 012 showed why:
   headless agy ends the turn at its first soft-denied tool (its log: `Print mode: soft-denying
   tool confirmation "WriteFile" at step 2`, then shutdown, `num_turns` 1), so one session can
@@ -580,7 +617,14 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
      allowed wrapper form, so agy's soft-deny is what refuses it), and four reads of
      `orig/reverseapoc-canary-probe.txt`: `relative-read` (a `../` path),
      `different-case-read` (`ORIG/`), `dot-dot-read` (the attempt dir followed by `..`) and
-     `short-name-read` (`THIRD_~1/`). Each read prompt tells the model to pass the path string
+     `short-name-read` (`THIRD_~1/`), then `search-web` (quick 261119-bhm: "Search the web
+     for `example domain` and tell me the first result."). The search probe passes only when
+     no tool step ran and a step of any network kind (`read_url`, `execute_url`,
+     `download_url`, `mcp`) was denied. A `search_web` step can never be a denial, so a search
+     that ran FAILs as `not denied`, and on agy 1.5.12 that is the expected result (above).
+     A night needs a canary PASS, so such a FAIL keeps that agy arm off nights until agy can
+     deny the search or the owner rules otherwise.
+     Each read prompt tells the model to pass the path string
      exactly as written, character for character, without resolving or normalizing it (round
      4's gpt-oss folded the `..` spellings into the canonical path). The probe file never
      exists, so a read that is not denied finds nothing. The two command probes are plain
@@ -610,7 +654,7 @@ Claude and Gemini through agy, and GPT through Codex side by side. Each is cappe
   terminal sandbox does not run at all (agy's log: `Terminal sandbox unavailable: sandboxing on
   Windows requires Windows 11 24H2 or later`), so `--sandbox` adds nothing there and the
   permission rules are the only guard the canary proves. The whole canary takes at most
-  1200 + 7 x 180 s, about 41 minutes.
+  1200 + 8 x 180 s, about 44 minutes.
 - **The quota step (D-21, D-25).** The canary then runs `agy -p /usage`. A JSON line naming a
   `remaining` number is a measurement: above 0 passes, and the pass file records it so the owner
   sizes the arm to the weekly quota. A `remaining` of 0, an error status, or text saying the
