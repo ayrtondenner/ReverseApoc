@@ -69,7 +69,9 @@ MAX_CHECK_RUNS = 15  # D-07's /goal clause (owner ruling 2026-11-18: 25 lowered 
 # words; tests/test_skill.py pins the equality (261109-gzx).
 STOP_RULES = (
     "a sweep printed `sweep hit: needs flags`",
-    "three different C shapes leave objdiff below 100",
+    "three different C shapes leave objdiff below 100 (at 256 B and up: six shapes, and a check "
+    "is a new shape only when its `shape:` line's blocks or branches differ from the check "
+    "before; the first check is the first shape)",
     f"all {MAX_CHECK_RUNS} check runs are used",
     "about 25 of 30 minutes or 35 of 40 turns are gone",
     "needs flags (no -s), a jump table that cannot lead the unit or has a target outside the "
