@@ -1352,3 +1352,110 @@ def test_reverted_refuses_a_symbols_csv_name_without_its_underscore(tree):
     with pytest.raises(CheckError, match=r"symbols\.csv.*Foo"):
         run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
     assert fake.calls == []
+
+
+# ---- #pragma and inline asm in landed C, for every harness (todo harness-independent-pragma-check)
+
+
+BANNED_LINES = {
+    "pragma-aux": '#pragma aux func_00010000 "*"',
+    "pragma": "#pragma off (check_stack)",
+    "_asm": "void nop1(void) { _asm { nop } }",
+    "__asm": "void nop2(void) { __asm nop }",
+    "_Pragma": '_Pragma("aux func_00010000 parm [eax]")',
+}
+
+
+def banned_unit(tree: Tree, line: str) -> int:
+    """UNIT_A defining A1 in C, with `line` appended; returns that line's number."""
+    text = tree.write_unit(UFO, UNIT_A, [A1]) + line + "\n"
+    tree.source(UFO, UNIT_A).write_bytes(text.encode("utf-8"))
+    return len(text.splitlines())
+
+
+@pytest.mark.parametrize("line", list(BANNED_LINES.values()), ids=list(BANNED_LINES))
+def test_gate_refuses_a_unit_with_a_pragma_or_inline_asm(tree, line):
+    """The hook's matching-layer scan (hooks.asm_problem, strict), run by gate itself: the unit
+    is refused with its file and line before check runs, and nothing is written."""
+    lineno = banned_unit(tree, line)
+    fake = FakeCheck(tree)
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert result.exit_code == 1 and result.written == ()
+    (problem,) = result.problems
+    assert str(tree.source(UFO, UNIT_A)) in problem and f"line {lineno}" in problem, problem
+    assert fake.calls == []
+    assert not tree.status(UFO).exists()
+
+
+def test_a_codex_arm_landing_with_pragma_aux_is_refused(tree, monkeypatch, capsys):
+    """A Codex (or agy, or Copilot) session never runs the Claude Code hook. The driver lands
+    every arm's view unit alike: driver._land copies its bytes to src/<exe>/<unit>.c, then the
+    container runs driver.gate_argv, which names no arm. So gate's own scan refuses the unit."""
+    from reverseapoc import driver
+    from reverseapoc.picker import Pick
+
+    lineno = banned_unit(tree, BANNED_LINES["pragma-aux"])
+    fake = FakeCheck(tree)
+    monkeypatch.setattr(gate, "check_unit", fake)
+    argv = driver.gate_argv(Pick("ufo2p", A1, fname(A1), UNIT_A, 0x10, 0), 1)
+    assert argv[: len(driver.CONTAINER_CLI)] == list(driver.CONTAINER_CLI)
+    assert cli_main([*argv[len(driver.CONTAINER_CLI) :], *tree.argv()]) == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["written"] == []
+    assert any(f"line {lineno}" in p and "#pragma" in p for p in doc["problems"]), doc
+    assert fake.calls == [] and not tree.status(UFO).exists()
+
+
+def test_gate_all_refuses_a_matched_unit_with_a_pragma(tree):
+    seeded_tree(tree)
+    lineno = banned_unit(tree, BANNED_LINES["pragma"])
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 1
+    assert any(str(tree.source(UFO, UNIT_A)) in p and f"line {lineno}" in p
+               for p in result.problems), result.problems  # fmt: skip
+
+
+def copy_committed_headers(tree: Tree) -> None:
+    for name in ("common.h", "watcom_compat.h"):
+        header = tree.root / "include" / name
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_bytes((REPO_ROOT / "include" / name).read_bytes())
+
+
+def test_the_committed_headers_pass_both_gates(tree):
+    """watcom_compat.h's clang `#pragma` and common.h's INCLUDE_ASM `##` stay allowed: headers
+    get the hook's always-layer scan (lax), not the strict one."""
+    copy_committed_headers(tree)
+    tree.write_unit(UFO, UNIT_A, [A1])
+    assert run_gate(tree, f"ufo2p/{UNIT_A}").exit_code == 0
+    seeded_tree(tree)
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 0, result.problems
+
+
+@pytest.mark.parametrize(
+    ("line", "refused"),
+    [("#pragma pack(1)", False), ("#pragma aux f parm [eax]", False),
+     ("#pragma aux f = 0xc3", True), ("#define NOP _asm nop", True)],
+    ids=["pragma", "pragma-aux-parm", "pragma-aux-code", "_asm"],
+)  # fmt: skip
+def test_gate_scans_headers_with_the_always_rule(tree, line, refused):
+    copy_committed_headers(tree)
+    header = tree.root / "include" / "extra.h"
+    header.write_text(f"{line}\n", encoding="utf-8")
+    tree.write_unit(UFO, UNIT_A, [A1])
+    result = run_gate(tree, f"ufo2p/{UNIT_A}")
+    assert (result.exit_code == 1) is refused, result.problems
+    if refused:
+        assert any(str(header) in p and "line 1" in p for p in result.problems), result.problems
+        assert not tree.status(UFO).exists()
+
+
+def test_gate_all_refuses_a_header_with_inline_asm(tree):
+    seeded_tree(tree)
+    header = tree.root / "include" / "extra.h"
+    header.parent.mkdir(parents=True, exist_ok=True)
+    header.write_text("#define NOP __asm nop\n", encoding="utf-8")
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 1
+    assert any(str(header) in p and "line 1" in p for p in result.problems), result.problems

@@ -214,11 +214,21 @@ def test_diff_summary_masks_relocated_fields():
         "# pragma aux x\n",
         "int f(void) { _asm { nop } return 0; }\n",
         "int f(void) { __asm nop; return 0; }\n",
+        '_Pragma("aux f parm [eax]")\nint f(void) { return 0; }\n',
+        "%:pragma aux x\n",
     ],
 )
 def test_refusal_names_pragma_and_inline_asm(text):
     reason = batch.refusal(text)
     assert reason
+
+
+def test_refusal_is_the_hooks_scan_and_names_the_line():
+    """One rule (hooks.asm_problem, the matching layer's strict scan), no second copy: the
+    reason names the logical line, and a #pragma in a comment is not code."""
+    text = "/* #pragma aux f */\nint f(void) { return 0; }\n#pragma aux f\n"
+    reason = batch.refusal(text)
+    assert reason is not None and "line 3" in reason, reason
 
 
 def test_refusal_accepts_plain_c89():
