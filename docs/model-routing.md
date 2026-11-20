@@ -1292,6 +1292,33 @@ change together. Re-measure with the same command before the ruling.
 
 **Owner ruling (2026-11-18): the budget is 15.** `attempt.CHECK_BUDGET` and `session.MAX_CHECK_RUNS` are 15, and both skills say so. The change set is the one listed above.
 
+**Re-measured 2026-11-20** with the same command, over the committed log (4,335 matching
+sessions, 192 exact): 58.9% on the first check, 84.4% by check 3, p95 at check 7, latest at
+check 13. Per bucket the latest exact is still check 10 under 64 B (112 exact, p95 4), 11 at
+64-255 B (69, p95 9) and 13 at 256-1023 B (11, p95 13); 1 KB and up has none in 143. So 15
+still keeps every exact match seen. The sessions since the ruling ran under 15, so they cannot
+show an exact match past it; the 147 sessions with 16 or more checks are all from before.
+
+**Exit reasons and stages reached** (the same command's next block, read from each attempt
+record: `check.runs`, `check.best_percent`, `outcome`, `abort_reason`, `giveup.category`).
+Of the 4,335 sessions, 4,065 ran a check, 3,843 compiled one, 1,779 reached 80%, 657 reached
+95% and 192 were exact. How they ended:
+
+| Exit | Sessions | Share |
+|---|---:|---:|
+| partial, under 15 checks (the session ended on its own) | 3,281 | 75.7% |
+| gave up (giveup.json; 304 of them `flags`) | 475 | 11.0% |
+| abort (112 timeout, 86 lint, 42 guardrail, 10 tool) | 250 | 5.8% |
+| exact | 192 | 4.4% |
+| partial, at 15 or more checks (the budget, or 16-25 before the ruling) | 137 | 3.2% |
+
+So the check budget ends few sessions: unlike Reveree's agents (half of their failures ran out
+of budget), ours mostly stop on their own. Lowering it further would save little. Where the
+sessions fall away, per bucket (compiled, then 80%+, 95%+, exact):
+64-255 B 1,787, 1,070, 320, 69; 256-1023 B 1,222, 386, 155, 11; 1 KB and up 127, 12, 0, 0.
+Of the 1,222 sessions at 256-1023 B that compiled, 836 never reached 80%, and 144 reached 95%
+without an exact match.
+
 ## Near-miss lane
 
 The partial rows of `config/<exe>/status.csv` hold far more bytes than the matched ones, and
