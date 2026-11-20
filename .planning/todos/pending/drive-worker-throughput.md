@@ -8,7 +8,7 @@ source: run 20261119-claude (Opus 10 + Sonnet 10 workers)
 
 # Twenty sessions at once were CPU-bound
 
-**Why.** Run 20261119-claude ran 20 Claude sessions at once; sessions took 25-45 minutes (1,400-3,000 s)
+**Why.** Run 20261119-claude ran 20 Claude sessions at once; the drive log timed sessions at 1,400-3,000 s from launch to end (records: Opus median 7.6 min, Sonnet 20 min, 8 of 62 at the 30-minute limit)
 against roughly 6-10 minutes on lighter nights, and only 62 sessions finished in about 2 hours. Each
 attempt check compiles and diffs in Docker, so wall time per session grows with the number in flight
 and sessions per hour stop rising. Quota-sized nights (spend N% of a week in H hours) need the real

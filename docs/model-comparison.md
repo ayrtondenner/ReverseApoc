@@ -643,15 +643,15 @@ The owner asked to spend what was left of the week on Codex, agy's "Claude and G
 Claude plan. Sessions and matches below are from `reverseapoc stats --run` (T); bar readings are the
 owner's (S).
 
-| Run | Arms (lane) | Sessions | Matched | API-equivalent (T) | How it ended |
+| Run | Arms (lane) | Sessions | Matched | Recorded cost (T) | How it ended |
 |---|---|---|---|---|---|
-| 20261119-claude | Opus 5.5 (near-miss), Sonnet 5.5 (tier), 10 workers each | 35 + 27 | 0 | $34.55 | owner-approved Ctrl-C at 17:25 for the A/B |
-| 20261119-fable | Fable 5.1 (near-miss), 10 workers | 31 | 0 | $118.06 | owner-approved Ctrl-C near the 50% target |
+| 20261119-claude | Opus 5.5 (near-miss), Sonnet 5.5 (tier), 10 workers each | 35 + 27 | 0 | $34.55 ($53.56 at list price) | owner-approved Ctrl-C at 17:25 for the A/B |
+| 20261119-fable | Fable 5.1 (near-miss), 10 workers | 31 | 0 | $118.06 ($141.85 at list price) | owner-approved Ctrl-C near the 50% target |
 | 20261119-quota to -quota5 | Terra, Luna (tier); Sol, Astra (near-miss); gpt-oss (tier); Opus 4.6 via agy (near-miss, one run) | Terra 43, Luna 8, Sol 12, Astra 14, gpt-oss 10, Opus 4.6 1 | Sol 1 (tacp func_00097370), Astra 1 (ufo2p func_00046840) | Codex and agy plans: $0 paid | see below |
 
 - **Claude bar (S).** 34% before the Claude run, 37% after it, 45% partway through the Fable run. The
   Fable run moved the bar about 2.3 times what the cost meter estimates (todo quota-calibration-1119).
-- **Throughput.** With 20 Claude sessions in flight, sessions took 25-45 minutes each, so the
+- **Throughput.** With 20 Claude sessions in flight, the drive log timed sessions at 1,400-3,000 s from launch to end (the records' own session time is shorter: Opus median 7.6 min, Sonnet 20 min, 8 of 62 at the 30-minute limit), and 62 sessions finished in 2.0 h, so the
   machine, not the plan, capped the spend (todo drive-worker-throughput).
 - **Codex windows.** The 5-hour window ran out four times (17:35, 22:52, 03:53 and 08:57 resets); at
   256 B and up a window held about 40 minutes of sessions. The weekly limit was not reached before
