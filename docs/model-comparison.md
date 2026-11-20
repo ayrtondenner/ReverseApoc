@@ -637,6 +637,35 @@ measured as a held A/B with nothing landed: the same 20 picks, the same arm, the
   left. Files: `build/gate/20261119-3s/` (compare.txt, compare.json, stats-old.txt,
   stats-new.txt, paired.txt).
 
+## Quota nights of 2026-11-19/20
+
+The owner asked to spend what was left of the week on Codex, agy's "Claude and GPT" group and the
+Claude plan. Sessions and matches below are from `reverseapoc stats --run` (T); bar readings are the
+owner's (S).
+
+| Run | Arms (lane) | Sessions | Matched | API-equivalent (T) | How it ended |
+|---|---|---|---|---|---|
+| 20261119-claude | Opus 5.5 (near-miss), Sonnet 5.5 (tier), 10 workers each | 35 + 27 | 0 | $34.55 | owner-approved Ctrl-C at 17:25 for the A/B |
+| 20261119-fable | Fable 5.1 (near-miss), 10 workers | 31 | 0 | $118.06 | owner-approved Ctrl-C near the 50% target |
+| 20261119-quota to -quota5 | Terra, Luna (tier); Sol, Astra (near-miss); gpt-oss (tier); Opus 4.6 via agy (near-miss, one run) | Terra 43, Luna 8, Sol 12, Astra 14, gpt-oss 10, Opus 4.6 1 | Sol 1 (tacp func_00097370), Astra 1 (ufo2p func_00046840) | Codex and agy plans: $0 paid | see below |
+
+- **Claude bar (S).** 34% before the Claude run, 37% after it, 45% partway through the Fable run. The
+  Fable run moved the bar about 2.3 times what the cost meter estimates (todo quota-calibration-1119).
+- **Throughput.** With 20 Claude sessions in flight, sessions took 25-45 minutes each, so the
+  machine, not the plan, capped the spend (todo drive-worker-throughput).
+- **Codex windows.** The 5-hour window ran out four times (17:35, 22:52, 03:53 and 08:57 resets); at
+  256 B and up a window held about 40 minutes of sessions. The weekly limit was not reached before
+  the owner stopped the drive on 2026-11-20.
+- **Stops.** Each fail-closed stop ended a run and was fixed or ruled before the next:
+  - gpt-oss called agy's `manage_task` with `{Action: "list"}`: now known in exact shape (32384029);
+  - gpt-oss's write to a misspelled path was denied, which stopped that arm only, by design;
+  - agy-opus-4-6 sent `cd <dir> && <wrapper>`, which agy 1.5.13 reported DONE in 0.045 s with no
+    output (todo agy-done-without-output; Opus 4.6 stays off nights until that is settled);
+  - gpt-oss ran `search_web` in a real session (detect-only per the owner's ruling), after which agy
+    arms were kept out of the Codex drive.
+- **Matches.** Both landed rows were picks of the three-shapes A/B (99.96% and 99.85% best before), on
+  their first unheld session after it.
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
