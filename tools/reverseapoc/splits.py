@@ -376,6 +376,12 @@ def splits_json(pairs: Sequence[SplitPair], exes: Sequence[str]) -> dict[str, An
 #   the target row and every row between them are one function. Merge spans that share a row
 #   are one merge.
 #
+# A jump that would propose `merge` but lands on a shared epilogue (a run of pops that ends in
+# `ret`, or a bare `ret`) is a `shared-epilogue` suspect and proposes no fix: Watcom lets one
+# function jump to another's matching `pop ...; ret` or `ret` (the 2026-11-19 merge review
+# ruled 16 of 22 merges SKIP, most of them this shape). An `add esp, N` before the pops is no
+# such epilogue: case bodies cut out of a switch jump to their own function's frame exit.
+#
 # A fix that would cut or join a status.csv `matched` row is `review` instead: a matched row's
 # boundaries are proven by the gate, so the branch crosses two real functions (a shared tail,
 # say) and the owner looks at it; no change is proposed.
@@ -390,6 +396,8 @@ BRANCHES = ("call", "jmp", "jcc")
 CALL, JMP, JCC = BRANCHES
 ACTIONS = ("split", "merge", "review")
 SPLIT, MERGE, REVIEW = ACTIONS
+SHARED_EPILOGUE = "shared-epilogue"  # a suspect's fix word that proposes no fix
+POP, RET = "pop", "ret"
 _SKIPPED = "skipped"
 
 
@@ -408,7 +416,7 @@ class Interior:
     touching: bool  # one row ends where the other starts
     source_status: str  # status.csv's status of the row, else NONE
     target_status: str
-    fix: str  # SPLIT or MERGE: what the branch alone proposes
+    fix: str  # SPLIT or MERGE: what the branch alone proposes; SHARED_EPILOGUE proposes nothing
 
 
 @dataclass(frozen=True)
@@ -477,7 +485,11 @@ def _stub(items: Sequence[asm.Item]) -> Insn | None:
 
 
 def _interior(exe: str, row: FunctionRow, insn: Insn, stub: Insn | None, target: FunctionRow,
-              statuses: Mapping[int, str]) -> Interior:  # fmt: skip
+              statuses: Mapping[int, str], epilogue: bool) -> Interior:  # fmt: skip
+    if insn.is_call or insn is stub:
+        fix = SPLIT
+    else:
+        fix = SHARED_EPILOGUE if epilogue else MERGE
     return Interior(
         exe=exe, source=row.start, source_unit=row.unit, site=insn.va - row.start,
         branch=_branch_word(insn), target=target.start, target_unit=target.unit,
@@ -485,7 +497,7 @@ def _interior(exe: str, row: FunctionRow, insn: Insn, stub: Insn | None, target:
         touching=row.end == target.start or target.end == row.start,
         source_status=statuses.get(row.start, NONE),
         target_status=statuses.get(target.start, NONE),
-        fix=SPLIT if insn.is_call or insn is stub else MERGE)  # fmt: skip
+        fix=fix)  # fmt: skip
 
 
 class _Facts:
@@ -521,6 +533,15 @@ class _Facts:
     def noise(self, row: FunctionRow, target: FunctionRow, va: int) -> bool:
         return self.data(row.start) or self.data(target.start) or not self.lands(target.start, va)
 
+    def epilogue(self, start: int, va: int) -> bool:
+        """The decoded row at `start` holds, from `va` on, zero or more pops and then a ret."""
+        for item in self.decoded[start][1].items:
+            if item.va < va:
+                continue
+            if not isinstance(item, Insn) or item.mnemonic != POP:
+                return isinstance(item, Insn) and item.mnemonic == RET
+        return False
+
 
 def interior_branches(exe: ExeInputs, *,
                       statuses: Mapping[int, str] | None = None) -> InteriorReport:  # fmt: skip
@@ -541,7 +562,8 @@ def interior_branches(exe: ExeInputs, *,
             if facts.noise(row, target, insn.branch_target):
                 skipped += 1
                 continue
-            suspects.append(_interior(exe.stem, row, insn, stub, target, statuses))
+            epilogue = facts.epilogue(target.start, insn.branch_target)
+            suspects.append(_interior(exe.stem, row, insn, stub, target, statuses, epilogue))
     fixes = _fixes(exe.stem, suspects, facts.rows.starts, statuses)
     return InteriorReport(exe.stem, tuple(suspects), fixes, skipped)
 

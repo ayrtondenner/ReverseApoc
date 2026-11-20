@@ -324,7 +324,7 @@ def test_real_split_pairs():
 #                row), ret
 #   Q    +0x040  (a gap before it, so P and Q do not touch) xor, xor, ret
 #   A    +0x080  je B+4 (a suspect: A and B touch, merge them), ret
-#   B    +0x0A0  xor, xor, ret
+#   B    +0x0A0  xor, xor, xor, ret (B+4 is the third xor, no epilogue)
 #   C    +0x0C0  xor, ret
 #   D    +0x0E0  xor, jmp B+4 (a suspect: merge B..D; it shares B with A..B, so one fix
 #                merges A..D), ret
@@ -334,14 +334,20 @@ def test_real_split_pairs():
 #   M    +0x1C0  xor, jmp Q+1 (inside Q's first xor: no instruction starts there, skipped)
 #   G    +0x200  xor, jne H+4 (a suspect: merge G..H, or review it when MID is matched), ret
 #   MID  +0x220  ret
-#   H    +0x240  xor, xor, ret
+#   H    +0x240  xor, xor, xor, ret
 #   L    +0x260  jmp H+4 as its first instruction, then xor and ret (no stub: merge H..L, which
 #                shares H with G..H, so one fix merges G..L)
 #   RT   +0x280  a runtime row: xor, ret
+#   K    +0x2A0  xor, jne E+3 (`add esp, 8; pop; pop; ret`: no epilogue, merge K..E), jne E+9
+#                (`pop; xor; ret`: the pops end in no ret, merge), ret
+#   E    +0x2C0  xor, ret, add esp 8, pop ebx, pop ecx, ret, pop ebx, xor, ret
+#   F    +0x2E0  push ebx, push ecx, je E+6 (`pop ebx; pop ecx; ret`: E's shared epilogue) and
+#                jne E+2 (E's bare ret): suspects that propose no fix, then xor and ret
 
 _OFFSETS = (0x000, 0x040, 0x080, 0x0A0, 0x0C0, 0x0E0, 0x120, 0x160, 0x180, 0x1C0, 0x200, 0x220,
-            0x240, 0x260, 0x280)  # fmt: skip
-_P, _Q, _A, _B, _C, _D, _X, _R, _S, _M, _G, _MID, _H, _L, _RT = (CODE + off for off in _OFFSETS)
+            0x240, 0x260, 0x280, 0x2A0, 0x2C0, 0x2E0)  # fmt: skip
+_P, _Q, _A, _B, _C, _D, _X, _R, _S, _M, _G, _MID, _H, _L, _RT, _K, _E, _F = (
+    CODE + off for off in _OFFSETS)  # fmt: skip
 _TEXT = b"abcdef\x00"  # printable ASCII ended by a zero (asmclass TEXT_RUN is 6)
 _JMP_OWN = 0x10  # P's jump into itself
 _STUB_TO = 0x10  # S's jump into Q: one of Q's nops
@@ -349,6 +355,17 @@ _MID_XOR = 1  # M's jump: the second byte of Q's first xor
 _JNE = b"\x0f\x85"  # jne rel32
 _X2 = len(_XOR_EAX_EAX)
 _AFTER_JE = len(_JE) + _REL32  # X+6: the first text byte, an instruction start
+_ADD_ESP_8 = b"\x83\xc4\x08"  # add esp, 8
+_POP_EBX = b"\x5b"  # pop ebx
+_POP_ECX = b"\x59"  # pop ecx
+_PUSH_ECX = b"\x51"  # push ecx
+_EPILOGUE = _POP_EBX + _POP_ECX + _RET
+_E_RET = _X2  # E's bare ret
+_E_FRAME = _E_RET + len(_RET)  # add esp, 8; pop ebx; pop ecx; ret
+_E_POPS = _E_FRAME + len(_ADD_ESP_8)  # pop ebx; pop ecx; ret
+_E_NO_RET = _E_POPS + len(_EPILOGUE)  # pop ebx; xor; ret
+_JCC = len(_JNE) + _REL32
+_F_JE = len(_PUSH_EBX + _PUSH_ECX)  # F's two jumps into E
 
 
 def _interior_exe(stem: str = "ufo2p"):
@@ -359,7 +376,7 @@ def _interior_exe(stem: str = "ufo2p"):
         _P: _padded(call_q + call_r + _rel(_JMP, own_at, _P + _JMP_OWN) + _RET),
         _Q: _padded(_XOR_EAX_EAX * 2 + _RET),
         _A: _padded(_rel(_JE, _A, _B + 4) + _RET),
-        _B: _padded(_XOR_EAX_EAX * 2 + _RET),
+        _B: _padded(_XOR_EAX_EAX * 3 + _RET),
         _C: _padded(_XOR_EAX_EAX + _RET),
         _D: _padded(_XOR_EAX_EAX + _rel(_JMP, _D + _X2, _B + 4) + _RET),
         _X: _padded(_rel(_JE, _X, _Q + 4) + _TEXT),
@@ -368,9 +385,15 @@ def _interior_exe(stem: str = "ufo2p"):
         _M: _padded(_XOR_EAX_EAX + _rel(_JMP, _M + _X2, _Q + _MID_XOR) + _RET),
         _G: _padded(_XOR_EAX_EAX + _rel(_JNE, _G + _X2, _H + 4) + _RET),
         _MID: _padded(_RET),
-        _H: _padded(_XOR_EAX_EAX * 2 + _RET),
+        _H: _padded(_XOR_EAX_EAX * 3 + _RET),
         _L: _padded(_rel(_JMP, _L, _H + 4) + _XOR_EAX_EAX + _RET),
         _RT: _padded(_XOR_EAX_EAX + _RET),
+        _K: _padded(_XOR_EAX_EAX + _rel(_JNE, _K + _X2, _E + _E_FRAME)
+                    + _rel(_JNE, _K + _X2 + _JCC, _E + _E_NO_RET) + _RET),
+        _E: _padded(_XOR_EAX_EAX + _RET + _ADD_ESP_8 + _EPILOGUE + _POP_EBX + _XOR_EAX_EAX
+                    + _RET),
+        _F: _padded(_PUSH_EBX + _PUSH_ECX + _rel(_JE, _F + _F_JE, _E + _E_POPS)
+                    + _rel(_JNE, _F + _F_JE + _JCC, _E + _E_RET) + _XOR_EAX_EAX + _RET),
     }  # fmt: skip
     le = LE(build_le_image(fixups=[b"", b"", b""], patches=patches).data)
     flat = bytes(le.load_flat(relocate=False))
@@ -398,6 +421,10 @@ def test_interior_branch_suspects():
         (_S, 0, "jmp", _Q, _STUB_TO, False, "split"),
         (_G, _X2, "jcc", _H, 4, False, "merge"),
         (_L, 0, "jmp", _H, 4, True, "merge"),
+        (_K, _X2, "jcc", _E, _E_FRAME, True, "merge"),
+        (_K, _X2 + _JCC, "jcc", _E, _E_NO_RET, True, "merge"),
+        (_F, _F_JE, "jcc", _E, _E_POPS, True, "shared-epilogue"),
+        (_F, _F_JE + _JCC, "jcc", _E, _E_RET, True, "shared-epilogue"),
     ]
     first = report.suspects[0]
     assert (first.exe, first.source_unit, first.target_unit) == ("ufo2p", UNIT, OTHER_UNIT)
@@ -413,6 +440,7 @@ def test_interior_branch_fixes():
         ("split", (_Q,), _Q + _STUB_TO),
         ("merge", (_A, _B, _C, _D), None),  # A..B and B..D share B: one merge
         ("merge", (_G, _MID, _H, _L), None),  # G..H and H..L share H: one merge
+        ("merge", (_K, _E), None),  # F's jumps into E's shared epilogue propose nothing
     ]
 
 
@@ -420,7 +448,7 @@ def test_interior_fix_on_a_matched_row_is_review():
     requires_capstone()
     statuses = {_MID: "matched", _Q: "partial"}
     fixes = [(f.action, f.rows, f.at) for f in _interior(statuses=statuses).fixes]
-    assert fixes[-1] == ("review", (_G, _MID, _H, _L), None)  # MID's boundaries are proven
+    assert fixes[-2] == ("review", (_G, _MID, _H, _L), None)  # MID's boundaries are proven
     assert [f[0] for f in fixes[:3]] == ["split", "split", "merge"]  # partial proves nothing
     report = _interior(statuses={_Q: "matched"})
     assert [(f.action, f.at) for f in report.fixes[:2]] == [("review", _Q + 8),
@@ -455,15 +483,16 @@ def test_cli_interior_json_and_text(tmp_path, monkeypatch, capsys):
     assert doc["fixes"][0] == {"exe": "ufo2p", "action": "split", "rows": [f"0x{_Q:08X}"],
                                "at": f"0x{_Q + 8:08X}"}  # fmt: skip
     assert doc["fixes"][2]["at"] is None
-    assert doc["counts"]["tacp"] == {"suspects": 6, "call": 1, "jmp": 3, "jcc": 2, "skipped": 3,
-                                     "split": 2, "merge": 2, "review": 0}  # fmt: skip
+    assert doc["counts"]["tacp"] == {"suspects": 10, "call": 1, "jmp": 3, "jcc": 6, "skipped": 3,
+                                     "split": 2, "merge": 3, "review": 0}  # fmt: skip
     code, text = _interior_run(capsys, tmp_path, "--exe", "ufo2p")
     lines = [line for line in text.splitlines() if line.strip()]
-    assert code == 0 and len(lines) == 6 + 4 + 1  # suspects, fixes, one counts line
+    assert code == 0 and len(lines) == 10 + 5 + 1  # suspects, fixes, one counts line
     assert lines[0].startswith(f"ufo2p 0x{_P:08X}+0x0 call -> 0x{_Q:08X}+0x8 ")
-    assert lines[6] == f"ufo2p fix: split 0x{_Q:08X} at 0x{_Q + 8:08X}"
-    assert lines[9] == (f"ufo2p fix: merge 0x{_G:08X} 0x{_MID:08X} 0x{_H:08X} 0x{_L:08X} "
-                        "(4 rows)")  # fmt: skip
+    assert lines[9].endswith(" fix=shared-epilogue")
+    assert lines[10] == f"ufo2p fix: split 0x{_Q:08X} at 0x{_Q + 8:08X}"
+    assert lines[13] == (f"ufo2p fix: merge 0x{_G:08X} 0x{_MID:08X} 0x{_H:08X} 0x{_L:08X} "
+                         "(4 rows)")  # fmt: skip
     assert not _HEX_RUN.search(text) and not _OPERAND.search(text)
     assert list(tmp_path.iterdir()) == []  # writes nothing
 
@@ -492,11 +521,19 @@ REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix)
     ("ufo2p", 0x0001863E, 0x20): (0x00018577, 0xB5, "merge"),  # into a shared exit
     ("ufo2p", 0x0002FAF0, 0x44C): (0x0002E100, 0x171, "merge"),  # a fix of review
     ("tacp", 0x000AF170, 0x0): (0x000B12E0, 0x100, "split"),  # a tail-jump stub
+    # the 2026-11-19 merge review's shared epilogues: `pop edx; pop ecx; pop ebx; ret` ...
+    ("ufo2p", 0x00029830, 0x8E): (0x00028E20, 0x154, "shared-epilogue"),
+    ("tacp", 0x00034CE0, 0x8E): (0x00034450, 0x79D, "shared-epilogue"),
+    ("ufo2p", 0x000AF450, 0xA7): (0x000AEAB0, 0x1E2, "shared-epilogue"),
+    ("ufo2p", 0x000AF8F0, 0x78): (0x000AF700, 0x8C, "shared-epilogue"),
+    ("ufo2p", 0x0004AAB0, 0x7): (0x0004A9D0, 0xB6, "shared-epilogue"),  # ... and a bare ret
 }
 REAL_FIXES = {
     ("ufo2p", "merge", (0x00018577, 0x0001863E), None),
     ("tacp", "split", (0x000B12E0,), 0x000B13E0),
 }
+REAL_NO_MERGE = {("ufo2p", 0x00028E20), ("ufo2p", 0x0004A9D0), ("ufo2p", 0x000AEAB0),
+                 ("ufo2p", 0x000AF700), ("tacp", 0x00034450)}  # (exe, first row)  # fmt: skip
 
 
 def test_real_interior_branches():
@@ -516,3 +553,4 @@ def test_real_interior_branches():
     for key, expected in REAL_INTERIOR.items():
         assert found[key] == expected, key
     assert REAL_FIXES <= fixes
+    assert {(exe, rows[0]) for exe, _action, rows, _at in fixes} & REAL_NO_MERGE == set()

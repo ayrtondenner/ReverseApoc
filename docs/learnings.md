@@ -48,8 +48,8 @@ Entry format:
   (0x73EA0, 0x73EC0), which likely explains its 30% best.
 - Of 22 merge suspects only 6 were real: switch case bodies cut out of their function. Most of the
   rest are a Watcom pattern `mechanics interior` reads as a merge: a function jumps into another
-  function's shared `ret` or matching epilogue. Their rows went back to the queues; a filter for the
-  pattern is todo shared-epilogue-filter.
+  function's shared `ret` or matching epilogue. Their rows went back to the queues. Since 2026-11-20
+  `mechanics interior` tags such a jump `shared-epilogue` and proposes no merge for it.
 
 ## 2026-11-18: the three-shapes stop rule ends every Terra session at 3 checks
 
