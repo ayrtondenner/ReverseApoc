@@ -700,6 +700,35 @@ def test_each_signed_in_prompt_fits_the_windows_command_line(make, skill):
     assert len(quoted) + ARGV_OVERHEAD < WINDOWS_COMMAND_LINE, len(quoted)
 
 
+# 2026-11-20 (todo copilot-prompt-margin): the three-shapes edit left the Copilot prompt 38
+# characters under the line above, so the next skill edit would not have fit.
+COPILOT_MARGIN = 1000
+
+
+def test_the_copilot_prompt_leaves_room_for_the_next_skill_edit():
+    text = (REPO_ROOT / ".claude" / "skills" / "watcom-decomp" / "SKILL.md").read_text(
+        encoding="utf-8")  # fmt: skip
+    quoted = subprocess.list2cmdline([session.copilot_prompt(_longest_goal(), text)])
+    margin = WINDOWS_COMMAND_LINE - ARGV_OVERHEAD - len(quoted)
+    assert margin >= COPILOT_MARGIN, margin
+
+
+def test_the_copilot_prompt_lists_each_stop_rule_once():
+    """The goal's stop clause repeats the skill's "When to give up" list, which a Copilot prompt
+    also carries in full; there the goal points at that list instead. Claude's /goal keeps the
+    list (its Stop hook judges by it), and so do the Codex and agy prompts."""
+    text = (REPO_ROOT / ".claude" / "skills" / "watcom-decomp" / "SKILL.md").read_text(
+        encoding="utf-8")  # fmt: skip
+    goal = _longest_goal()
+    prompt = session.copilot_prompt(goal, text)
+    for rule in session.STOP_RULES:
+        assert prompt.count(rule) == 1, rule
+    assert 'Or stop as "When to give up" below says; no other stop meets this goal.' in prompt
+    assert "; ".join(session.STOP_RULES) in goal
+    assert goal.removeprefix("/goal ") in session.codex_prompt(goal, text)
+    assert goal.removeprefix("/goal ") in session.agy_prompt(goal, text)
+
+
 def test_a_signed_in_prompt_leaves_out_claude_only_blocks():
     skill = ("---\nname: x\n---\nkeep one\n" + session.CLAUDE_ONLY_START + "\nonly claude\n"
              + session.CLAUDE_ONLY_END + "\nkeep two\n")  # fmt: skip

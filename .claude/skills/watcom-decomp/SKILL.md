@@ -74,8 +74,10 @@ Extern types, from how the target listing touches the data:
 
 ## Pragmas
 
+<!-- claude-only: the "Never" list above bans the same pragmas in the Codex, agy and Copilot prompts, which must fit one command line -->
 - Agents write no `#pragma` of any kind during the pilot: not `#pragma aux` (a calling convention, registers, forcing a match), and not `#pragma on/off (check_stack)`, which changes code the way a flag does. Flags are owner-only.
 - Calling-convention pragmas come only in human-reviewed commits.
+<!-- /claude-only -->
 - Default `__watcall` needs no pragma. A register difference is a C-shape or flags question; record it in notes.md.
 
 ## Relocation rules
@@ -223,7 +225,9 @@ Stop only when one of these holds:
 - about 25 of 30 minutes or 35 of 40 turns are gone;
 - needs flags (no -s), a jump table that cannot lead the unit or has a target outside the function, or another check running in this attempt, each as its section above says.
 
+<!-- claude-only: only a Claude session has a /goal; the Codex, agy and Copilot prompts must fit one command line -->
 When the /goal blocks a stop: if a rule above holds, name it in one message with the printed line that shows it; if none holds, the attempt is not done, so make the next C shape.
+<!-- /claude-only -->
 
 On stopping:
 1. Write notes.md first, then `giveup.json` (below) unless `attempt check` exited `0`, before any optional last step.

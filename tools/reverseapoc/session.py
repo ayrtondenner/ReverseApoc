@@ -77,6 +77,12 @@ STOP_RULES = (
     "needs flags (no -s), a jump table that cannot lead the unit or has a target outside the "
     "function, or another check running in this attempt",
 )
+# goal_prompt's stop clause. A Copilot prompt carries the skill's "When to give up" list in full,
+# so copilot_prompt puts _SKILL_STOP_CLAUSE in its place (todo copilot-prompt-margin, 2026-11-20).
+_STOP_CLAUSE = ("Or stop with notes.md written once one of these holds, naming it and its "
+                "evidence (check numbers or the printed line) in your last message: "
+                f"{'; '.join(STOP_RULES)}. No other stop meets this goal.")  # fmt: skip
+_SKILL_STOP_CLAUSE = 'Or stop as "When to give up" below says; no other stop meets this goal.'
 TIMEOUT_S = 30 * 60  # D-07's wall clock per session
 _POLL_S = 1.0  # how often the reader looks at the clock while no line comes
 _DRAIN_S = 5.0  # after a kill, how long to wait for each line the dying tree still wrote
@@ -371,7 +377,11 @@ def copilot_prompt(goal: str, skill_text: str) -> str:
     the one read the session's file access allows (its view tool inside the attempt dir), with
     every `uv run --frozen reverseapoc attempt` in it (goal, skill, rules) spelled as the
     session's wrapper, COPILOT_WRAPPER, and the session rules closed by _COPILOT_WRITES: each
-    session file written in place, no temporary or numbered copy and no other file."""
+    session file written in place, no temporary or numbered copy and no other file. The goal's
+    stop clause is _SKILL_STOP_CLAUSE, a pointer to the skill's own stop list, which the prompt
+    carries in full (todo copilot-prompt-margin: the Windows command line had 38 characters
+    left)."""
+    goal = goal.replace(_STOP_CLAUSE, _SKILL_STOP_CLAUSE)
     text = _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _COPILOT_READS) + _COPILOT_WRITES
     return text.replace(_WRAPPER, COPILOT_WRAPPER)
 
@@ -412,10 +422,7 @@ def goal_prompt(function: str, unit: str, exe: str, *, unit_path: str) -> str:
     return (
         f"/goal Make `{_CHECK}` exit 0 for {function}, the claimed function in your private "
         f"copy {unit_path} of the unit (claim {exe}/{unit}); edit only that file, and write this "
-        "attempt's notes.md (its path follows `notes:` in the check output). Or stop with "
-        "notes.md written once one of these holds, naming it and its evidence (check numbers or "
-        f"the printed line) in your last message: {'; '.join(STOP_RULES)}. No other stop meets "
-        "this goal."
+        f"attempt's notes.md (its path follows `notes:` in the check output). {_STOP_CLAUSE}"
     )
 
 
