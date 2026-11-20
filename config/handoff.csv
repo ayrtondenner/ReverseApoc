@@ -1,44 +1,10 @@
 exe,address,reason,retired_on,return_rule
-ufo2p,0x00024470,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x00024BD9,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x00024BE7,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x00024BF5,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x00024C03,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x000298E0,"long tail: 26 attempts, best 75.56%, mostly flags",2026-11-19,hint or tooling:flags
-ufo2p,0x0002E100,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00048830,"long tail: 31 attempts, best 89.72%, mostly register_allocation",2026-11-19,hint or tooling:register_allocation
 ufo2p,0x00051110,"long tail: 34 attempts, best 97.93%, mostly flags",2026-11-19,hint or tooling:flags
 ufo2p,0x00052100,"long tail: 48 attempts, best 97.06%, mostly other",2026-11-19,hint or tooling:other
 ufo2p,0x00060500,"long tail: 40 attempts, best 98.03%, mostly register_allocation",2026-11-19,hint or tooling:register_allocation
 ufo2p,0x00078400,"long tail: 24 attempts, best 94.90%, mostly instruction_idiom",2026-11-19,hint or tooling:instruction_idiom
-ufo2p,0x0007DD64,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x0007DEA1,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x0007E4FA,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x0007E57B,suspected bad split,2026-11-19,boundary fixed
-ufo2p,0x0007E5F9,suspected bad split,2026-11-19,boundary fixed
 ufo2p,0x00080910,"long tail: 36 attempts, best 97.78%, mostly block_layout",2026-11-19,hint or tooling:block_layout
-tacp,0x0001F270,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F2B0,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F7F2,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F828,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F83B,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F88C,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0001F8DB,suspected bad split,2026-11-19,boundary fixed
 tacp,0x00021440,"long tail: 27 attempts, best 98.33%, mostly instruction_idiom",2026-11-19,hint or tooling:instruction_idiom
-tacp,0x00024B30,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00024B7D,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00024B86,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00024B90,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00024B95,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00038348,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00038360,suspected bad split,2026-11-19,boundary fixed
-tacp,0x000384E5,suspected bad split,2026-11-19,boundary fixed
-tacp,0x0003852D,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00038574,suspected bad split,2026-11-19,boundary fixed
-tacp,0x000385BB,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00043C00,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00043D65,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00043DC0,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00043E1B,suspected bad split,2026-11-19,boundary fixed
-tacp,0x00043E76,suspected bad split,2026-11-19,boundary fixed
 tacp,0x000B12E0,suspected bad split,2026-11-19,boundary fixed
