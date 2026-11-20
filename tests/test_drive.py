@@ -1824,20 +1824,24 @@ def _body(func: str, value: int) -> str:
     return f"int {func}(void)\n{{\n    return {value};\n}}"
 
 
-def _two_held(tmp_path: Path, *, stale: bool = False) -> tuple[Night, int]:
+def _two_held(tmp_path: Path, *, stale: bool = False, first: str | None = None,
+              second: str | None = None) -> tuple[Night, int]:  # fmt: skip
     """A unit with two INCLUDE_ASM functions, each held exact by its own hold-run attempt (its
     exact check C: the whole unit with its own function defined, the other still asm), both
-    from one view head; `stale`: the unit then changes in a commit of its own."""
+    from one view head; `stale`: the unit then changes in a commit of its own. `first` and
+    `second` replace each attempt's C of its own function (with its declarations)."""
     from test_driver import FUNC, UNIT_REL
     from test_driver_records import _commit
 
     night = _table_night(tmp_path, gate_exits=[0, 0])
     asm1, asm2 = f"INCLUDE_ASM({FUNC});", f"INCLUDE_ASM({FUNC2});"
+    first = _body(FUNC, 1) if first is None else first
+    second = _body(FUNC2, 2) if second is None else second
     _commit(night, {UNIT_REL: _two_function_unit(asm1, asm2)}, "made-up two-function unit")
     held = [_hold_attempt(night, "spike012-haiku", 1, cost=0.10,
-                          text=_two_function_unit(_body(FUNC, 1), asm2)),
+                          text=_two_function_unit(first, asm2)),
             _hold_attempt(night, "spike012-haiku", 1, cost=0.10, start=START2,
-                          text=_two_function_unit(asm1, _body(FUNC2, 2)))]  # fmt: skip
+                          text=_two_function_unit(asm1, second))]  # fmt: skip
     if stale:
         _commit(night, {UNIT_REL: (night.repo / UNIT_REL).read_text(encoding="utf-8")
                          + "/* changed */\n"})  # fmt: skip
@@ -1861,6 +1865,45 @@ def test_land_held_lands_two_functions_of_one_unit(tmp_path):
     assert len(night.gate_calls) == 2
     assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == _two_function_unit(
         _body(FUNC, 1), _body(FUNC2, 2))  # fmt: skip
+
+
+def _using(func: str, decl: str, use: str) -> str:
+    return f"{decl}\n\nint {func}(void)\n{{\n    return {use};\n}}"
+
+
+def test_land_held_second_function_keeps_its_declarations(tmp_path):
+    """Todo flags-merge-keeps-declarations: the second held function's definition is spliced
+    onto the unit with the file-scope declarations its own exact C gave it, before it, so the
+    landed unit compiles; one the first landing already put earlier is not repeated."""
+    from test_driver import FUNC, UNIT_REL
+
+    shared = "extern int D_00020000;"
+    struct = "struct unk_0004 {\n    int f;\n};\nextern struct unk_0004 D_00020010;"
+    night, before = _two_held(tmp_path, first=_using(FUNC, shared, "D_00020000"),
+                              second=_using(FUNC2, f"{shared}\n{struct}",
+                                            "D_00020000 + D_00020010.f"))  # fmt: skip
+    report = _land(night, "spike012-haiku")
+    assert (report.event, report.matched) == ("ENDED", 2), report.detail
+    text = (night.repo / UNIT_REL).read_text(encoding="utf-8")
+    for decl in (shared, "struct unk_0004 {", "extern struct unk_0004 D_00020010;"):
+        assert text.count(decl) == 1, decl
+        assert text.index(decl) < text.index(f"int {FUNC2}(void)")
+
+
+def test_land_held_refuses_a_second_function_that_declares_a_name_differently(tmp_path):
+    """The two held attempts declare one extern differently: the second landing is REFUSED
+    with a reason naming its exact C and the unit, never a guessed merge."""
+    from test_driver import FUNC, UNIT_REL
+
+    night, before = _two_held(tmp_path, first=_using(FUNC, "extern int D_00020000;", "D_00020000"),
+                              second=_using(FUNC2, "extern short D_00020000;", "D_00020000"))
+    report = _land(night, "spike012-haiku")
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    landings = _new(night, before, "landing")
+    assert [r["outcome"] for r in landings] == ["MATCHED", "REFUSED"]
+    reason = landings[1]["reason"]
+    assert "D_00020000" in reason and UNIT_REL in reason and "checks/0002.c" in reason
+    assert len(night.gate_calls) == 1
 
 
 def test_land_held_still_refuses_two_functions_of_a_unit_changed_elsewhere(tmp_path):

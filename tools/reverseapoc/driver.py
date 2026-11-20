@@ -6192,7 +6192,7 @@ class _Night:
         else:
             reason = self._stale_reason(head, claim, base)
         if reason is None:
-            text, reason = self._held_text(claim, (source / exact).read_bytes(), base)
+            text, reason = self._held_text(claim, source / exact, base)
         if reason is not None:
             self._record_landing(held, REFUSED, reason=reason)
             return
@@ -6213,11 +6213,14 @@ class _Night:
                    else f"the gate refused it (exit {gate.exit_code})")  # fmt: skip
             self._record_landing(held, REFUSED, reason=why, gate=gate)
 
-    def _held_text(self, claim: _Claim, exact: bytes,
+    def _held_text(self, claim: _Claim, path: Path,
                    base: str | None) -> tuple[bytes | None, str | None]:  # fmt: skip
         """WR-06: the unit the held function lands as, or the reason it cannot: the exact
-        check's whole unit file when this run landed nothing of the unit yet (`base` None),
-        else HEAD's unit with only the held function's definition spliced in."""
+        check's whole unit file (`path`) when this run landed nothing of the unit yet (`base`
+        None), else HEAD's unit with only the held function's definition spliced in, after the
+        declarations its exact C gives it (todo flags-merge-keeps-declarations); a name the two
+        declare differently is a reason naming both files."""
+        exact = path.read_bytes()
         if base is None:
             return exact, None
         now = self._head_bytes(claim.unit_rel)
@@ -6226,6 +6229,9 @@ class _Night:
                 now.decode("utf-8"), claim.function, exact.decode("utf-8"))  # fmt: skip
         except UnicodeDecodeError:
             spliced = None
+        except contextpack.SpliceConflict as exc:
+            return None, (f"{claim.function}: {path.relative_to(self.repo).as_posix()} and "
+                          f"{claim.unit_rel} declare {exc} differently; land it by hand")
         if spliced is None:
             return None, (f"{claim.function}: its definition cannot be spliced onto "
                           f"{claim.unit_rel} as this run left it; re-run")  # fmt: skip
