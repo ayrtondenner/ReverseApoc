@@ -1270,13 +1270,13 @@ LEFTOVER = "checks/.0002.json.b6d3a4ff20e5fde3.tmp"  # run 20261116-fable-ab, 18
 IN_FLIGHT = "int x;\n"  # checks/0002.c, the source of the check that was killed
 
 
-def _killed_check(*extra: tuple[str, str]) -> Sess:
+def _killed_check(*extra: tuple[str, str], leftover: str = LEFTOVER) -> Sess:
     """What a check killed mid-write leaves: its source checks/0002.c, which the wrapper's
-    ledger names, no checks/0002.json, and write_atomic's temp file for it."""
+    ledger names, no checks/0002.json, and write_atomic's temp file (`leftover`)."""
     digest = hashlib.sha256(IN_FLIGHT.encode()).hexdigest()
     ledger = f"../../../ledger/{PER_SESSION}.jsonl"
     entry = json.dumps({"path": "checks/0002.c", "sha256": digest}) + "\n"
-    return Sess(write=None, files=(("checks/0002.c", IN_FLIGHT), (LEFTOVER, "{"),
+    return Sess(write=None, files=(("checks/0002.c", IN_FLIGHT), (leftover, "{"),
                                    (ledger, entry), *extra))  # fmt: skip
 
 
@@ -1290,6 +1290,23 @@ def test_a_killed_checks_temp_file_does_not_stop_the_night(tmp_path, capsys, mon
     assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
     assert not (night.attempt_dir() / LEFTOVER).exists()
     assert list(night.quarantine.rglob(LEFTOVER.split("/")[-1]))
+    assert "a killed check's temp file" in out + err
+
+
+DIFF_LEFTOVER = "checks/.0002.diff.json.0123456789abcdef.tmp"  # attempt._save_diff's temp name
+
+
+def test_a_check_killed_saving_its_diff_does_not_stop_the_night(tmp_path, capsys, monkeypatch):
+    """E2E (wrapper-temp-files-other): a matching check killed inside attempt._save_diff's
+    write_atomic leaves checks/.0002.diff.json.<16 hex>.tmp; it is quarantined like the
+    checks/NNNN.json one and the night goes on."""
+    spec = _killed_check(leftover=DIFF_LEFTOVER)
+    rig, night, env = copilot_night(tmp_path, monkeypatch, spec=spec)
+    code, out, err = _run(capsys, rig, env)
+    assert code == 0, err
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    assert not (night.attempt_dir() / DIFF_LEFTOVER).exists()
+    assert list(night.quarantine.rglob(DIFF_LEFTOVER.split("/")[-1]))
     assert "a killed check's temp file" in out + err
 
 

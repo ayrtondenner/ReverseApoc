@@ -931,9 +931,13 @@ need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an
   night. The failures track concurrency: with about 30 sessions at once, docker could not kill
   a container ("did not receive an exit event", run 20261116-fable-ab) that went away moments
   later. A check killed mid-write leaves `checks/.<NNNN>.json.<16 hex>.tmp`, the wrapper's own
-  temp file. When the wrapper's ledger shows that check in flight (its `checks/NNNN.c`
-  ledgered, no `checks/NNNN.json`), the signed-in audit quarantines exactly that file without
-  stopping and says so on the console. Any other unseen file in `checks/` is still a stray. A
+  temp file, or, killed while it saves a matching check's full diff,
+  `checks/.<NNNN>.diff.json.<16 hex>.tmp`. When the wrapper's ledger shows that check in
+  flight (its `checks/NNNN.c` ledgered, no `checks/NNNN.json`, and not the temp file's own
+  target), the signed-in audit quarantines exactly that file without stopping and says so on
+  the console. Any other unseen file in `checks/` is still a stray, and so is a leftover
+  `.context.md.<hex>.tmp` or one under `view/build/attempt-cache/`: the ledger has no entry
+  that shows either write in flight. A
   session that stops the night with a D-08 STOP has its transcript copied to
   `build/driver/<run>/stop/<exe>__<function>__attempt-<n>.jsonl`, and the STOPPED detail
   names that path, the arm, the attempt and the stream's signals (api_retry error and status,

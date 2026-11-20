@@ -1597,8 +1597,11 @@ _WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
 _WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
 _WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
 # fileio.write_atomic's temp name for checks/NNNN.json, left when a check dies between its write
-# and its rename (run 20261116-fable-ab, 18:18): the wrapper's own, quarantined, never a stray
-_CHECK_LEFTOVER = re.compile(r"\.([0-9]{4})\.json\.[0-9a-f]{16}\.tmp")
+# and its rename (runs 20261116-fable-ab, 18:18, and 20261116-mixed4): the wrapper's own,
+# quarantined, never a stray. Also checks/NNNN.diff.json's (attempt._save_diff, which a plain
+# matching check runs after ledgering checks/NNNN.c and before checks/NNNN.json): no run has
+# left one yet, but it is written in the same in-flight window (wrapper-temp-files-other).
+_CHECK_LEFTOVER = re.compile(r"\.([0-9]{4})(\.json|\.diff\.json)\.[0-9a-f]{16}\.tmp")
 _NOT_A_FILE = ("link:", "outside:")  # attempt_inventory's digests of a link and a far cache
 
 
@@ -2057,11 +2060,13 @@ def attempt_inventory(attempt_dir: Path) -> dict[str, str]:
     return found
 
 
-def check_leftovers(attempt_dir: Path, ledger: Mapping[str, str]) -> list[str]:
-    """Each checks/.<NNNN>.json.<16 hex>.tmp (_CHECK_LEFTOVER, attempt-dir-relative) a killed
-    check of the wrapper left: a regular file, never a link, in a checks/ that is a real
-    directory of the attempt dir, of a check in flight (the wrapper's `ledger` names its
-    checks/NNNN.c and no checks/NNNN.json). Any other file is the audit's as before."""
+def check_leftovers(attempt_dir: Path, ledger: Mapping[str, str], *, diffs: bool) -> list[str]:
+    """Each checks/.<NNNN>.json.<16 hex>.tmp or checks/.<NNNN>.diff.json.<16 hex>.tmp
+    (_CHECK_LEFTOVER, attempt-dir-relative) a killed check of the wrapper left: a regular file,
+    never a link, in a checks/ that is a real directory of the attempt dir, of a check in flight
+    (the wrapper's `ledger` names its checks/NNNN.c and no checks/NNNN.json) whose own target
+    the ledger never saw. A diff's only when `diffs` (a matching session: a readability check
+    saves none). Any other file is the audit's as before."""
     checks = attempt_dir / attempt.CHECKS_DIR
     if _is_link(checks) or not checks.is_dir():
         return []
@@ -2070,8 +2075,11 @@ def check_leftovers(attempt_dir: Path, ledger: Mapping[str, str]) -> list[str]:
         match = _CHECK_LEFTOVER.fullmatch(path.name)
         if match is None or _is_link(path) or not path.is_file():
             continue
-        stem = f"{attempt.CHECKS_DIR}/{match.group(1)}"
-        if f"{stem}.c" in ledger and f"{stem}.json" not in ledger:
+        stem, suffix = f"{attempt.CHECKS_DIR}/{match.group(1)}", match.group(2)
+        if suffix == attempt.DIFF_SUFFIX and not diffs:
+            continue
+        if f"{stem}.c" in ledger and f"{stem}.json" not in ledger and (
+                f"{stem}{suffix}" not in ledger):  # fmt: skip
             out.append(f"{attempt.CHECKS_DIR}/{path.name}")
     return out
 
@@ -5101,7 +5109,8 @@ class _Night:
                                       allowed=allowed)  # fmt: skip
         files = []
         ledger = read_wrapper_ledger(claim.wrapper_ledger)
-        self._quarantine_leftovers(session, check_leftovers(claim.attempt_dir, ledger))
+        self._quarantine_leftovers(session, check_leftovers(
+            claim.attempt_dir, ledger, diffs=claim.session != READABILITY))  # fmt: skip
         found = codex_inventory_strays(attempt_inventory(claim.attempt_dir),
                                        launch=session.launch_files, ledger=ledger)  # fmt: skip
         for rel, why in found:

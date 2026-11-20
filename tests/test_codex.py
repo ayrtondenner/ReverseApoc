@@ -543,13 +543,37 @@ def test_a_killed_checks_temp_file_is_a_leftover_and_nothing_else(tmp_path):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text("{", encoding="utf-8")
     ledger = {"checks/0001.c": "x", "checks/0001.json": "x", "checks/0002.c": "x"}
-    assert driver.check_leftovers(root, ledger) == [CHECK_LEFTOVER]
+    assert driver.check_leftovers(root, ledger, diffs=True) == [CHECK_LEFTOVER]
     linked = tmp_path / "linked"
     target = tmp_path / "elsewhere"
     target.mkdir()
     (target / ".0002.json.0123456789abcdef.tmp").write_text("{", encoding="utf-8")
     _plant_dir_link(linked / "checks", target)
-    assert driver.check_leftovers(linked, ledger) == []
+    assert driver.check_leftovers(linked, ledger, diffs=True) == []
+
+
+DIFF_LEFTOVER = "checks/.0002.diff.json.0123456789abcdef.tmp"  # attempt._save_diff's temp name
+
+
+def test_a_check_killed_saving_its_diff_leaves_a_leftover_and_nothing_else(tmp_path):
+    """attempt._save_diff writes checks/NNNN.diff.json with fileio.write_atomic after the
+    wrapper ledgers checks/NNNN.c and before it writes and ledgers checks/NNNN.json, so a check
+    killed there leaves checks/.<NNNN>.diff.json.<16 hex>.tmp. It is a leftover only for a
+    check in flight whose diff the ledger never saw, and only for a matching session
+    (`diffs`): a readability or sweep check saves no diff, so the audit cannot excuse one."""
+    root = tmp_path / "attempt-1"
+    hex16 = "0123456789abcdef"
+    others = ("checks/.0002.diff.json.tmp", "checks/.0002.diff.json.ABCDEF0123456789.tmp",
+              f"checks/.0002.note.json.{hex16}.tmp", f"checks/.0002.diffxjson.{hex16}.tmp",
+              f".0002.diff.json.{hex16}.tmp", f"checks/.0001.diff.json.{hex16}.tmp",
+              f"checks/.0003.diff.json.{hex16}.tmp", f"checks/.0004.diff.json.{hex16}.tmp")
+    for rel in (DIFF_LEFTOVER, CHECK_LEFTOVER, *others):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text("{", encoding="utf-8")
+    ledger = {"checks/0001.c": "x", "checks/0001.json": "x", "checks/0002.c": "x",
+              "checks/0003.c": "x", "checks/0003.diff.json": "x"}  # fmt: skip
+    assert driver.check_leftovers(root, ledger, diffs=True) == [DIFF_LEFTOVER, CHECK_LEFTOVER]
+    assert driver.check_leftovers(root, ledger, diffs=False) == [CHECK_LEFTOVER]
 
 
 def test_audit_flags_a_write_outside_the_allowlist(tmp_path):
