@@ -24,3 +24,14 @@ use in between), update quota.toml's entries with source and date, and say in do
 "Quota per session" which bars the cost meter tracks.
 
 **Done when.** quota.toml's Fable, Terra (by size) and Opus/Sonnet figures match a measured run.
+
+## Attempt of 2026-11-20 (run 20261120-quota): no clean reading
+
+- Bars (S): weekly 53%, Fable 27% at 15:13 (the prompt's 15% Fable was a stale panel figure). The
+  week reset at 16:00 before a closing reading, and the owner read 0% / 0% at about 16:10.
+- Fable 5.1: 10 sessions, $41.49 recorded (T), $4.15 a session (2.9-7.5); the 2026-11-19 run's
+  31 sessions were $3.81 each.
+- Orchestrator and up to 11 Claude Code agents ran in the same window, so even with a closing
+  reading this run would not isolate an arm.
+- Next try: read both bars right before and right after a single-arm Claude run with no agents
+  working, and well before the Friday 16:00 reset.
