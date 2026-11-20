@@ -385,7 +385,10 @@ def _real_sites(exe: str) -> tuple[locate.Site, ...]:
 # "50 sections" is the loop bound of the dump routine next to get_text, not the table's size.
 # TACP fills 21 of its 52 slots.
 REAL_SECTIONS = {"ufo2p": 52, "tacp": 21}
-REAL_CALLER_ROWS = {"ufo2p": 180, "tacp": 88}  # research's get_text caller counts
+# research's get_text caller counts (180 / 88); splits batch 2 (2026-11-20) merges the UFO2P case
+# rows 0x0007DEA1, 0x0007E4FA, 0x0007E57B and 0x0007E5F9, all get_text callers, into 0x0007DD64,
+# which already was one
+REAL_CALLER_ROWS = {"ufo2p": 176, "tacp": 88}
 # q4 speed labels (README "#997" table): call site -> (section, index)
 SPEED_LABEL_SITES = {
     "ufo2p": {0x000523C1: (38, 43), 0x00052439: (38, 44), 0x000524B1: (38, 45),

@@ -363,8 +363,11 @@ def test_asm_list_has_no_drift():
 
 
 # research (D-23): game rows off alignment, 213 / 216; splits batch 1 (2026-11-19) adds the 8
-# UFO2P and 7 TACP new rows that start off alignment (hand-asm and HMI SOS stub entry points)
-UNALIGNED_GAME_ROWS = {"ufo2p": 221, "tacp": 223}
+# UFO2P and 7 TACP new rows that start off alignment (hand-asm and HMI SOS stub entry points);
+# splits batch 2 (2026-11-20) merges away 8 UFO2P and 15 TACP switch-case rows that started off
+# alignment (tacp 0x00024B90 and 0x00043DC0 were aligned; the new rows 0x0002E280 and 0x00038610
+# are aligned)
+UNALIGNED_GAME_ROWS = {"ufo2p": 213, "tacp": 208}
 REAL_EXES = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}
 
 

@@ -38,17 +38,23 @@ EXES = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}
 # and in TACP the new rows 0x0001F2B0 and 0x00038360 also reach their switch-table heads and the
 # case-body rows of their pending merges (11 more). Removing the new rows from today's
 # direct + pointer graph gives the old 1,412 / 1,479 again.
-REACH_DIRECT = {"ufo2p": 1_133, "tacp": 1_229}
-REACH_DIRECT_POINTER = {"ufo2p": 1_423, "tacp": 1_501}
+# Splits batch 2 (2026-11-20, 6 merge chains, 2 splits) moved them again, to the measured value:
+# direct +1 / +2 (ufo2p the new row 0x0002E280; tacp 0x00024F80 and 0x00025370, called from the
+# case code now inside 0x00024B30), pointer and table +5 / -17 (ufo2p 0x0002E280 plus
+# 0x00025400, 0x000255D0, 0x00025760 and 0x000258F0, whose addresses the case code of
+# 0x00024C03, now inside reached 0x00024470, loads; tacp the 17 merged-away case rows were rows).
+REACH_DIRECT = {"ufo2p": 1_134, "tacp": 1_231}
+REACH_DIRECT_POINTER = {"ufo2p": 1_428, "tacp": 1_484}
 # Research's table step reached 1,471 in UFO2P. callgraph.py (plan 07-05) wires a pointer run only
 # from the game/thunk rows that reference it, so the 31 game targets of runs referenced only from
 # runtime code are not reached, and the step stops at 1,429 (taking those runs as reached gives
 # 1,480). The pin follows the built rule; plan 07-22 records the difference (07-10 SUMMARY).
-REACH_DIRECT_POINTER_TABLE = {"ufo2p": 1_440, "tacp": 1_501}
+REACH_DIRECT_POINTER_TABLE = {"ufo2p": 1_445, "tacp": 1_484}
 # Research's 5,288 / 4,885; splits batch 1 (2026-11-19) adds the calls onto the new row starts
 # (ufo2p 13, tacp 12) and, in UFO2P, 3 callees now called from two pieces of one old row
-# (0x000187B8, 0x00027020, 0x00018005).
-CALLINDEX_EDGES = {"ufo2p": 5_304, "tacp": 4_897}
+# (0x000187B8, 0x00027020, 0x00018005). Splits batch 2 (2026-11-20) removes the edges that a
+# merged chain held twice (ufo2p -18, tacp -7 net) and adds ufo2p 0x0002E350 -> 0x0002E280.
+CALLINDEX_EDGES = {"ufo2p": 5_287, "tacp": 4_890}
 TOLERANCE = 0.01
 
 

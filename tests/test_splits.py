@@ -279,7 +279,9 @@ REAL_PAIRS = {  # (exe, A): (B, class, same unit), the planning probe's named pa
     ("ufo2p", 0x0009A5B0): (0x0009A5D0, "fall-through", True),
     ("tacp", 0x000A5D70): (0x000A5DA0, "fall-through", True),
     ("ufo2p", 0x0009D388): (0x0009D397, "label", True),
-    ("tacp", 0x0001F7F2): (0x0001F828, "label", True),
+    # splits batch 2 (2026-11-20) merged the label pair tacp 0x0001F7F2 / 0x0001F828 into
+    # 0x0001F2B0; the switch-table head before it is the pair left
+    ("tacp", 0x0001F270): (0x0001F2B0, "data", True),
     ("tacp", 0x00024B20): (0x00024B30, "data", None),
     ("tacp", 0x000B2040): (0x000B20A0, "data", None),
     ("ufo2p", 0x0005CCF0): (0x0005CD00, "fall-through", None),
@@ -482,14 +484,17 @@ def test_cli_interior_reads_status_csv(tmp_path, monkeypatch, capsys):
                        "at": None}]
 
 
-REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix), checked by hand 2026-11-18
-    ("ufo2p", 0x00024470, 0x764): (0x00024C03, 0xAB, "merge"),  # switch cases cut out
-    ("ufo2p", 0x0002E350, 0x51): (0x0002E100, 0x180, "split"),  # after a ret (re-pinned 2026-11-19)
+# checked by hand 2026-11-18. Splits batch 2 (2026-11-20) landed the ufo2p 0x00024470 merge and the
+# 0x0002E100 split at 0x0002E280, so their examples are now the skipped merge 0x00018577 +
+# 0x0001863E (a shared exit of two hand-asm routines) and the partial row's jcc into 0x0002E100
+# (the cluster's fix is a review: it holds matched rows)
+REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix)
+    ("ufo2p", 0x0001863E, 0x20): (0x00018577, 0xB5, "merge"),  # into a shared exit
+    ("ufo2p", 0x0002FAF0, 0x44C): (0x0002E100, 0x171, "merge"),  # a fix of review
     ("tacp", 0x000AF170, 0x0): (0x000B12E0, 0x100, "split"),  # a tail-jump stub
 }
 REAL_FIXES = {
-    ("ufo2p", "merge", (0x00024470, 0x00024BD9, 0x00024BE7, 0x00024BF5, 0x00024C03), None),
-    ("ufo2p", "split", (0x0002E100,), 0x0002E280),
+    ("ufo2p", "merge", (0x00018577, 0x0001863E), None),
     ("tacp", "split", (0x000B12E0,), 0x000B13E0),
 }
 
