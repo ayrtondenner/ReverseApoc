@@ -1433,6 +1433,62 @@ def test_check_curves_count_a_held_exact_under_run(tmp_path, capsys):
     assert report["check_curves"]["unknown"]["exact_at"] == [[4, 1]]
 
 
+# ---- todo check-budget-from-data: exit reasons and stages reached per size bucket ----
+
+_GIVEUP_FLAGS = {"category": "flags", "tried": "three shapes", "still_differs": "a frame size",
+                 "suspected_cause": "a flag", "best_code": "checks/0001.c"}  # fmt: skip
+
+
+def _ended(start: int, outcome: str, runs: int, best: float | None, **change) -> dict:
+    return _on_v3(start, outcome=outcome, check={"runs": runs, "best_percent": best,
+                                                 "sweep_hit": None, "needs": None},
+                  **change)  # fmt: skip
+
+
+def _funnel_report(capsys, tmp_path: Path) -> dict:
+    """Eight 16-byte functions, one session each, and one of 300 B (one partial session)."""
+    config = tmp_path / "config"
+    _functions(config, "ufo2p", {**{0x10000 + 0x10 * i: 16 for i in range(8)}, 0x10100: 300})
+    budget = reverseapoc.attempt.CHECK_BUDGET
+    records = (_ended(0x10000, "MATCHED", 1, 100.0), _ended(0x10010, "PARTIAL", 0, None),
+               _ended(0x10020, "PARTIAL", 2, None), _ended(0x10030, "PARTIAL", budget, 96.0),
+               _ended(0x10040, "PARTIAL", 3, 85.0, abort_reason="timeout"),
+               _ended(0x10050, "GAVE_UP", 4, 50.0, giveup=_GIVEUP_FLAGS),
+               _ended(0x10060, "GAVE_UP", 2, 81.0),
+               _ended(0x10070, "GAVE_UP", 1, 70.0, abort_reason="guardrail"),
+               _ended(0x10100, "PARTIAL", 5, 60.0))  # fmt: skip
+    return _report(capsys, tmp_path, *records, config=config)
+
+
+def test_funnel_stages_and_exits_per_bucket(tmp_path, capsys):
+    funnel = _funnel_report(capsys, tmp_path)["funnel"]
+    small = funnel["[0, 64)"]
+    assert small["sessions"] == 8
+    assert small["stages"] == {"checked": 7, "compiled": 6, "best_80": 4, "best_95": 2,
+                               "exact": 1}  # fmt: skip
+    assert small["exits"] == [["partial under 15 checks", 2], ["abort (guardrail)", 1],
+                              ["abort (timeout)", 1], ["exact", 1],
+                              ["gave up (flags)", 1], ["gave up (no category)", 1],
+                              ["partial at 15+ checks", 1]]  # fmt: skip
+    assert funnel["[256, 1024)"]["exits"] == [["partial under 15 checks", 1]]
+    assert funnel["[64, 256)"] == {"sessions": 0, "stages": {
+        "checked": 0, "compiled": 0, "best_80": 0, "best_95": 0, "exact": 0}, "exits": []}
+    assert funnel["total"]["sessions"] == 9 and funnel["total"]["stages"]["compiled"] == 7
+    assert "unknown" not in funnel
+
+
+def test_funnel_text(tmp_path, capsys):
+    _funnel_report(capsys, tmp_path)
+    assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
+    out = capsys.readouterr().out
+    assert "exit reasons and stages reached per size bucket" in out
+    assert ("  [0, 64): 8 sessions; reached: checked 7, compiled 6, 80+ 4, 95+ 2, exact 1; "
+            "exits: partial under 15 checks 2, abort (guardrail) 1, abort (timeout) 1, "
+            "exact 1, gave up (flags) 1, gave up (no category) 1, "
+            "partial at 15+ checks 1") in out  # fmt: skip
+    assert "  [64, 256): no matching session" in out
+
+
 # ---- U7 (todo errata-ledger): progress/errata.toml, applied and listed ----
 
 

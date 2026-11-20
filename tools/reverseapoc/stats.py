@@ -803,14 +803,65 @@ def _curve(records: Sequence[Mapping]) -> dict:
             "bands": [_band(records, low, high, tokens) for low, high in _CHECK_BANDS]}  # fmt: skip
 
 
-def _check_curves(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict:
-    """The curve of every SIZE_BUCKETS bucket (an `unknown` one only when a function has no
-    size) and of all of them (`total`), over the matching sessions."""
+def _bucket_groups(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict:
+    """The matching sessions of every SIZE_BUCKETS bucket (an `unknown` one only when a
+    function has no size)."""
     groups: dict[str, list[Mapping]] = {_bucket_label(i): [] for i in range(len(SIZE_BUCKETS))}
     for r in matching:
         groups.setdefault(_size_label(_key(r), sizes), []).append(r)
-    return {**{label: _curve(records) for label, records in groups.items()},
+    return groups
+
+
+def _check_curves(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict:
+    """The curve of every bucket of _bucket_groups and of all of them (`total`)."""
+    return {**{label: _curve(records)
+               for label, records in _bucket_groups(matching, sizes).items()},
             TOTAL: _curve(matching)}  # fmt: skip
+
+
+# The stages a session reached, from its own record: a check ran (`check.runs`), one compiled
+# (a `best_percent`), the best reached 80 and 95, and the session ended exact.
+_STAGES = (("checked", lambda r: r["check"]["runs"] > 0),
+           ("compiled", lambda r: r["check"]["best_percent"] is not None),
+           ("best_80", lambda r: (r["check"]["best_percent"] or 0) >= 80),
+           ("best_95", lambda r: (r["check"]["best_percent"] or 0) >= 95),
+           ("exact", lambda r: r["outcome"] in _EXACT))  # fmt: skip
+_STAGE_TEXT = {"checked": "checked", "compiled": "compiled", "best_80": "80+",
+               "best_95": "95+", "exact": "exact"}  # fmt: skip
+
+
+def _exit_reason(record: Mapping) -> str:
+    """Why a matching session ended: exact, its abort reason, its give-up category, or a
+    partial end under or at attempt.CHECK_BUDGET checks."""
+    from . import attempt
+
+    if record["outcome"] in _EXACT:
+        return "exact"
+    if record["abort_reason"] is not None:
+        return f"abort ({record['abort_reason']})"
+    if record["outcome"] == driver.GAVE_UP:
+        giveup = record.get("giveup")
+        return f"gave up ({giveup['category'] if giveup else 'no category'})"
+    if record["check"]["runs"] >= attempt.CHECK_BUDGET:
+        return f"partial at {attempt.CHECK_BUDGET}+ checks"
+    return f"partial under {attempt.CHECK_BUDGET} checks"
+
+
+def _funnel_of(records: Sequence[Mapping]) -> dict:
+    """One bucket's sessions, the count that reached each of _STAGES, and the exit reasons
+    with their counts, most first (ties by reason)."""
+    exits = sorted(Counter(map(_exit_reason, records)).items(), key=lambda kv: (-kv[1], kv[0]))
+    return {"sessions": len(records),
+            "stages": {name: sum(map(reached, records)) for name, reached in _STAGES},
+            "exits": [[reason, n] for reason, n in exits]}  # fmt: skip
+
+
+def _funnel(matching: Sequence[Mapping], sizes: Mapping[Key, int]) -> dict:
+    """Todo check-budget-from-data (Reveree-style diagnostics): the stages reached and exit
+    reasons of every bucket of _bucket_groups and of all of them (`total`)."""
+    return {**{label: _funnel_of(records)
+               for label, records in _bucket_groups(matching, sizes).items()},
+            TOTAL: _funnel_of(matching)}  # fmt: skip
 
 
 # ---- todo held-benchmark-statistics: `stats --compare RUN_A RUN_B [RUN ...]` ----
@@ -1065,6 +1116,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "by_tier": _by_tier(counted, tiers),
         "comparison": None if arms is None else _comparison(matching, landed, sizes, arms, repo),
         "check_curves": _check_curves(matching, sizes),
+        "funnel": _funnel(matching, sizes),
         "errata": list(errata),
         "environments": None if arms is None else _environments(records),
     }  # fmt: skip
@@ -1218,6 +1270,21 @@ def _check_curve_lines(curves: Mapping) -> list[str]:
     return lines
 
 
+def _funnel_line(label: str, f: Mapping) -> str:
+    if not f["sessions"]:
+        return f"  {label}: no matching session"
+    stages = ", ".join(f"{_STAGE_TEXT[name]} {n}" for name, n in f["stages"].items())
+    exits = ", ".join(f"{reason} {n}" for reason, n in f["exits"])
+    return f"  {label}: {f['sessions']} sessions; reached: {stages}; exits: {exits}"
+
+
+def _funnel_lines(funnel: Mapping) -> list[str]:
+    """Todo check-budget-from-data: the stages reached and exit reasons per size bucket."""
+    return ["exit reasons and stages reached per size bucket (matching sessions; checked: a "
+            "check ran, compiled: one compiled, 80+ and 95+: best_percent):",
+            *(_funnel_line(label, f) for label, f in funnel.items())]  # fmt: skip
+
+
 def _environments(records: Sequence[Mapping]) -> list[dict]:
     """Todo run-environment-digest (`stats --run`): each STARTED run record in log order (a run
     id started twice is listed twice) with its environment and controls; both None for a
@@ -1272,7 +1339,7 @@ class Report:
         d = self.data
         return "\n".join([
             *_class_lines(d), *_errata_lines(d["errata"]), *_metric_lines(d),
-            *_check_curve_lines(d["check_curves"]),
+            *_check_curve_lines(d["check_curves"]), *_funnel_lines(d["funnel"]),
             *_split_lines("per model", d["by_model"], d["by_model"]["models"]),
             *_arm_lines(d["by_arm"]),
             *_model_size_lines(d["by_model_size"]),
