@@ -14,8 +14,8 @@ schema = 1
 
 [asm_list]
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-19
-list_sha256 = "25257703e658d453d86081d69817e7b7f213ecae2d996a3025487795231ac189"
+signed_off_date = 2026-11-20
+list_sha256 = "e9f8f95b63ca3dc1ebd968670559a6e4b0f30483b9db4a34239f151ae02cb327"
 
 # D-22, signed with Tier 1 by the owner on 2026-10-27, values kept at the re-sign on 2026-10-30
 # (plan 07-22): a reached row with at least 20 direct callers, or whose own closure covers more
@@ -34,8 +34,8 @@ min_items = 0
 id = 1
 title = "Tick rate and battlescape training"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-19
-members_sha256 = "c19bee58790ef2a45bfa786bb5e9920d999e8acc7cbb8736b066a3cebb2ab1dc"
+signed_off_date = 2026-11-20
+members_sha256 = "06a0af95715bd76d6142621576aae24a73a8e1a6cc270298c15670181143b9a4"
 
 [[item]]
 id = "997"
@@ -296,8 +296,8 @@ source = "spike 007 q3"
 id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-19
-members_sha256 = "54ea0f7ae7c901461e5fe427ddf5f32823339cf56946259c436aa5c8140ac14b"
+signed_off_date = 2026-11-20
+members_sha256 = "b9520bd602cd1336a8d1f2b7eb8929efca880ba02b3cfd9cb85e0f554f2433c0"
 
 [[item]]
 id = "263-2"
@@ -700,8 +700,8 @@ source = "mechanics locate; research Q2"
 id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-19
-members_sha256 = "c9ed7dde2a471191833fb3d5cbc3d758e86bae90aeac7dffce3431b94972be98"
+signed_off_date = 2026-11-20
+members_sha256 = "ab734bfdc48a5efb990a2a627ec4116418ff08940f9885bcf369f8d308e2fb20"
 
 [[item]]
 id = "264-1"
@@ -1217,8 +1217,8 @@ source = "mechanics locate; research Q3"
 id = 4
 title = "OpenApoc #265: battle and city AI"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-31
-members_sha256 = "142dc5088f393f160e318b74b4cfe7b9c4bfcf6cbfc5b031a58e83e2f6d40132"
+signed_off_date = 2026-11-20
+members_sha256 = "26cdb47957094094b9cd6e7fe1f1f2cf4e134e7db76d40928dbb0ac4001207e7"
 
 [[item]]
 id = "265-1"
