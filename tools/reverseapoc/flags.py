@@ -13,7 +13,9 @@ order, through write_atomic, and read back with tomllib. Its format, `version = 
 `[[proposal]]` table per proposal with the keys of `Proposal` in field order:
 
 - id, exe, unit, glob, rule, base: what is proposed (glob is always src/<exe>/<unit>.c).
-- functions, keeps: the functions that hit under `rule`; the unit's matched functions.
+- functions, keeps: the functions that hit under `rule`; the unit's matched functions. A passing
+  re-gate refreshes both, and siblings, to what the landing's gate matches: every function the
+  candidate defines that status.csv has not matched (review 2026-11-20).
 - siblings (D-32, fix round 1): every other game and thunk row of the unit, each
   `<name> <status> <percent>` from status.csv (`matched`/`partial`) or `<name> unattempted`.
   The rule binds them all, so the owner's approval covers them knowingly.
@@ -53,7 +55,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from . import batch, check, contextpack, driver, gate, streamjson, x86
+from . import batch, check, contextpack, driver, gate, streamjson, unitdefs, x86
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
@@ -1182,9 +1184,12 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
     neighbours = _neighbours(p, result) if result is not None and first.exit else []
     reduced = _reduce_all(text, neighbours) if neighbours else None
     if reduced is not None:
-        runs.append(_variant(env, p, REDUCED, reduced, cflags)[0])
+        variant, result = _variant(env, p, REDUCED, reduced, cflags)
+        runs.append(variant)
     final = runs[-1]
     pinned = _pin_variant(env, p, final, reduced, neighbours)
+    if final.exit == EXIT_OK and result is not None:
+        pinned = _refreshed(_Context(env.repo), pinned, result)
     log = work / REGATE_LOG
     record = {"id": p.id, "exe": p.exe, "unit": p.unit, "rule": p.rule,
               "cflags": _relative(env.repo, cflags), "cflags_sha256": sha,
@@ -1199,6 +1204,22 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
         regate_variant=final.name, regate_cflags_sha256=sha,
         regate_log=_relative(env.repo, log), reason=reason,
     ), tuple(runs)  # fmt: skip
+
+
+def _refreshed(ctx: _Context, p: Proposal, result: check.CheckResult) -> Proposal:
+    """Review 2026-11-20 (F-0035): the landing's gate writes a matched row for every function
+    the unit defines, so after a passing re-gate `functions` is each defined function
+    status.csv has not matched (named as gate names it; the hit ones first, then by start),
+    `keeps` the unit's matched ones and `siblings` every other row. The owner then approves,
+    and the commit names, exactly what the landing matches."""
+    names = {row.start: row.name for row in ctx.rows(p.exe)}
+    new = [(names.get(fn.va, fn.name), fn.va) for fn in result.functions]
+    new = [(name, va) for name, va in new if not ctx.matched(p.exe, va, name)]
+    hit = set(p.functions)
+    functions = tuple(name for name, _ in sorted(new, key=lambda item: (item[0] not in hit,
+                                                                        item[1])))  # fmt: skip
+    return dataclasses.replace(p, functions=functions, keeps=ctx.keeps(p.exe, p.unit),
+                               siblings=ctx.siblings(p.exe, p.unit, functions))  # fmt: skip
 
 
 def _pin_variant(env: _Regate, p: Proposal, final: Variant, reduced: str | None,
@@ -1265,7 +1286,8 @@ def regate(
     proposal's one rule line (build/flags/<id>/cflags.txt), then gate's cross-check. When only
     co-defined neighbours miss, the reduced variant retries with them as INCLUDE_ASM (D-28).
     Writes regate_exit, regate_variant, regate_cflags_sha256, regate_log and the status to the
-    queue after each proposal; never writes src/ or config/cflags.txt."""
+    queue after each proposal, and on a pass functions, keeps and siblings (_refreshed); never
+    writes src/ or config/cflags.txt."""
     repo = Path(repo)
     queue = Path(queue) if queue is not None else repo / QUEUE
     proposals = read_queue(queue)
@@ -1334,8 +1356,14 @@ def _check_owner(by: str, today: str) -> None:
         raise FlagsError(f"today {today!r} is not YYYY-MM-DD")
 
 
-def _hitting_attempts(p: Proposal) -> list[tuple[str, str, str, int]]:
-    """(run, exe, function, attempt) of every attempt whose C the candidate holds."""
+def _hitting_attempts(repo: Path, p: Proposal, landed: str) -> list[tuple[str, str, str, int]]:
+    """(run, exe, function, attempt) of every attempt whose C the candidate holds: its hit's
+    checks/NNNN.c defines its function as the landed text `landed` does. A later hit of a
+    function the candidate already held only adds evidence (_merge), so its attempt wrote none
+    of the landed C (review 2026-11-20, F-0077)."""
+    if not p.evidence:
+        raise FlagsError(f"{p.id} has no evidence; the model that wrote its C is unknown")
+    held = contextpack.definitions(landed)
     out = []
     for path in p.evidence:
         found = _EVIDENCE.fullmatch(path)
@@ -1343,9 +1371,16 @@ def _hitting_attempts(p: Proposal) -> list[tuple[str, str, str, int]]:
             raise FlagsError(f"{p.id}: evidence {path} is not a driver attempt's checks/NNNN.json; "
                              "its model (the co-author) is unknown")  # fmt: skip
         run, exe, function, n = found.groups()
-        out.append((run, exe, function, int(n)))
+        snapshot = path.removesuffix(".json") + ".c"
+        if not (repo / snapshot).is_file():
+            raise FlagsError(f"{p.id}: {snapshot}, the C that hit, is missing; whether that "
+                             "attempt wrote the landed C is unknown")  # fmt: skip
+        mine = contextpack.definitions((repo / snapshot).read_bytes().decode("utf-8")).get(function)
+        if mine is not None and function in held and held[function].source == mine.source:
+            out.append((run, exe, function, int(n)))
     if not out:
-        raise FlagsError(f"{p.id} has no evidence; the model that wrote its C is unknown")
+        raise FlagsError(f"{p.id}: no evidence attempt's C is in the landed text; the model that "
+                         "wrote it is unknown")  # fmt: skip
     return out
 
 
@@ -1397,15 +1432,15 @@ def _transcript_model(repo: Path, run: str, exe: str, function: str, n: int) -> 
     return model if isinstance(model, str) else None
 
 
-def _coauthors(repo: Path, p: Proposal,
-               models: Mapping[AttemptKey, AttemptModel]) -> tuple[str, ...]:  # fmt: skip
-    """Ruling F33 (07-30): the Co-Authored-By line of each model that wrote the candidate,
-    through driver.coauthor, one per distinct model in pass order (then evidence order). An
-    attempt with no record is a cut-off session: its transcript names the model (owner ruling,
-    2026-11-07) and, its pass unknown, it sorts first. With neither, or with a model the
-    co-author table does not name, it is refused."""
+def _coauthors(repo: Path, p: Proposal, models: Mapping[AttemptKey, AttemptModel],
+               hitting: Sequence[tuple[str, str, str, int]]) -> tuple[str, ...]:  # fmt: skip
+    """Ruling F33 (07-30): the Co-Authored-By line of each model that wrote the candidate (the
+    `hitting` attempts, _hitting_attempts), through driver.coauthor, one per distinct model in
+    pass order (then evidence order). An attempt with no record is a cut-off session: its
+    transcript names the model (owner ruling, 2026-11-07) and, its pass unknown, it sorts
+    first. With neither, or with a model the co-author table does not name, it is refused."""
     found: list[tuple[int, int, str]] = []
-    for index, (run, exe, function, n) in enumerate(_hitting_attempts(p)):
+    for index, (run, exe, function, n) in enumerate(hitting):
         key = _evidence_key(run, exe, function, n)
         pass_n, model = models.get(key, (0, None))
         if key not in models:
@@ -1467,7 +1502,8 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
                 sha_now: str) -> list[_Landing]:  # fmt: skip
     """D-12: every refusal before anything is written. Each ID must be regated with exit 0 on
     today's cflags.txt (a batch's own appends do not count: each rule names one exact unit),
-    its C as re-gated, no two on one unit, and the model of its attempts known. A batch
+    its C as re-gated, no two on one unit, every committed definition of the unit kept byte for
+    byte (_refuse_matched_rewrite), and the model of its attempts known. A batch
     proposal (07-48c) has no attempt: its C was written by its author, so it has no co-author
     and lands with gate's attempts 0 (BY_HAND_ATTEMPTS); attempts.jsonl is not read for it."""
     by_id = {p.id: p for p in proposals}
@@ -1489,14 +1525,38 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
         other = units.setdefault((p.exe, p.unit), pid)
         if other != pid:
             raise FlagsError(f"{other} and {pid} are both for {p.exe}/{p.unit}; approve one")
+        source = _landing_source(repo, p)
+        landed = source.read_bytes().decode("utf-8")
+        _refuse_matched_rewrite(repo, p, source, landed)
         if p.source == BATCH:
-            out.append(_Landing(p, _landing_source(repo, p), (), BY_HAND_ATTEMPTS))
+            out.append(_Landing(p, source, (), BY_HAND_ATTEMPTS))
             continue
         if models is None:
             models = _attempt_models(repo / driver.ATTEMPT_LOG)
-        attempts = max(n for *_, n in _hitting_attempts(p))
-        out.append(_Landing(p, _landing_source(repo, p), _coauthors(repo, p, models), attempts))
+        hitting = _hitting_attempts(repo, p, landed)
+        attempts = max(n for *_, n in hitting)
+        out.append(_Landing(p, source, _coauthors(repo, p, models, hitting), attempts))
     return out
+
+
+def _refuse_matched_rewrite(repo: Path, p: Proposal, source: Path, landed: str) -> None:
+    """Review 2026-11-20 (F-0035), .claude/rules/src.md: a landing never restructures a function
+    that already matches. Every definition of the committed unit (by any name: gate commits only
+    matched C) must be in the landed text byte for byte, or the landing is refused before any
+    write. Whether a candidate may replace a matched text is the owner's call, not the tool's."""
+    committed = repo / p.glob
+    if not committed.is_file():
+        return
+    kept = contextpack.definitions(committed.read_bytes().decode("utf-8"),
+                                   unitdefs.DEFINITION_ANY)  # fmt: skip
+    new = contextpack.definitions(landed, unitdefs.DEFINITION_ANY)
+    changed = [name for name, old in kept.items()
+               if name not in new or new[name].source != old.source]  # fmt: skip
+    if changed:
+        raise FlagsError(f"{p.id}: {_relative(repo, source)} changes or drops the committed C of "
+                         f"{', '.join(changed)} in {p.glob}, which already matches "
+                         "(.claude/rules/src.md: never restructure a matched function); the "
+                         "candidate must hold the committed definition byte for byte")  # fmt: skip
 
 
 def _git_ok(git: Git, args: Sequence[str]) -> str:
@@ -1654,14 +1714,31 @@ def _gate_output(done: Any) -> str:
     return _ascii(" ".join(text.split()))[:_OUTPUT_CAP]
 
 
-def _check_matched(repo: Path, p: Proposal) -> None:
-    """The gate passed: each function of the proposal now has a matched status.csv row."""
+def _matched_starts(repo: Path, p: Proposal) -> frozenset[int]:
+    path = status_path(repo / "config", p.exe)
+    rows = read_status(path) if path.is_file() else []
+    return frozenset(r.start for r in rows if r.status == MATCHED)
+
+
+def _check_matched(repo: Path, p: Proposal, before: frozenset[int]) -> None:
+    """The gate passed: each function of the proposal now has a matched status.csv row, and
+    no other row of the unit turned matched (`before`: the matched starts before the landing).
+    Gate matches every function the unit defines, so a proposal re-gated before _refreshed
+    could name fewer (review 2026-11-20, F-0035)."""
     rows = read_status(status_path(repo / "config", p.exe))
+    starts = set(before)
     for name in p.functions:
         found = _FUNC.fullmatch(name)
         start = int(found.group(1), _HEX) if found else None
         if not any(r.status == MATCHED and (r.name == name or r.start == start) for r in rows):
             raise LandingFailed(f"the gate passed without a matched row for {name}")
+        starts.add(start)
+    extra = [r.name for r in rows if r.status == MATCHED and r.unit == p.unit
+             and r.start not in starts and r.name not in p.functions]  # fmt: skip
+    if extra:
+        raise LandingFailed(f"the gate also matched {', '.join(extra)}, which {p.id} does not "
+                            f"name; run `flags regate {p.id}` again so the queue and the commit "
+                            "name every function the landing matches")  # fmt: skip
 
 
 def land_unit(repo: Path, runner: Runner, git: Git, *, paths: Sequence[str], unit: str,
@@ -1724,11 +1801,12 @@ class _Approver:
         every file restored and the proposal failed. Any other error restores too, then
         raises."""
         p = land.proposal
+        before = _matched_starts(self.repo, p)
         try:
             commit = land_unit(self.repo, self.runner, self.git, paths=self.paths(p),
                                unit=p.glob, gate_unit=f"{p.exe}/{p.unit}",
                                attempts=land.attempts, write=lambda: self._write(land),
-                               passed=lambda: self._passed(p),
+                               passed=lambda: self._passed(p, before),
                                message=_approve_message(land, self.by, self.today),
                                message_file=self.repo / FLAGS_DIR / p.id / COMMIT_MSG)  # fmt: skip
             return True, commit
@@ -1741,10 +1819,10 @@ class _Approver:
                 f"approve stopped: {type(exc).__name__}: {exc}")[:_REASON_CAP]))  # fmt: skip
             raise
 
-    def _passed(self, p: Proposal) -> None:
+    def _passed(self, p: Proposal, before: frozenset[int]) -> None:
         """The gate passed: its matched rows checked, the proposal is recorded landed (the
         queue is one of the committed paths)."""
-        _check_matched(self.repo, p)
+        _check_matched(self.repo, p, before)
         self._put(dataclasses.replace(p, status=LANDED, approved_by=self.by,
                                       approved_date=self.today, reason=""))  # fmt: skip
 

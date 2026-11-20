@@ -737,6 +737,23 @@ def test_reduced_swaps_the_neighbour_for_include_asm():
     assert f"int {F30}(int a)" in reduced and f"INCLUDE_ASM({FA0});" in reduced
 
 
+def test_regate_names_every_function_the_landing_newly_matches(tmp_path):
+    """Review 2026-11-20 (F-0035): gate matches every function the unit defines, so a passing
+    re-gate refreshes `functions` to each defined function status.csv has not matched (the hit
+    ones first), `keeps` to the unit's matched ones and `siblings` to the rest; a function
+    matched since it hit drops out of `functions`, and one defined but never hit joins it."""
+    repo = regate_repo(tmp_path, matched=(OTHER, KEEP),
+                       candidate=c_text(KEEP, F30, F50, marked=(FA0,), tag="hit"))
+    (p,) = flags.read_queue(queue_of(repo))
+    flags.write_queue(queue_of(repo), [dataclasses.replace(
+        p, functions=(F50, KEEP), keeps=(), siblings=(f"{F30} partial 20.00",))])
+    flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("regated", 0)
+    assert (p.functions, p.keeps) == ((F50, F30), (KEEP,))
+    assert p.siblings == (f"{KEEP} matched 100.00", f"{FA0} unattempted")
+
+
 def test_regate_records_cflags_sha(tmp_path):
     repo = regate_repo(tmp_path)
     flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
@@ -952,6 +969,11 @@ def _queued(repo: Path, pid: str, unit: str, function: str, text: str, *, attemp
                   regate_cflags_sha256=lf_sha256(CFLAGS_TEXT),
                   regate_log=f"build/flags/{pid}/regate.json")  # fmt: skip
     fields.update(changes)
+    for evidence in fields["evidence"]:  # each hit's checks/NNNN.c: here the C that landed
+        snapshot = repo / (evidence.removesuffix(".json") + ".c")
+        if "/checks/" in evidence and not snapshot.is_file():
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            snapshot.write_text(text, encoding="utf-8", newline="\n")
     return _proposal(**fields)
 
 
@@ -1033,9 +1055,11 @@ def test_approve_lands_one_commit(tmp_path):
 
 def test_approve_lands_the_reduced_variant(tmp_path):
     """07-17 note: a proposal that re-gated on D-28's reduced variant lands that C."""
-    reduced = c_text(F30, marked=(F50,), tag="reduced")
-    a = approve_repo(tmp_path, regate_variant="reduced", variant_sha256=lf_sha256(reduced),
-                     reverted=(F50,))  # fmt: skip
+    a = approve_repo(tmp_path)
+    candidate = c_text(F30, F50, tag="hit")
+    reduced = flags._reduced(candidate, F50)  # the hit's C as it hit, the neighbour reverted
+    _requeue(a, candidate, regate_variant="reduced", variant_sha256=lf_sha256(reduced),
+             reverted=(F50,))  # fmt: skip
     path = a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c"
     path.write_text(reduced, encoding="utf-8", newline="\n")
     assert a.approve(["F-0001"]).landed == ("F-0001",)
@@ -1369,6 +1393,119 @@ def test_approve_refuses_two_proposals_on_one_unit(tmp_path):
     twin = dataclasses.replace(p, id="F-0002", candidate=f"build/flags/F-0002/{UNIT}.c")
     with pytest.raises(flags.FlagsError, match="both for"):
         flags._approvable(a.repo, [p, twin], ["F-0001", "F-0002"], lf_sha256(CFLAGS_TEXT))
+
+
+# ---- review 2026-11-20 (F-0035, F-0077): what a landing names, keeps and credits ----
+
+
+def _requeue(a: Approval, text: str, **changes) -> None:
+    """F-0001 queued again with candidate `text` (the queue is not committed truth: approve
+    rewrites it)."""
+    flags.write_queue(queue_of(a.repo), [_queued(a.repo, "F-0001", UNIT, F30, text, **changes)])
+
+
+def _commit_unit(a: Approval, text: str, status: list[tuple[int, str, str, str, str]]) -> None:
+    """A committed src unit and ufo2p status.csv, as an earlier landing leaves them."""
+    (a.repo / "src" / "ufo2p" / f"{UNIT}.c").write_text(text, encoding="utf-8", newline="\n")
+    write_status(a.repo, "ufo2p", status)
+    _git(a.repo, a.env, "commit", "-q", "-am", "an earlier landing")
+
+
+def test_approve_fails_a_gate_that_matches_a_function_the_proposal_does_not_name(tmp_path):
+    """F-0035: gate matches every function the unit defines. A landing whose gate matched one
+    outside `functions` (a queue entry re-gated before the refresh) is failed and restored,
+    so neither the message nor the queue can call a matched sibling partial."""
+    a = approve_repo(tmp_path)
+    _requeue(a, c_text(F30, F50, tag="hit"))
+    a.gate.functions[UNIT] = (F30, F50)
+    base, before = a.head(), a.files()
+    report = a.approve(["F-0001"])
+    assert report.failed == ("F-0001",) and report.landed == ()
+    _assert_restored(a, base, before)
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert p.status == "failed"
+    assert f"also matched {F50}" in p.reason and "flags regate F-0001" in p.reason
+
+
+def test_approve_names_every_function_a_refreshed_proposal_matches(tmp_path):
+    """After the refresh, the subject and the report name both functions, and the matched
+    sibling is no longer listed partial."""
+    a = approve_repo(tmp_path)
+    _requeue(a, c_text(F30, F50, tag="hit"), functions=(F30, F50),
+             siblings=("func_00061FA0 partial 67.50",))  # fmt: skip
+    a.gate.functions[UNIT] = (F30, F50)
+    report = a.approve(["F-0001"])
+    assert report.landed == ("F-0001",)
+    message = _message(a)
+    assert message[0] == (f"feat(ufo2p): match {F30}, {F50} in {UNIT} under approved flags "
+                          "F-0001 (C89)")  # fmt: skip
+    assert not [line for line in message if line.startswith(f"sibling {F50}")]
+    assert f"{F30}, {F50} under" in report.format()
+
+
+COMMITTED_KEEP = c_text(KEEP, marked=(F30, F50), tag="committed")
+RENAMED_KEEP = ('/* committed */\n#include "apoc.h"\n\nINCLUDE_ASM(func_00061F30);\n'
+                "INCLUDE_ASM(func_00061F50);\n\n/* MadeUpReset: a readability pass named it */\n"
+                "int MadeUpReset(int a)\n{\n    return a + 9;\n}\n")  # fmt: skip
+
+
+@pytest.mark.parametrize(("committed", "candidate", "name"), [
+    (COMMITTED_KEEP, c_text(KEEP, F30, marked=(F50,), tag="hit"), KEEP),
+    (RENAMED_KEEP, c_text(KEEP, F30, marked=(F50,), tag="hit"), "MadeUpReset"),
+], ids=["changed-body", "renamed"])  # fmt: skip
+def test_approve_refuses_to_change_the_c_of_a_matched_function(tmp_path, committed, candidate,
+                                                               name):  # fmt: skip
+    """F-0035 (.claude/rules/src.md: never restructure a function that already matches): a
+    candidate whose text of a function the committed unit defines differs, or lacks it, is
+    refused before any write, naming that function."""
+    a = approve_repo(tmp_path)
+    _commit_unit(a, committed, [(0x60C50, KEEP, UNIT, "matched", "100.00"),
+                                (0x61F30, F30, UNIT, "partial", "77.14")])  # fmt: skip
+    _requeue(a, candidate)
+    base, before = a.head(), a.files()
+    with pytest.raises(flags.FlagsError, match=f"F-0001: .*{name}.*already matches"):
+        a.approve(["F-0001"])
+    assert a.head() == base and a.files() == before and a.gate.calls == []
+
+
+def test_approve_lands_a_candidate_that_keeps_the_matched_c(tmp_path):
+    """The committed definition of the matched function, byte for byte, with the hit beside
+    it: lands, and the unit still holds the committed text."""
+    a = approve_repo(tmp_path)
+    _commit_unit(a, COMMITTED_KEEP, [(0x60C50, KEEP, UNIT, "matched", "100.00"),
+                                     (0x61F30, F30, UNIT, "partial", "77.14")])  # fmt: skip
+    candidate = contextpack.splice_definition(COMMITTED_KEEP, F30, c_text(F30, tag="hit"))
+    _requeue(a, candidate)
+    a.gate.functions[UNIT] = (KEEP, F30)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    landed = (a.repo / "src" / "ufo2p" / f"{UNIT}.c").read_text(encoding="utf-8")
+    assert contextpack.definitions(COMMITTED_KEEP)[KEEP].source in landed
+
+
+def test_approve_credits_only_attempts_whose_c_landed(tmp_path):
+    """F-0077 (ruling F33): a later hit of a function the candidate already held adds evidence
+    only; its model is no co-author and its attempt number is not the gate's --attempts."""
+    later = "20261030-010101"
+    records = (_v2_attempt(F30, 3, requested=OPUS, pass_n=1),
+               _v2_attempt(F30, 5, requested=FABLE, pass_n=3, run=later))  # fmt: skip
+    a = approve_repo(tmp_path, records=records)
+    discarded = a.repo / (_evidence(later, F30, 5).removesuffix(".json") + ".c")
+    discarded.parent.mkdir(parents=True)
+    discarded.write_text(c_text(F30, marked=(F50,), tag="another text"), encoding="utf-8")
+    _requeue(a, c_text(F30, marked=(F50,), tag="hit"),
+             evidence=(_evidence(RUN, F30, 3), _evidence(later, F30, 5)))  # fmt: skip
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [OPUS_LINE]
+    assert a.gate.calls[0][-3:] == ["--attempts", "3", "--json"]
+
+
+def test_approve_refuses_evidence_whose_c_is_missing(tmp_path):
+    """The hit's checks/NNNN.c says whose C landed; without it the co-author is unknown."""
+    a = approve_repo(tmp_path)
+    (a.repo / (_evidence(RUN, F30, 3).removesuffix(".json") + ".c")).unlink()
+    with pytest.raises(flags.FlagsError, match="checks/0005.c"):
+        a.approve(["F-0001"])
+    assert a.gate.calls == []
 
 
 def test_cli_approve_refusal_exits_2(tmp_path, monkeypatch, capsys):

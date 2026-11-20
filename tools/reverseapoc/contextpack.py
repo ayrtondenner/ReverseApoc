@@ -606,21 +606,24 @@ def splice_definition(unit: str, function: str, source: str) -> str | None:
     return unit[: marker.start()] + new.source + unit[marker.end() :]
 
 
-def definitions(text: str) -> dict[str, Definition]:
+def definitions(text: str, pattern: re.Pattern[str] | None = None) -> dict[str, Definition]:
     """Each func_ placeholder the unit file defines at file scope (as configure.code_text reads
-    it) with its head and source, sliced from `text` itself. Empty for a file the D-12 parser
-    refuses (a lone CR, a conditional other than #if 0): no head is guessed."""
+    it) with its head and source, sliced from `text` itself; with `pattern` (a definition
+    regex whose group 1 is the name, such as unitdefs.DEFINITION_ANY), each name it matches.
+    Empty for a file the D-12 parser refuses (a lone CR, a conditional other than #if 0): no
+    head is guessed."""
     cfg = check._configure()
+    pattern = pattern or cfg._DEFINITION
     try:
         code = cfg.code_text(text)
     except cfg._ConditionalError:
         return {}
-    wanted = {match.group(1) for match in _file_scope_matches(code, cfg._DEFINITION)}
+    wanted = {match.group(1) for match in _file_scope_matches(code, pattern)}
     mapped = _normalized(text, cfg)
     flat, joined = _blanked(mapped.text, cfg)
     live = _live(flat, joined, code)
     found: dict[str, Definition] = {}
-    for match in _file_scope_matches(live, cfg._DEFINITION):
+    for match in _file_scope_matches(live, pattern):
         name = match.group(1)
         if name in wanted and name not in found:
             found[name] = _definition(text, mapped.origin, live, match)
