@@ -177,6 +177,7 @@ from . import (
     hooks,
     mechanics,
     quota,
+    signatures,
     streamjson,
     unitdefs,
 )
@@ -10724,11 +10725,23 @@ def _runtime_starts(data: ExeInputs) -> set[int]:
     return {row.start for row in read_runtime_csv(path)} if path.is_file() else set()
 
 
+def check_pack_inputs(data: ExeInputs, roots: attempt.Roots) -> None:
+    """Todo hint-file-preflight: read the owner's hints and the signature table once, as
+    attempt.make_pack reads them at every session's launch, so a malformed one raises here
+    (ContextPackError, SignatureError) and the drive refuses before any session; the night
+    catches only PackOverCap from a pack. No file, or a stale table, is no refusal."""
+    starts = {row.start for row in data.rows if row.kind in attempt.CLAIMABLE_KINDS}
+    contextpack.read_hints(contextpack.hints_path(roots.config, data.stem), starts)
+    signatures.load(signatures.table_path(roots.repo, data.stem), data)
+
+
 def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
     """One EXE loaded once with check's loader: score.assess's survivors as `score` ranks them
     (D-09), the units, one CallIndex reused by every pack (06-15 notes), the context pack
-    (attempt.make_pack, written under build/driver/) and the units scaffold."""
+    (attempt.make_pack, written under build/driver/) and the units scaffold. A malformed hint
+    file or signature table raises (check_pack_inputs): `_load_worlds` refuses the drive."""
     data = attempt.exe_inputs(exe, orig=roots.orig, manifest=roots.manifest, config=roots.config)
+    check_pack_inputs(data, roots)
     assessments = assess(data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
                          chk_targets=_chk_targets(data), runtime_starts=_runtime_starts(data),
                          page_size=data.le.page_size)  # fmt: skip
