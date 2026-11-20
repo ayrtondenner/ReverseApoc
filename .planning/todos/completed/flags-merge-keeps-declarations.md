@@ -29,3 +29,33 @@ Fix (TDD, after the drive):
   needs the same fix.
 - Decide how existing failed or open proposals get a rebuilt candidate. Today a re-run of
   `flags propose` adds nothing for evidence the queue already holds.
+
+## Resolution (2026-11-20)
+
+- `contextpack.splice_definition` now puts the definition in after the file-scope items of the
+  hitting file that it uses, transitively (`_needed`, the same rule twins uses): structs,
+  typedefs, externs, prototypes, macros, includes. An item the unit already holds before the
+  splice point stays where it is. One the unit holds only further down moves up, so it is
+  there once. An item that only declares the spliced function is left to its definition. A
+  name the two files declare differently raises `SpliceConflict`. The item parser moved from
+  twins.py to contextpack.py (twins imports it; test_twins pins it). Only the items the
+  definition uses are carried, not every declaration of the file: the file's other
+  definitions are not spliced, so their declarations are not needed and could only add
+  conflicts.
+- `flags._merge` fails such a proposal with `<hitting checks/NNNN.c> (for <function>) and
+  <candidate> declare <names> differently; merge them by hand`. Comparison drops comments and
+  collapses blanks; any other difference counts.
+- `driver.py` `--land-held` (`_held_text`) had the same defect and goes through the same
+  splice. A conflict is a REFUSED landing whose reason names the exact check C and the unit.
+- Existing proposals: `uv run reverseapoc flags rebuild <ID>...` (host) makes an open sweep
+  proposal again from its evidence, in order, and voids its re-gate. Then
+  `flags regate <ID>` in the container. See docs/workflow.md.
+- Dry check on the checkout's real evidence (2026-11-20, no compile). F-0086, F-0087, F-0089,
+  F-0090 and F-0091 have one hit each, so the rebuilt candidate is byte-identical to the
+  queued one. F-0088 gets the six declarations finding 3 named (`D_0017FB4C`, `D_000D9443`,
+  `D_000D4CBC`, `func_00060C80`, `func_00010300`, `exit`), before func_00060BD0, and stays
+  proposed. F-0013 gets its four D_ externs. Of the compile-failed ones, F-0019, F-0022 and
+  F-0028 rebuild to a proposed candidate. F-0018, F-0020, F-0029, F-0030, F-0034 and F-0040
+  are refused on a real type difference, F-0014 too (for example F-0030 `unk_000A`, F-0029
+  `unk_007E`, F-0018 `char` against `unsigned char D_002A18EC[]`, F-0020 two prototypes of
+  func_0004C1D0). F-0005 stays failed with no rule in common.
