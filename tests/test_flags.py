@@ -1119,6 +1119,63 @@ def test_approve_order(tmp_path):
     assert {p.status for p in flags.read_queue(queue_of(a.repo))} == {"landed"}
 
 
+def refusing_commit(git):
+    """`git` with every `commit` refused, as a failing hook would refuse it."""
+
+    def run(args, **kw):
+        if "commit" in args:
+            return subprocess.CompletedProcess(["git", *args], 1, b"", b"made-up hook refusal")
+        return git(args, **kw)
+
+    return run
+
+
+def _assert_restored(a: Approval, base: str, before: dict[str, bytes | None]) -> None:
+    """No commit, every landed file back byte for byte (the queue aside) and nothing staged."""
+    assert a.head() == base
+    after = a.files()
+    for rel in APPROVE_FILES:
+        if rel != "config/cflags-proposals.toml":
+            assert after[rel] == before[rel], rel
+    assert _git(a.repo, a.env, "diff", "--cached", "--name-only") == ""
+
+
+def test_approve_writes_the_commit_message_under_build_flags(tmp_path):
+    """The message file is build/flags/<id>/commit-msg.txt and is the commit's message."""
+    a = approve_repo(tmp_path)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    message = (a.repo / "build" / "flags" / "F-0001" / "commit-msg.txt").read_text("utf-8")
+    assert _git(a.repo, a.env, "log", "-1", "--format=%B") == message + "\n"
+
+
+def test_approve_fails_a_gate_that_leaves_no_matched_row(tmp_path):
+    """A gate that exits 0 without a matched status.csv row for the function fails the
+    proposal like a failed gate: every file restored, nothing committed."""
+    a = approve_repo(tmp_path)
+    a.gate.functions[UNIT] = ()
+    base, before = a.head(), a.files()
+    report = a.approve(["F-0001"])
+    assert report.failed == ("F-0001",) and report.landed == ()
+    _assert_restored(a, base, before)
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert (p.status, p.reason) == ("failed", f"the gate passed without a matched row for {F30}")
+
+
+def test_approve_restores_then_raises_when_the_commit_fails(tmp_path):
+    """Any other error (here the commit, after git add staged the files) restores every file
+    and the index, fails the proposal naming the error, then raises."""
+    a = approve_repo(tmp_path)
+    base, before = a.head(), a.files()
+    with pytest.raises(flags.FlagsError, match="git commit -q failed: made-up hook refusal"):
+        flags.approve(["F-0001"], OWNER, repo=a.repo, today=DAY, runner=a.gate,
+                      git=refusing_commit(a.git()), env={})  # fmt: skip
+    _assert_restored(a, base, before)
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert p.status == "failed"
+    assert p.reason == "approve stopped: FlagsError: git commit -q failed: made-up hook refusal"
+    assert (p.approved_by, p.approved_date) == ("", "")
+
+
 def test_cli_approve(tmp_path, monkeypatch, capsys):
     a = approve_repo(tmp_path)
     git = a.git()

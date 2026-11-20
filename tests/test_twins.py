@@ -16,7 +16,7 @@ import pytest
 from conftest import write_manifest
 from omfimage import extdef, fixupp32, grpdef, ledata32, lnames, module, pubdef32, segdef32
 from relocpair import FLAT_LNAME, absolute, call, le_off32, original
-from reverseapoc import check, driver, gate, twins
+from reverseapoc import check, driver, flags, gate, twins
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import (
@@ -306,6 +306,85 @@ def test_a_failing_gate_restores_every_file(repo):
     assert read_status(status_path(repo / "config", "tacp")) == []
     assert git(repo, "rev-parse", "HEAD") == head
     assert git(repo, "status", "--porcelain") == ""
+
+
+class LintMiss(Container):
+    """The container lint fails (exit 1, a made-up message on stderr)."""
+
+    def __call__(self, argv, env=None):
+        if list(argv)[len(driver.CONTAINER_CLI)] == "lint":
+            self.argvs.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, "", "made-up lint miss")
+        return super().__call__(argv, env)
+
+
+class NoRow(Container):
+    """The container gate exits 0 without writing a status.csv row."""
+
+    def __call__(self, argv, env=None):
+        if list(argv)[len(driver.CONTAINER_CLI)] == "gate":
+            self.argvs.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "{}", "")
+        return super().__call__(argv, env)
+
+
+def refusing_commit(repo: Path):
+    """The repo's git runner with every `commit` refused, as a failing hook would refuse it."""
+    real = driver.git_runner(repo)
+
+    def run(args, **kw):
+        if "commit" in args:
+            return subprocess.CompletedProcess(["git", *args], 1, b"", b"made-up hook refusal")
+        return real(args, **kw)
+
+    return run
+
+
+def assert_untouched(repo: Path, head: str, before: bytes) -> None:
+    assert (repo / "src" / "tacp" / f"{B_UNIT}.c").read_bytes() == before
+    assert read_status(status_path(repo / "config", "tacp")) == []
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert git(repo, "status", "--porcelain") == ""
+
+
+def test_a_twin_lints_its_unit_before_the_gate_and_writes_its_message_under_build(repo):
+    container = Container(repo)
+    land(repo, container)
+    assert [a[len(driver.CONTAINER_CLI)] for a in container.argvs] == ["lint", "gate"]
+    assert container.argvs[0] == [*driver.CONTAINER_CLI, "lint", f"src/tacp/{B_UNIT}.c"]
+    message = (repo / "build" / "twins" / "commit-msg.txt").read_text(encoding="utf-8")
+    assert git(repo, "log", "-1", "--format=%B") == message + "\n"
+
+
+def test_a_failing_lint_restores_every_file_and_skips_the_gate(repo):
+    before = (repo / "src" / "tacp" / f"{B_UNIT}.c").read_bytes()
+    head = git(repo, "rev-parse", "HEAD")
+    container = LintMiss(repo)
+    report = land(repo, container)
+    assert report.failed == ((TACP, fname(B_START), "lint exit 1: made-up lint miss"),)
+    assert [a[len(driver.CONTAINER_CLI)] for a in container.argvs] == ["lint"]
+    assert f"failed TACP.EXE {fname(B_START)}: lint exit 1: made-up lint miss; every file is " \
+           "restored" in report.format()
+    assert_untouched(repo, head, before)
+
+
+def test_a_gate_without_a_matched_row_fails_and_restores(repo):
+    before = (repo / "src" / "tacp" / f"{B_UNIT}.c").read_bytes()
+    head = git(repo, "rev-parse", "HEAD")
+    report = land(repo, NoRow(repo))
+    why = f"the gate passed without a matched row for {fname(B_START)}"
+    assert report.failed == ((TACP, fname(B_START), why),)
+    assert_untouched(repo, head, before)
+
+
+def test_a_failing_commit_restores_every_file_then_raises(repo):
+    before = (repo / "src" / "tacp" / f"{B_UNIT}.c").read_bytes()
+    head = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(flags.FlagsError, match="git commit -q failed: made-up hook refusal"):
+        twins.land_twins(repo=repo, orig_dir=repo / "orig",
+                         manifest=repo / "config" / "targets.toml", runner=Container(repo),
+                         git=refusing_commit(repo), env={})  # fmt: skip
+    assert_untouched(repo, head, before)
 
 
 def test_a_dirty_unit_fails_its_transfer_and_is_left_alone(repo):

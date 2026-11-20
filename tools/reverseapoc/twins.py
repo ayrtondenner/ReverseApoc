@@ -18,9 +18,10 @@ copied is the definition and the file-scope declarations it needs (transitively;
 source unit defines is declared by its head), minus those the target unit already declares.
 
 `twins --dry-run` prints the counts and the planned transfers and writes nothing. `twins` lands
-each transfer the way `flags approve` lands a proposal: the unit written, the container C89 lint,
-the container `gate EXE/UNIT --attempts 0` (the byte gate decides, never this module), and one
-commit of the unit, status.csv and the feed whose trailer is `Matched-By: reverseapoc twins`, so
+each transfer through `flags approve`'s landing step (flags.land_unit): the unit written, the
+container C89 lint, the container `gate EXE/UNIT --attempts 0` (the byte gate decides, never this
+module), and one commit of the unit, status.csv and the feed whose trailer is
+`Matched-By: reverseapoc twins`, so
 stats count twin landings apart from model matches. A failed lint or gate restores every file and
 the next transfer runs. Refused while a drive runs or inside a matching session.
 
@@ -611,10 +612,6 @@ class LandReport:
         return "\n".join(self.lines)
 
 
-class _Failed(Exception):
-    """The container lint or gate did not pass; the landing is undone."""
-
-
 def _message(t: Transfer, stem: str, source_stem: str) -> str:
     s, row = t.source, t.target.row
     lines = [f"feat({stem}): match {row.name} in {row.unit} as a twin of {source_stem} "
@@ -642,30 +639,20 @@ class _Lander:
         changes fails the transfer before anything is written."""
         paths = self.paths(t)
         try:
-            flags._refuse_dirty(self.git, paths)
+            flags.refuse_dirty(self.git, paths)
         except flags.FlagsError as exc:
             return False, str(exc)
-        snap = flags._snapshot_files(self.repo, paths)
-        staged: list[str] = []
+        stem = self.stems[t.target.exe]
         try:
-            self._write(t, paths[0])
-            stem = self.stems[t.target.exe]
-            done = self.runner([*driver.CONTAINER_CLI, "lint", paths[0]])
-            if done.returncode != 0:
-                raise _Failed(f"lint exit {done.returncode}: {flags._gate_output(done)}")
-            done = self.runner([*driver.CONTAINER_CLI, "gate", f"{stem}/{t.target.row.unit}",
-                                "--attempts", "0", "--json"])  # fmt: skip
-            if done.returncode != 0:
-                raise _Failed(f"gate exit {done.returncode}: {flags._gate_output(done)}")
-            self._check_matched(t, stem)
-            staged = [rel for rel in paths if (self.repo / rel).is_file()]
-            return True, self._commit(t, staged)
-        except _Failed as exc:
-            self._undo(snap, staged)
+            commit = flags.land_unit(self.repo, self.runner, self.git, paths=paths, unit=paths[0],
+                                     gate_unit=f"{stem}/{t.target.row.unit}", attempts=0,
+                                     write=functools.partial(self._write, t, paths[0]),
+                                     passed=functools.partial(self._check_matched, t, stem),
+                                     message=_message(t, stem, self.stems[t.source.exe]),
+                                     message_file=self.repo / TWINS_DIR / COMMIT_MSG)  # fmt: skip
+            return True, commit
+        except flags.LandingFailed as exc:
             return False, str(exc)
-        except BaseException:
-            self._undo(snap, staged)
-            raise
 
     def _write(self, t: Transfer, rel: str) -> None:
         """The target unit as it is now (an earlier landing may have changed it) with the
@@ -674,28 +661,16 @@ class _Lander:
         text = (place(_read_unit(path), t.target, t.prelude, t.definition) if path.is_file()
                 else t.candidate)  # no file yet: the candidate was planned on the scaffold
         if text is None:
-            raise _Failed(f"{rel} has no INCLUDE_ASM({t.target.row.name}) marker any more")
+            raise flags.LandingFailed(f"{rel} has no INCLUDE_ASM({t.target.row.name}) marker "
+                                      "any more")  # fmt: skip
         path.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(path, text.encode("utf-8"))
 
     def _check_matched(self, t: Transfer, stem: str) -> None:
         rows = read_status(status_path(self.repo / "config", stem))
         if not any(r.start == t.target.row.start and r.status == MATCHED for r in rows):
-            raise _Failed(f"the gate passed without a matched row for {t.target.row.name}")
-
-    def _commit(self, t: Transfer, paths: Sequence[str]) -> str:
-        message = _message(t, self.stems[t.target.exe], self.stems[t.source.exe])
-        message_file = self.repo / TWINS_DIR / COMMIT_MSG
-        message_file.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic(message_file, message.encode("utf-8"))
-        flags._git_ok(self.git, ["add", "--", *paths])
-        flags._git_ok(self.git, ["commit", "-q", "-F", str(message_file), "--", *paths])
-        return flags._git_ok(self.git, ["rev-parse", "--short", "HEAD"]).strip()
-
-    def _undo(self, snap: Mapping[str, bytes | None], staged: Sequence[str]) -> None:
-        if staged:  # best effort: the index back to HEAD for what this landing staged
-            self.git([driver.LITERAL, "reset", "-q", "--", *staged])
-        flags._restore_files(self.repo, snap)
+            raise flags.LandingFailed("the gate passed without a matched row for "
+                                      f"{t.target.row.name}")  # fmt: skip
 
 
 def land_twins(*, repo: Path, orig_dir: Path, manifest: Path, runner: Runner | None = None,
@@ -707,7 +682,7 @@ def land_twins(*, repo: Path, orig_dir: Path, manifest: Path, runner: Runner | N
     if (os.environ if env is None else env).get(CLAIM_ENV):
         raise TwinsError(f"{CLAIM_ENV} is set: a matching session never lands twins; run "
                          "`reverseapoc twins` outside the driver")  # fmt: skip
-    lock = flags._hold_drive_lock(repo)
+    lock = flags.hold_drive_lock(repo)
     try:
         plan = plan_twins(repo=repo, orig_dir=orig_dir, manifest=manifest)
         lander = _Lander(repo, plan, runner or driver.command_runner(repo),
@@ -847,7 +822,7 @@ def write_cd_map(config_root: Path, name: str, mapped: Sequence[CdMapRow]) -> Pa
     """config/<exe>/cd-map.csv, written while build/driver/drive.lock of the checkout that
     holds `config_root` is free (nothing writes the checkout during a drive)."""
     path = cd_map_path(config_root, name)
-    lock = flags._hold_drive_lock(Path(config_root).resolve().parent)
+    lock = flags.hold_drive_lock(Path(config_root).resolve().parent)
     try:
         write_atomic(path, format_cd_map(mapped, name).encode("utf-8"))
     finally:

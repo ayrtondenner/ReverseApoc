@@ -1321,15 +1321,9 @@ class ApproveReport:
         return "\n".join(self.lines)
 
 
-class _GateFailed(Exception):
-    """The container lint or gate did not pass; the landing is undone and the proposal
-    failed."""
-
-
-def approve_lint_argv(p: Proposal) -> list[str]:
-    """The container C89 lint (lint.run_lint behind the `lint` verb) of the unit a landing
-    wrote, src/<exe>/<unit>.c."""
-    return [*driver.CONTAINER_CLI, "lint", p.glob]
+class LandingFailed(Exception):
+    """The container lint or gate of a landing (land_unit) did not pass, or the gate left no
+    matched row; the landing is undone."""
 
 
 def _check_owner(by: str, today: str) -> None:
@@ -1519,7 +1513,7 @@ def _status_paths() -> tuple[str, ...]:
     return tuple(status_path(Path("config"), exe).as_posix() for exe in EXES)
 
 
-def _refuse_dirty(git: Git, paths: Sequence[str]) -> None:
+def refuse_dirty(git: Git, paths: Sequence[str]) -> None:
     """The owner verbs commit or read these paths as committed truth (fix round 1: both
     status.csv files too), so none may hold an uncommitted change or a new untracked file."""
     paths = list(dict.fromkeys([*paths, *_status_paths()]))
@@ -1529,7 +1523,7 @@ def _refuse_dirty(git: Git, paths: Sequence[str]) -> None:
         raise FlagsError(f"uncommitted changes in {listed}; commit or restore them first")
 
 
-def _hold_drive_lock(repo: Path) -> ProcessLock:
+def hold_drive_lock(repo: Path) -> ProcessLock:
     """D-06: no drive may run while the owner lands or flips rules."""
     lock = ProcessLock(repo / DRIVE_LOCK)
     try:
@@ -1667,7 +1661,44 @@ def _check_matched(repo: Path, p: Proposal) -> None:
         found = _FUNC.fullmatch(name)
         start = int(found.group(1), _HEX) if found else None
         if not any(r.status == MATCHED and (r.name == name or r.start == start) for r in rows):
-            raise _GateFailed(f"the gate passed without a matched row for {name}")
+            raise LandingFailed(f"the gate passed without a matched row for {name}")
+
+
+def land_unit(repo: Path, runner: Runner, git: Git, *, paths: Sequence[str], unit: str,
+              gate_unit: str, attempts: int, write: Callable[[], None],
+              passed: Callable[[], None], message: str, message_file: Path) -> str:  # fmt: skip
+    """One landing, shared by `flags approve` and `twins`: write() the files, the container C89
+    lint of `unit` (src/<exe>/<unit>.c), the container `gate EXE/UNIT --attempts N`, passed()
+    (it checks the matched status.csv row), then one commit of every path that exists, its
+    message written to `message_file`; the short commit is returned. A LandingFailed (a failed
+    lint, gate or check) or any other error restores every path byte for byte, and the index
+    for what was staged, then propagates."""
+    snap = _snapshot_files(repo, paths)
+    staged: list[str] = []
+    try:
+        write()
+        # The C89 lint of the landed unit, in the container where clang is, as the driver lints
+        # before its gate. Any non-zero exit refuses: a lint error, a lint that cannot run (no
+        # clang) or no container; it is never skipped.
+        done = runner([*driver.CONTAINER_CLI, "lint", unit])
+        if done.returncode != 0:
+            raise LandingFailed(f"lint exit {done.returncode}: {_gate_output(done)}")
+        done = runner([*driver.CONTAINER_CLI, "gate", gate_unit, "--attempts", str(attempts),
+                       "--json"])  # fmt: skip
+        if done.returncode != 0:
+            raise LandingFailed(f"gate exit {done.returncode}: {_gate_output(done)}")
+        passed()
+        staged = [rel for rel in paths if (repo / rel).is_file()]
+        message_file.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(message_file, message.encode("utf-8"))
+        _git_ok(git, ["add", "--", *staged])
+        _git_ok(git, ["commit", "-q", "-F", str(message_file), "--", *staged])
+        return _git_ok(git, ["rev-parse", "--short", "HEAD"]).strip()
+    except BaseException:
+        if staged:  # best effort: the index back to HEAD for what this landing staged
+            git([driver.LITERAL, "reset", "-q", "--", *staged])
+        _restore_files(repo, snap)
+        raise
 
 
 class _Approver:
@@ -1693,35 +1724,29 @@ class _Approver:
         every file restored and the proposal failed. Any other error restores too, then
         raises."""
         p = land.proposal
-        snap = _snapshot_files(self.repo, self.paths(p))
-        staged: list[str] = []
         try:
-            self._write(land)
-            # The C89 lint of the landed unit, in the container where clang is, as the driver
-            # lints before its gate. Any non-zero exit refuses: a lint error, a lint that cannot
-            # run (no clang) or no container; it is never skipped.
-            done = self.runner(approve_lint_argv(p))
-            if done.returncode != 0:
-                raise _GateFailed(f"lint exit {done.returncode}: {_gate_output(done)}")
-            done = self.runner([*driver.CONTAINER_CLI, "gate", f"{p.exe}/{p.unit}",
-                                "--attempts", str(land.attempts), "--json"])  # fmt: skip
-            if done.returncode != 0:
-                raise _GateFailed(f"gate exit {done.returncode}: {_gate_output(done)}")
-            _check_matched(self.repo, p)
-            self._put(dataclasses.replace(p, status=LANDED, approved_by=self.by,
-                                          approved_date=self.today, reason=""))  # fmt: skip
-            staged = [rel for rel in self.paths(p) if (self.repo / rel).is_file()]
-            return True, self._commit(land, staged)
-        except _GateFailed as exc:
-            self._undo(snap, staged)
+            commit = land_unit(self.repo, self.runner, self.git, paths=self.paths(p),
+                               unit=p.glob, gate_unit=f"{p.exe}/{p.unit}",
+                               attempts=land.attempts, write=lambda: self._write(land),
+                               passed=lambda: self._passed(p),
+                               message=_approve_message(land, self.by, self.today),
+                               message_file=self.repo / FLAGS_DIR / p.id / COMMIT_MSG)  # fmt: skip
+            return True, commit
+        except LandingFailed as exc:
             why = _ascii(str(exc))[:_REASON_CAP]
             self._put(dataclasses.replace(p, status=FAILED, reason=why))
             return False, why
         except BaseException as exc:
-            self._undo(snap, staged)
             self._put(dataclasses.replace(p, status=FAILED, reason=_ascii(
                 f"approve stopped: {type(exc).__name__}: {exc}")[:_REASON_CAP]))  # fmt: skip
             raise
+
+    def _passed(self, p: Proposal) -> None:
+        """The gate passed: its matched rows checked, the proposal is recorded landed (the
+        queue is one of the committed paths)."""
+        _check_matched(self.repo, p)
+        self._put(dataclasses.replace(p, status=LANDED, approved_by=self.by,
+                                      approved_date=self.today, reason=""))  # fmt: skip
 
     def _write(self, land: _Landing) -> None:
         p = land.proposal
@@ -1736,21 +1761,6 @@ class _Approver:
         row = doc_row(p.glob, p.exe, p.rule, f"{p.id} approved by {self.by} (re-gate log under "
                                              f"{FLAGS_DIR.as_posix()}/)", self.today)  # fmt: skip
         write_atomic(doc, _with_doc_rows(doc.read_bytes().decode("utf-8"), [row]).encode("utf-8"))
-
-    def _commit(self, land: _Landing, paths: Sequence[str]) -> str:
-        p = land.proposal
-        message = _approve_message(land, self.by, self.today)
-        message_file = self.repo / FLAGS_DIR / p.id / COMMIT_MSG
-        message_file.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic(message_file, message.encode("utf-8"))
-        _git_ok(self.git, ["add", "--", *paths])
-        _git_ok(self.git, ["commit", "-q", "-F", str(message_file), "--", *paths])
-        return _git_ok(self.git, ["rev-parse", "--short", "HEAD"]).strip()
-
-    def _undo(self, snap: Mapping[str, bytes | None], staged: Sequence[str]) -> None:
-        if staged:  # best effort: the index back to HEAD for what this landing staged
-            self.git([driver.LITERAL, "reset", "-q", "--", *staged])
-        _restore_files(self.repo, snap)
 
 
 def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None,
@@ -1773,7 +1783,7 @@ def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None
     today = today or date.today().isoformat()
     _check_owner(by, today)
     _refuse_claim(os.environ if env is None else env)
-    lock = _hold_drive_lock(repo)
+    lock = hold_drive_lock(repo)
     try:
         proposals = read_queue(queue)
         landings = _approvable(repo, proposals, ids, cflags_sha256(repo / CFLAGS))
@@ -1781,8 +1791,8 @@ def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None
                              git or driver.git_runner(repo), proposals)  # fmt: skip
         _table_rows_end((repo / MATCHING_DOC).read_text(encoding="utf-8").splitlines())
         for land in landings:
-            _refuse_dirty(approver.git, [r for r in approver.paths(land.proposal)
-                                         if r != _relative(repo, queue)])  # fmt: skip
+            refuse_dirty(approver.git, [r for r in approver.paths(land.proposal)
+                                        if r != _relative(repo, queue)])  # fmt: skip
         return _approve_all(approver, landings)
     finally:
         lock.release()
@@ -2061,7 +2071,7 @@ def default(rule: str, by: str, *, repo: Path, today: str | None = None,
     if evidence_only:
         return DefaultReport(tuple(evidence.lines()))
     _refuse_claim(os.environ if env is None else env)
-    lock = _hold_drive_lock(repo)
+    lock = hold_drive_lock(repo)
     try:
         flip = _Flip(repo, by, today, runner or driver.command_runner(repo),
                      git or driver.git_runner(repo))  # fmt: skip
@@ -2093,7 +2103,7 @@ class _Flip:
                              f"{'; '.join(evidence.problems)} (see `flags default --evidence`)")
         pins = _pins(self.repo / "config", rules)
         docs = self._docs(old, new, pins, evidence)
-        _refuse_dirty(self.git, DEFAULT_PATHS)
+        refuse_dirty(self.git, DEFAULT_PATHS)
         cflags = (self.repo / CFLAGS).read_bytes().decode("utf-8")
         unpinned = _with_star(cflags, old, new,
                               f"default changed by {self.by} {self.today} (D-14, D-33)")
