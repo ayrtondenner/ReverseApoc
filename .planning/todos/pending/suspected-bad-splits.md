@@ -45,7 +45,7 @@ Status (batch 261119-bhi, quick 261119-bhq): the supported fix input landed: `co
   the 2026-11-19 merge review (docs/learnings.md, 2026-11-19).
 - Left: batch 2; todo shared-epilogue-filter.
 
-## Status (2026-11-20, batch 2 landed; sign-offs pending)
+## Status (2026-11-20, batch 2 landed, re-signed and proven)
 
 - Splits batch 2 (owner rulings 2026-11-19/20): the 6 APPLY merge chains (ufo2p 0x24470, 0x7DD64; tacp
   0x1F270, 0x24B30, 0x38348, 0x43C00; 25 merge lines) plus the splits tacp 0x000385BB at 0x00038610 and
@@ -56,6 +56,9 @@ Status (batch 261119-bhi, quick 261119-bhq): the supported fix input landed: `co
   board rows retired (d1bf4cb0; only tacp 0x000B12E0 stays). `mechanics interior`: suspects 128 -> 80,
   fixes 28 -> 21. Side effect: ufo2p 0x00028AC0 drops from 20 to 19 direct caller rows and is no
   longer a hub, so it becomes a must-match member.
-- Left: the owner's re-sign of [asm_list] and of tiers 1-4 (all four members_sha256 move), then
-  `mechanics check`; the full proof (host and container suites, gate --all, ninja verify); todo
-  shared-epilogue-filter.
+- Done since: the owner re-signed [asm_list] and tiers 1-4 (0b49ec48); todo shared-epilogue-filter
+  landed (3febb6e8); the full proof ran on b530130e (host 8,326 passed,
+  container 8,362 passed, gate --all and ninja verify OK at both SHA-1s) and CI passed after the push.
+- Open: ufo2p 0x0002E100 went back to drive picking in d1bf4cb0, but tests/test_splits.py still pins a
+  live interior suspect into it (0x2FAF0 jumps 0x171 bytes in); review it before the next splits
+  batch. The 0x2E280 split's ruling is recorded only in the commit messages of 108c1ffe and a896abaa.
