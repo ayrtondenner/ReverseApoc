@@ -10,3 +10,21 @@ split,0x000CA700,0x000CA78A,2026-11-19,7 calls from row 0x000CB465; twin of ufo2
 split,0x000CA700,0x000CA7D8,2026-11-19,call from row 0x000CB465; twin of ufo2p 0x000C74C8 (HMI SOS stub)
 split,0x000CA988,0x000CA9BD,2026-11-19,3 calls from row 0x000CB465; twin of ufo2p 0x000C76AD (HMI SOS stub)
 split,0x000CA988,0x000CA9FC,2026-11-19,6 calls from row 0x000CB465; twin of ufo2p 0x000C76EC (HMI SOS stub)
+merge,0x0001F270,0x0001F7F2,2026-11-20,case body of the jmp cs:[eax*4+0x1F270] at 0x1F7EA; no prologue
+merge,0x0001F7F2,0x0001F828,2026-11-20,case body of the 0x1F270 table; no prologue
+merge,0x0001F828,0x0001F83B,2026-11-20,case body of the 0x1F270 table; no prologue
+merge,0x0001F83B,0x0001F88C,2026-11-20,case body of the 0x1F270 table; no prologue
+merge,0x0001F88C,0x0001F8DB,2026-11-20,case body of the 0x1F270 table; loops to 0x1F2C4; only ret 0x1F958
+merge,0x00024B30,0x00024B7D,2026-11-20,case of the jmp cs:[eax+0x24B20] at 0x24B76; no prologue
+merge,0x00024B7D,0x00024B86,2026-11-20,case of the 0x24B20 table; no prologue
+merge,0x00024B86,0x00024B90,2026-11-20,case of the 0x24B20 table; no prologue
+merge,0x00024B90,0x00024B95,2026-11-20,case of the 0x24B20 table; loops to 0x24B6B; 0x2c frame
+merge,0x00038348,0x000384E5,2026-11-20,case 0 of the jmp cs:[eax*4+0x38348] at 0x384DD; 0x38360 frame
+merge,0x000384E5,0x0003852D,2026-11-20,case 1 of the 0x38348 table; 0x38360 frame
+merge,0x0003852D,0x00038574,2026-11-20,case 2 of the 0x38348 table; 0x38360 frame
+merge,0x00038574,0x000385BB,2026-11-20,case 3 + default 0x385FC of the 0x38348 table
+split,0x000385BB,0x00038610,2026-11-20,ret 0x38602 + filler + aligned push esi/edi/ebp; sub esp 0x20; ret 0x18
+merge,0x00043C00,0x00043D65,2026-11-20,case of the jmp cs:[edx+0x43BE8] at 0x43D5E; no prologue
+merge,0x00043D65,0x00043DC0,2026-11-20,case of the 0x43BE8 table; no prologue
+merge,0x00043DC0,0x00043E1B,2026-11-20,case of the 0x43BE8 table; no prologue
+merge,0x00043E1B,0x00043E76,2026-11-20,case of the 0x43BE8 table; loops into 0x43C00; only ret 0x43F56

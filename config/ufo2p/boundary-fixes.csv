@@ -12,3 +12,12 @@ split,0x000C73F0,0x000C747A,2026-11-19,7 calls from row 0x000C8155; ret 0xC7479 
 split,0x000C73F0,0x000C74C8,2026-11-19,call from row 0x000C8155; ret 0xC74C7 then HMI SOS stub prologue
 split,0x000C7678,0x000C76AD,2026-11-19,3 calls from row 0x000C8155; ret 0xC76AC then HMI SOS stub prologue
 split,0x000C7678,0x000C76EC,2026-11-19,6 calls from row 0x000C8155; ret 0xC76EB then HMI SOS stub prologue
+split,0x0002E100,0x0002E280,2026-11-20,call from 0x0002E3A1 (row 0x0002E350); ret 0x2E279 + filler lea eax/[eax] + aligned push ebx..edi; sub esp 8
+merge,0x00024470,0x00024BD9,2026-11-20,switch case tail; jmp 0x24C0F; no prologue
+merge,0x00024BD9,0x00024BE7,2026-11-20,switch case tail; jmp 0x24C0F; no prologue
+merge,0x00024BE7,0x00024BF5,2026-11-20,switch case tail; jmp 0x24C0F; no prologue
+merge,0x00024BF5,0x00024C03,2026-11-20,case bodies of 0x24470: 9 jumps back to 0x24618; only ret 0x253A1
+merge,0x0007DD64,0x0007DEA1,2026-11-20,case 0 of the jmp cs:[eax*4+0x7DD64] at 0x7DE99; no prologue
+merge,0x0007DEA1,0x0007E4FA,2026-11-20,case 1 of the 0x7DD64 table; no prologue
+merge,0x0007E4FA,0x0007E57B,2026-11-20,case 2 of the 0x7DD64 table; no prologue
+merge,0x0007E57B,0x0007E5F9,2026-11-20,case 3 of the 0x7DD64 table; holds the shared epilogue
