@@ -33,7 +33,8 @@ them for each arm.
   reads them (D-26).
 - `unknown_steps` (fail closed): each call that is not known, each start or completion whose
   toolCallId is not a string, each completion with no start, each second start or completion of
-  one id (only one of each is read), each event carrying `agentId` (a subagent's), and each
+  one id (only one of each is read), a second `user.message` (the driver sends one prompt),
+  each event carrying `agentId` (a subagent's), and each
   event of a type outside KNOWN_EVENTS that is not one of SHAPED_EVENTS in its known shape:
   one of KEPT_UNKNOWN (a hook, a skill, a subagent, a
   permission prompt, a model switch...) names its reason, any other is a type no review read.
@@ -68,6 +69,9 @@ _TURN_END = "assistant.turn_end"
 _TOOL_START = "tool.execution_start"
 _TOOL_DONE = "tool.execution_complete"
 _ERROR = "session.error"
+# 1.0.111: "a delivered inter-agent prompt", queued or steering; each of the 436 recorded
+# sessions has exactly one, the driver's prompt, so a second is unknown (unknown_steps)
+_USER = "user.message"
 # the tools the driver makes visible (session.build_copilot_argv's --available-tools), in order
 AVAILABLE_TOOLS = ("view", "create", "edit", "powershell", "read_powershell")
 VIEW, CREATE, EDIT, SHELL, POLL = AVAILABLE_TOOLS
@@ -121,10 +125,14 @@ _FOREIGN_START = frozenset({"parentToolCallId", "programToolCallId", "mcpServerN
                             "mcpConfigSource", "toolDescription"})  # fmt: skip
 _AGENT = "agentId"  # on the envelope of a subagent's events (the CLI's event schema)
 # Every event type the capture streamed, plus the session-level ones that run nothing
-# (compaction, errors, warnings, usage); any other type is an unknown step (fail closed).
+# (compaction, errors, warnings, usage); any other type is an unknown step (fail closed). The
+# review of 2026-11-20 moved three of them out: instruction.update and
+# session.mcp_servers_loaded are known only in their recorded shape (SHAPED_EVENTS), and
+# session.session_limits_changed is kept unknown (_KEPT); and only a session's first
+# user.message is known (unknown_steps).
 KNOWN_EVENTS = frozenset({
-    _START, "session.mcp_servers_loaded", "session.tools_updated", "instruction.update",
-    "user.message", "assistant.turn_start", "model.call_start", "assistant.reasoning_delta",
+    _START, "session.tools_updated", _USER, "assistant.turn_start", "model.call_start",
+    "assistant.reasoning_delta",
     "assistant.reasoning", "assistant.message_start", "assistant.message_delta",
     "assistant.message", "assistant.tool_call_delta", "model.call_finished",
     "model.call_final_result", _TOOL_START, _TOOL_DONE, "tool.shell_output",
@@ -133,7 +141,6 @@ KNOWN_EVENTS = frozenset({
     "session.compaction_start", "session.compaction_complete", "session.compaction_summarized",
     "session.truncation", "session.usage_info", "assistant.turn_retry",
     "model.call_failure", _ERROR, "session.warning", "session.idle", "session.shutdown",
-    "session.session_limits_changed",
     # The event review of 2026-11-18 (todo copilot-event-types-review): every event type 1.0.111's
     # schemas/session-events.schema.json documents is in KNOWN_EVENTS, SHAPED_EVENTS or
     # KEPT_UNKNOWN (tests/test_copilot.py reads the installed schema). Known as is, each in the
@@ -251,6 +258,9 @@ _KEPT = {
     # "relative path within the session workspace files directory", under COPILOT_HOME
     "a write into Copilot's own session workspace that no tool call names": (
         "session.workspace_file_changed",),
+    # "current session limits, or null when no limits are active ... Null clears the limits"
+    # (the review of 2026-11-20); none of the 436 recorded sessions has one
+    "a change of the driver's credit cap (null clears it)": ("session.session_limits_changed",),
 }
 KEPT_UNKNOWN = {kind: why for why, kinds in _KEPT.items() for kind in kinds}
 
@@ -265,6 +275,32 @@ def _usage_known(usage: object) -> bool:
     return (usage.get("initiator") in ("user", "agent")
             and usage.get("interactionType") == "conversation-agent"
             and "parentToolCallId" not in usage)  # fmt: skip
+
+
+# The review of 2026-11-20: `instruction.update` is "an authoritative developer-instruction
+# update" from the runtime, "the SDK host" or "managed policy" (1.0.111's event schema). All 436
+# recorded sessions carry exactly this one, stream and persisted log alike; any other is
+# instruction text the driver did not write.
+_INSTRUCTION = "instruction.update"
+_SANDBOX_GUIDANCE = {
+    "content": "<system_reminder>\n<environment_limitations>\nCurrent command-sandbox guidance, "
+               "superseding earlier sandbox status:\nYou are *not* operating in a sandboxed "
+               "environment dedicated to this task. You may be sharing the environment with "
+               "other users.\n</environment_limitations>\n</system_reminder>",
+    "authority": "runtime", "lifetime": "persistent", "boundary": "nextModelRequest",
+    "fallback": "rebuildSystemPrompt", "name": "sandbox-guidance", "postInitial": False,
+}  # fmt: skip
+# The same review: "MCP server status summaries" (connected, failed, needs-auth, pending,
+# disabled, stopped or not_configured). Every server of the 436 recorded sessions is disabled;
+# one in any other state could hand the model its tools or instructions.
+_MCP_LOADED = "session.mcp_servers_loaded"
+_MCP_OFF = "disabled"
+
+
+def _mcp_all_off(event: dict) -> bool:
+    servers = _data(event).get("servers")
+    return isinstance(servers, list) and all(_mapping(s).get("status") == _MCP_OFF
+                                             for s in servers)  # fmt: skip
 
 
 def _limit_kept(event: dict) -> bool:
@@ -693,6 +729,10 @@ _SHAPE_CHECKS = {
                     "is not a main-agent usage"),
     _PROGRESS: (_progress_known, "names no tool call this session started"),
     _LIMIT_DONE: (lambda e, _: _limit_kept(e), "answers the credit cap with anything but cancel"),
+    _INSTRUCTION: (lambda e, _: _data(e) == _SANDBOX_GUIDANCE,
+                   "is not the runtime's own sandbox guidance: instruction text the driver did "
+                   "not write"),
+    _MCP_LOADED: (lambda e, _: _mcp_all_off(e), "lists an MCP server that is not disabled"),
 }
 SHAPED_EVENTS = frozenset(_SHAPE_CHECKS)
 
@@ -731,6 +771,10 @@ def unknown_steps(events: Sequence[dict]) -> list[str]:
         why = _event_problem(event, seen)
         if why is not None:
             out.append(why)
+        if kind == _USER:  # the driver's one prompt (the review of 2026-11-20)
+            seen[(kind, None)] = seen.get((kind, None), 0) + 1
+            if seen[(kind, None)] == 2:
+                out.append("a second user.message: text the driver did not write")
         if kind not in (_TOOL_START, _TOOL_DONE):
             continue
         key = (kind, ident if isinstance(ident, str) else repr(ident))

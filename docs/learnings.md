@@ -11,6 +11,21 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-20: four Copilot event types from the first capture let too much through
+
+- The 2026-11-18 review read only the 140 event types the audit did not know yet; the 39
+  from the first capture stayed known as they were. Read against 1.0.111's schema, four of
+  them could carry what the review keeps unknown elsewhere. `instruction.update` takes text from
+  the runtime, "the SDK host" or "managed policy". `session.mcp_servers_loaded` can list a
+  connected server. `session.session_limits_changed` can clear the credit cap ("null clears
+  the limits"). A `user.message` can be "a delivered inter-agent prompt".
+- Across all 436 recorded sessions, each carries exactly one `instruction.update`, the runtime's
+  `sandbox-guidance` text word for word, and exactly one `user.message`. Every MCP server they
+  list is `disabled`, and none has a limits change. So `instruction.update` and the MCP list are
+  now known only in that recorded shape, a second `user.message` is unknown, and the limits
+  change is kept unknown. The replay still gives 0 unknown steps.
+- On a new CLI version, re-read the capture's own types too, not only the new ones.
+
 ## 2026-11-19: six shapes at 256 B let Terra work, but no match yet
 
 - Held A/B on 20 near-miss rows of 256-1023 B (GPT-6.1 Terra, one session each): the old
