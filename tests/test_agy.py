@@ -498,6 +498,49 @@ def test_agyjson_a_denial_must_be_exact():
         "step 8", "step 9", "step 10"]
 
 
+def _timed(event: dict, seconds: object) -> dict:
+    """The step event with its step_update's duration_seconds set (agy's own field)."""
+    event["step_update"]["duration_seconds"] = seconds
+    return event
+
+
+def test_agyjson_a_cancelled_command_never_ran():
+    """Run 20261119-quota3 (agy 1.5.13, claude-opus-4-6-thinking): the model sent two
+    run_command calls in one turn; agy's print mode soft-denied the first (ERROR, the permission
+    check's message) and in the same millisecond cancelled the cascade (its log:
+    `soft-denying tool confirmation "Bash" at step 2`, then `CancelCascadeInvocation requested`),
+    and streamed the second as DONE after 0.045 s with tool_info {name, parameters} alone, no
+    `output`. agy's own store keeps that step at status 6 (CANCELED; DONE is 3, ERROR 7), and
+    every run_command that ran across build/driver (224) has an output and took 0.79 s or more.
+    So a run_command step in its known shape that ends DONE with neither output nor error in
+    under agyjson.CANCELLED_MAX_S is a denial (action `cancelled`) and in no list the audit
+    judges as run. With no duration, one at the bound or over, a bool, an output, an error, a
+    subagent or another tool (a read_file DONE with no output ran: 9 such in build/driver), the
+    step ran (fail closed)."""
+    events = _events("cancelled_command")
+    asm = "cd C:\\made-up\\attempt-1 && uv run --frozen reverseapoc attempt asm 2>&1"
+    context = asm.replace("attempt asm", "attempt context")
+    assert agyjson.commands(events) == []
+    assert agyjson.denials(events) == [
+        agyjson.Denial(2, "run_command", "unsandboxed", context, context),
+        agyjson.Denial(3, "run_command", "cancelled", asm, asm)]  # fmt: skip
+    assert agyjson.undenied_steps(events) == [] and agyjson.unknown_steps(events) == []
+    bound = agyjson.CANCELLED_MAX_S
+    ran = [_run(1, asm), _timed(_run(2, asm), bound), _timed(_run(3, asm), 0.79),
+           _timed(_run(4, asm), True), _timed(_run(5, asm, output="Command exited with code 0."),
+                                              0.04)]  # fmt: skip
+    assert agyjson.denials(ran) == []
+    assert agyjson.commands(ran) == [asm] * 5
+    others = [_timed(_run(6, asm, error={"type": "TOOL_ERROR", "message": "x"}), 0.04),
+              _timed(_step(7, "run_command", subagent={"name": "made-up"}, name="run_command",
+                           parameters={"CommandLine": asm}), 0.04),
+              _timed(_step(8, "read_file", name="read_file", parameters={"Path": "C:\\x\\a.c"}),
+                     0.04)]  # fmt: skip
+    assert agyjson.denials(others) == []
+    assert agyjson.read_targets(others) == ["C:\\x\\a.c"]
+    assert [text.split(":")[0] for text in agyjson.unknown_steps(others)] == ["step 6", "step 7"]
+
+
 def _not_absolute(path: str) -> str:
     """agy 1.5.5's whole message for a relative path it rejects before its permission check
     (round 3, gemini's relative read: the path as the model requested it, unquoted)."""
@@ -1289,8 +1332,10 @@ def test_agy_soft_denied_steps_are_not_strays(tmp_path, capsys, monkeypatch):
     never DENIED; such a step never ran, so at night it is a hook block like a DENIED step, not
     a stray that ran: a soft-denied command naming orig/ (the session's last step, as headless
     agy then ends the turn) stops nothing, and a soft-denied write outside the checkout is a
-    denied write (`_denied_write_stop`)."""
-    for scenario in ("soft_denied_command", "soft_denied_write"):
+    denied write (`_denied_write_stop`). Run 20261119-quota3's shape (agy 1.5.13): a
+    compound command soft-denied, then the cascade's other command cancelled (DONE in 0.045 s,
+    no output) stops nothing either."""
+    for scenario in ("soft_denied_command", "soft_denied_write", "cancelled_command"):
         rig, night, env = agy_night(tmp_path / scenario, monkeypatch, scenario=scenario)
         code, _, err = _run_agy(capsys, rig, env)
         assert night.kinds("attempt")[0]["hook_blocks"] == 1, scenario

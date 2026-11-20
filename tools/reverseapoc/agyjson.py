@@ -28,9 +28,11 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   tool (`read_file`) and a write for every other tool (07.2 review WR-02: fail closed). A step
   agy soft-denied never ran, so it is in none of the three lists: its own last state is DENIED
   (RESEARCH "Permissions") or, as spike 012 saw agy 1.5.5 do, ERROR with exactly the permission
-  check's message (`denials`); agy then ends the turn. Anything less exact stays in the lists
-  (fail closed). A result's `denied_actions` never stand for a step; they are hook blocks. The
-  driver's audit reads them (D-26).
+  check's message (`denials`); agy then ends the turn. A run_command agy cancelled with that
+  turn (run 20261119-quota3, agy 1.5.13) never ran either: DONE, tool_info only its name and
+  parameters, in under CANCELLED_MAX_S (a denial with action `cancelled`). Anything less exact
+  stays in the lists (fail closed). A result's `denied_actions` never stand for a step; they
+  are hook blocks. The driver's audit reads them (D-26).
 - `unknown_steps`: each tool step that ran and is not a known tool (`run_command` in agy
   1.5.5's shape, `read_file` or `write_file` with a path, or round 4's `manage_task` status
   poll of a backgrounded command: tool_info {name, parameters: {Action: "status", TaskId},
@@ -592,6 +594,28 @@ def _refused(step: Mapping, tool: str, request: str) -> tuple[str, str] | None:
     return action, target
 
 
+# Run 20261119-quota3 (agy 1.5.13): when print mode soft-denied one run_command of a turn it
+# cancelled the cascade (agy's log: `CancelCascadeInvocation requested` in the same millisecond)
+# and streamed the turn's other run_command as DONE after 0.045 s with tool_info {name,
+# parameters} alone; agy's own conversation store keeps that step at status 6 (CANCELED; its
+# DONE is 3, ERROR 7). Every run_command that ran in build/driver (224) has an output and took
+# 0.79 s or more, so only that shape, under this bound, is a cancelled step that never ran.
+CANCELLED_MAX_S = 0.25
+_CANCELLED = "cancelled"  # the Denial's action for such a step (no permission kind names it)
+_DONE_STATE = "DONE"
+_CANCELLED_INFO = frozenset({_NAME, _PARAMETERS})
+
+
+def _cancelled(step: Mapping) -> bool:
+    """A step agy cancelled before it ran: state DONE, tool_info only its name and parameters
+    (no output, no error) and a duration under CANCELLED_MAX_S; with no duration it ran."""
+    seconds = step.get("duration_seconds")
+    return (step.get("state") == _DONE_STATE
+            and set(_mapping(step.get("tool_info"))) == _CANCELLED_INFO
+            and isinstance(seconds, int | float) and not isinstance(seconds, bool)
+            and 0 <= seconds < CANCELLED_MAX_S)  # fmt: skip
+
+
 def _denial(step: Mapping) -> Denial | None:
     """The step as a denial, or None: only a known tool in its known shape (its error aside)
     with a permission kind can be one (security review: a denial leaves the audit, so this
@@ -608,6 +632,8 @@ def _denial(step: Mapping) -> Denial | None:
     request = _path(info) if command is None else command
     if step.get("state") == _DENIED_STATE:
         return Denial(index, tool, tool, request, request)
+    if tool in _COMMAND_TOOLS and _cancelled(step):
+        return Denial(index, tool, _CANCELLED, request, request)
     found = _refused(step, tool, request)
     return None if found is None else Denial(index, tool, *found, request)
 
