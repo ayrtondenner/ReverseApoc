@@ -1745,11 +1745,13 @@ def test_two_stops_at_once_name_each_session(tmp_path, monkeypatch):
     night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)),
                      by_model={HAIKU: [Sess("auth", write=None)], SONNET: [stray]})  # fmt: skip
 
-    def after(unit, index):  # the stray session ends only once Haiku's stop stopped the night
+    def before(unit, index):  # the stray session runs (and leaves its stray) only once Haiku's
+        # stop stopped the night: waiting after the files land let a loaded machine's audit see
+        # the stray first (the integration suite of 2026-11-20 saw 'guardrail' win the race)
         if night.local.current is stray:
             assert _poll(lambda: nights[-1].stop.is_set()), "Haiku's stop never came"
 
-    night.after = after
+    night.before = before
     report = night.run(config={"arms": TWO_ARMS, "hold": True, "attempts_per_function": 1})
     assert (report.event, report.reason) == ("STOPPED", "stop signal"), report.detail
     labels = {}
