@@ -1735,6 +1735,38 @@ def test_a_denied_write_with_one_arm_stops_the_night(tmp_path):
     assert len(night.launched) == 1
 
 
+def test_two_stops_at_once_name_each_session(tmp_path, monkeypatch):
+    """Todo stop-detail-names-each-session (run 20261119-3s-new): Haiku's session sends a STOP
+    signal while Sonnet's, still running, leaves a stray. The STOPPED detail joins both stops,
+    each after its own `<exe> <function> attempt <n>/<N> (<arm>)` label, in the run record and
+    in the report the console line prints, and the record still validates."""
+    nights = _capture_nights(monkeypatch)
+    stray = Sess(files=(("tools/x.py", "# made-up stray\n"),))
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)),
+                     by_model={HAIKU: [Sess("auth", write=None)], SONNET: [stray]})  # fmt: skip
+
+    def after(unit, index):  # the stray session ends only once Haiku's stop stopped the night
+        if night.local.current is stray:
+            assert _poll(lambda: nights[-1].stop.is_set()), "Haiku's stop never came"
+
+    night.after = after
+    report = night.run(config={"arms": TWO_ARMS, "hold": True, "attempts_per_function": 1})
+    assert (report.event, report.reason) == ("STOPPED", "stop signal"), report.detail
+    labels = {}
+    for launch in night.launched:
+        arm = _run_of(night, launch).removeprefix(f"{RUN}-")
+        unit = launch.env[attempt.CLAIM_ENV].split("/")[1]
+        name = next(p.name for p in night.picks if p.unit == unit)
+        labels[arm] = f"{EXE} {name} attempt 1/1 ({arm})"
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    for text in (stopped["detail"], report.detail):
+        first, *later = text.split("; ")
+        assert first.startswith(f"{labels[HAIKU]}: "), text
+        assert any(part.startswith(f"{labels[SONNET]}: guardrail: ") for part in later), text
+        assert "tools/x.py" in text, text
+    driver.validate_record(stopped)
+
+
 def test_a_hold_run_resumes(tmp_path):
     """Owner approval 2026-11-10: the same `--hold --run` drive again resumes it. Each arm skips
     the functions its run already attempted with a counted session in the committed log, and

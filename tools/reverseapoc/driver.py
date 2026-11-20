@@ -3052,6 +3052,13 @@ class _Stop(Exception):
         super().__init__(reason)
         self.reason = reason
         self.detail = _detail(detail)
+        # todo stop-detail-names-each-session: the attempt's console label (`_announced`), so a
+        # STOPPED detail that joins several workers' stops names the session of each
+        self.label: str | None = None
+
+    def labelled(self, text: str) -> str:
+        """`text` after this stop's attempt label, when it has one."""
+        return text if self.label is None else f"{self.label}: {text}"
 
 
 class _Halt(Exception):
@@ -3911,7 +3918,7 @@ class _Night:
             if self.failure is None:
                 self.failure = exc
             elif isinstance(exc, _Stop):  # a later stop's containment is still reported
-                self.halt_notes.append(f"{exc.reason}: {exc.detail}")
+                self.halt_notes.append(exc.labelled(f"{exc.reason}: {exc.detail}"))
         self._stop_all()
 
     def _note(self, note: str) -> None:
@@ -3964,7 +3971,7 @@ class _Night:
         # the night's `failure` here, never re-raised, so its detail goes into this record.
         failure = self.failure
         if isinstance(failure, _Stop):
-            text += f"; {failure.reason}: {failure.detail}"
+            text += f"; {failure.labelled(f'{failure.reason}: {failure.detail}')}"
         elif failure is not None:
             text += f"; {type(failure).__name__}: {failure}"
         return "; ".join([text, *self.halt_notes])
@@ -3976,12 +3983,16 @@ class _Night:
 
     def _raise_failure(self) -> None:
         """Once every worker has finished: re-raise the first failure on this thread, with what
-        each halted worker's containment did added to a stop's detail."""
+        each halted worker's containment did added to a stop's detail. Todo
+        stop-detail-names-each-session: a joined detail opens with the first stop's attempt
+        label, and each later stop carries its own (`_fail`); a lone stop's detail is as before.
+        The detail stays one free-text string, so older records read as they did."""
         failure = self.failure
         if failure is None:
             return
-        if isinstance(failure, _Stop) and self.halt_notes:
-            raise _Stop(failure.reason, "; ".join([failure.detail, *self.halt_notes])) from failure
+        if isinstance(failure, _Stop) and self.halt_notes:  # each joined stop names its session
+            joined = [failure.labelled(failure.detail), *self.halt_notes]
+            raise _Stop(failure.reason, "; ".join(joined)) from failure
         raise failure
 
     # --- the night ---
@@ -4433,6 +4444,9 @@ class _Night:
             outcome = self._guarded(pick, n)
         except _PackOver as refused:
             return self._over_cap(pick, label, refused.over)
+        except _Stop as stop:  # todo stop-detail-names-each-session: the stop names its session
+            stop.label = stop.label or label
+            raise
         shown = f"ABORTED ({TRANSIENT})" if outcome in (ABORTED, None) else outcome
         self.deps.say(f"{label}: {shown} after {self.deps.clock() - start:.1f} s")
         return outcome
