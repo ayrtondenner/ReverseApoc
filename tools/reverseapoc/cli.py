@@ -2744,6 +2744,12 @@ def _flags_regate(args: argparse.Namespace) -> int:
     return report.exit_code
 
 
+def _flags_rebuild(args: argparse.Namespace) -> int:
+    proposals = flags.rebuild(args.ids, repo=args.repo)
+    print("\n".join(p.line() for p in proposals))
+    return 0
+
+
 def _flags_list(args: argparse.Namespace) -> int:
     proposals = flags.read_queue(args.repo / flags.QUEUE)
     if args.json:
@@ -2814,7 +2820,15 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
     rg.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
     rg.add_argument("--json", action="store_true", help="print the report as JSON")
     rg.set_defaults(flags_func=_flags_regate)
-    for verb in (pr, ls, rg, *_add_flags_owner_verbs(verbs)):
+    rb = verbs.add_parser(
+        "rebuild",
+        help="make open sweep proposals' candidates again from their evidence (the hits' "
+        "checks/NNNN.c, merged as propose merges them, each hit's declarations kept); resets "
+        "the re-gate, so run `flags regate` next (host)",
+    )
+    rb.add_argument("ids", nargs="+", metavar="ID", help="e.g. F-0001")
+    rb.set_defaults(flags_func=_flags_rebuild)
+    for verb in (pr, ls, rg, rb, *_add_flags_owner_verbs(verbs)):
         verb.add_argument("--repo", type=Path, default=REPO_ROOT,
                           help=f"the checkout whose config/ and build/ are read; {default}")
     p.set_defaults(func=_cmd_flags)

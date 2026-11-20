@@ -5,6 +5,7 @@ other than its unit's rule. It is never a match and never evidence for the `*` d
 `flags propose` turns it into a proposed per-unit rule in the committed review queue
 config/cflags-proposals.toml, with the C that hit copied to build/flags/<id>/<unit>.c (gitignored).
 `flags regate` re-proves it over the whole unit on a copy, and `flags list` shows the queue.
+`flags rebuild` makes a queued sweep candidate again from its evidence with today's merge.
 Nothing here writes config/cflags.txt or src/; only the owner's approve step (plan 07-24) does.
 
 The queue holds no game bytes: names, flag strings, repo-relative paths under build/, percents,
@@ -640,7 +641,8 @@ def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
     candidate is that function's C that hit first). A new function narrows the rules to those
     every function hit under (its order stays the DEC-03 ranking); none left is FAILED with a
     reason naming the functions. Its definition from the C that hit is spliced into the
-    candidate."""
+    candidate with the file-scope declarations it uses there (contextpack.splice_definition);
+    a name the two files declare differently is FAILED with a reason naming both files."""
     merged = dataclasses.replace(
         existing, evidence=(*existing.evidence, hit.evidence), status=PROPOSED,
         regate_exit=NOT_RUN, regate_variant=EMPTY, regate_cflags_sha256="", regate_log="",
@@ -661,10 +663,15 @@ def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
                                f"{', '.join(existing.functions)} under {before}; "
                                f"{hit.function} under {', '.join(hit.specs)}")  # fmt: skip
     path = repo / existing.candidate
-    text = _spliced(path.read_bytes().decode("utf-8"), hit.function,
-                    hit.snapshot.read_bytes().decode("utf-8"))  # fmt: skip
+    hitting = f"{hit.evidence.removesuffix('.json')}.c"
+    try:
+        text = _spliced(path.read_bytes().decode("utf-8"), hit.function,
+                        hit.snapshot.read_bytes().decode("utf-8"))  # fmt: skip
+    except contextpack.SpliceConflict as exc:
+        return _failed(merged, f"{hitting} (for {hit.function}) and {existing.candidate} "
+                               f"declare {exc} differently; merge them by hand")  # fmt: skip
     if text is None:
-        return _failed(merged, f"{hit.function}'s definition in {hit.evidence[:-5]}.c cannot "
+        return _failed(merged, f"{hit.function}'s definition in {hitting} cannot "
                                f"be put into {existing.candidate}")  # fmt: skip
     write_atomic(path, text.encode("utf-8"))
     return dataclasses.replace(merged, rule=common[0], alternatives=tuple(common[1:]),
@@ -713,6 +720,58 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
         write_queue(queue, proposals)
     return ProposeReport(tuple(added), tuple(dict.fromkeys(merged)), tuple(skipped),
                          tuple(proposals))  # fmt: skip
+
+
+# ---- rebuild: a queued candidate made again from its evidence ----
+
+
+def _evidence_hit(ctx: _Context, p: Proposal, path: str) -> Hit:
+    """The hit one evidence path of `p` records, read again from its attempt directory."""
+    found = _EVIDENCE.fullmatch(path)
+    if found is None:
+        raise FlagsError(f"{p.id}: evidence {path} is not a driver attempt's checks/NNNN.json; "
+                         "only a sweep proposal is rebuilt")  # fmt: skip
+    _, exe, function, _ = found.groups()
+    evidence = ctx.repo / path
+    notes: list[str] = []
+    hit = _hit(ctx, exe, function, evidence.parent.parent, f"checks/{evidence.stem}.c", notes)
+    if hit is None or (hit.exe, hit.unit) != (p.exe, p.unit) or not hit.snapshot.is_file():
+        why = "; ".join(notes) or f"no 100% cell for {p.exe}/{p.unit}, or its C is missing"
+        raise FlagsError(f"{p.id}: {path} is no hit to rebuild from ({why})")
+    return hit
+
+
+def rebuild(ids: Sequence[str], *, repo: Path, queue: Path | None = None) -> tuple[Proposal, ...]:
+    """Make each named open sweep proposal again from its evidence, in order, as `propose` made
+    it: the first hit's C copied, each later hit merged (`_merge`, which now carries the
+    hitting file's declarations; todo flags-merge-keeps-declarations). The candidate and its
+    sha256 are rewritten and any re-gate is void, so `flags regate` measures the rebuilt C.
+    Every evidence path is read before anything is written."""
+    repo = Path(repo)
+    queue = Path(queue) if queue is not None else repo / QUEUE
+    proposals = read_queue(queue)
+    by_id = {p.id: p for p in proposals}
+    if len(set(ids)) != len(ids) or not ids:
+        raise FlagsError(f"name each proposal once: {' '.join(ids) or '(none)'}")
+    ctx = _Context(repo)
+    plans = []
+    for pid in ids:
+        p = by_id.get(pid)
+        if p is None:
+            raise FlagsError(f"{pid} is not in the queue")
+        if p.status not in OPEN_STATUSES or p.source not in (SWEEP, SWEEP2) or not p.evidence:
+            raise FlagsError(f"{pid} is a {p.status} {p.source} proposal; only an open "
+                             f"({', '.join(OPEN_STATUSES)}) sweep proposal is rebuilt")  # fmt: skip
+        plans.append((p, [_evidence_hit(ctx, p, path) for path in p.evidence]))
+    done = []
+    for p, (first, *later) in plans:
+        new = _new_proposal(repo, ctx, p.id, first)
+        for hit in later:
+            new = _merge(repo, ctx, new, hit)
+        proposals[proposals.index(p)] = new
+        write_queue(queue, proposals)
+        done.append(new)
+    return tuple(done)
 
 
 # ---- propose from a batch: `flags propose --from-batch` (07-48c) ----

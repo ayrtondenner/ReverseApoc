@@ -23,12 +23,12 @@ import re
 import tomllib
 from collections import defaultdict
 from collections.abc import Callable, Container, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import asm, check, ghidra, structs, structure
+from . import asm, check, ghidra, structs, structure, unitdefs
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
@@ -589,21 +589,43 @@ def _definition(text: str, origin: Sequence[int], live: str, match: re.Match[str
 INCLUDE_ASM_MARKER = r"\bINCLUDE_ASM\s*\(\s*{name}\s*\)\s*;"  # `.format(name=...)` per function
 
 
+_REST_OF_LINE = re.compile(r"[ \t]*\r?\n")  # blanks then the line break after an item
+
+
+class SpliceConflict(ContextPackError):
+    """The source declares a name at file scope one way and the unit another (a struct tag, a
+    typedef, an extern, a prototype, a macro): no merge of the two is guessed. The message is
+    the names, comma-separated."""
+
+
 def splice_definition(unit: str, function: str, source: str) -> str | None:
     """`unit` with `function` defined as `source` (a unit file that defines it) defines it:
     its definition slice (`definitions`) replaces the unit's own definition or INCLUDE_ASM
-    marker. None when either is not there (flags' candidate splice; 07.2 review WR-06:
-    --land-held's second function of a unit)."""
+    marker, after the file-scope items of `source` it needs (`_needed`) that the unit does not
+    hold before that point (todo flags-merge-keeps-declarations). An item the unit holds only
+    further down moves up to there, so each is held once; a name the two files declare
+    differently raises SpliceConflict. None when the definition or its place is not there
+    (flags' candidate splice; 07.2 review WR-06: --land-held's second function of a unit)."""
     new = definitions(source).get(function)
     if new is None:
         return None
     old = definitions(unit).get(function)
     if old is not None:
-        return unit.replace(old.source, new.source, 1)
-    marker = re.search(INCLUDE_ASM_MARKER.format(name=re.escape(function)), unit)
-    if marker is None:
-        return None
-    return unit[: marker.start()] + new.source + unit[marker.end() :]
+        start = unit.find(old.source)
+        end = start + len(old.source)
+    else:
+        marker = re.search(INCLUDE_ASM_MARKER.format(name=re.escape(function)), unit)
+        if marker is None:
+            return None
+        start, end = marker.span()
+    carried, moved = _carried(unit, (start, end), function, _needed(_items(source), new.source,
+                                                                   function))  # fmt: skip
+    block = "\n".join(carried) + "\n\n" + new.source if carried else new.source
+    rest = unit[end:]
+    for lo, hi in sorted(set(moved), reverse=True):
+        line = _REST_OF_LINE.match(rest, hi - end)  # a moved item's line goes with it
+        rest = rest[: lo - end] + rest[line.end() if line else hi - end :]
+    return unit[:start] + block + rest
 
 
 def definitions(text: str, pattern: re.Pattern[str] | None = None) -> dict[str, Definition]:
@@ -628,6 +650,210 @@ def definitions(text: str, pattern: re.Pattern[str] | None = None) -> dict[str, 
         if name in wanted and name not in found:
             found[name] = _definition(text, mapped.origin, live, match)
     return found
+
+
+# ---- file-scope items: what a definition needs to go into another unit (twins, the splice) ----
+
+_COMMENT_OR_LITERAL = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'",
+                                 re.S)  # fmt: skip
+_IDENT = re.compile(unitdefs._IDENT)
+_DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
+_DEFINE_NAME = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)")
+_IF_ZERO = re.compile(r"[ \t]*#[ \t]*if[ \t]+0\b")
+_OPENS = frozenset({"if", "ifdef", "ifndef"})
+_COMMON_H = '#include "common.h"'
+DECL, DEF, INCLUDE, MACRO, MARKER, DIRECTIVE = ("decl", "def", "include", "define", "marker",
+                                                "directive")  # fmt: skip
+
+
+@dataclass(frozen=True)
+class _Item:
+    """One file-scope piece of a unit: a declaration, a definition, or a directive line."""
+
+    kind: str
+    text: str  # from its first code character; a definition: its head as a prototype
+    declared: frozenset[str]
+    used: frozenset[str]  # a definition: by its head
+    source: str = ""  # a definition: all of it
+    span: tuple[int, int] = (0, 0)  # where text (a definition: source) lies in the unit
+
+
+def _blank(text: str) -> str:
+    """`text` with comments and literals turned into spaces, newlines kept: same length."""
+    return _COMMENT_OR_LITERAL.sub(lambda m: _NOT_NEWLINE.sub(" ", m.group()), text)
+
+
+def _idents(code: str) -> frozenset[str]:
+    return frozenset(_IDENT.findall(code)) - unitdefs.C_KEYWORDS
+
+
+def _directive(line: str) -> _Item:
+    """An #include (copied), a #define (copied when needed) or any other directive (never
+    copied: configure.py allows no live conditional, and an #undef is the target's business)."""
+    kind = _DIRECTIVE.match(line).group(1)
+    text = line.strip()
+    if kind == "include":
+        return _Item(INCLUDE, text, frozenset(), frozenset())
+    define = _DEFINE_NAME.match(line)
+    if define is not None:
+        return _Item(MACRO, text, frozenset({define.group(1)}), _idents(_blank(line)))
+    return _Item(DIRECTIVE, text, frozenset(), frozenset())
+
+
+def _line_end(blank: str, i: int) -> int:
+    """The index after the logical line starting at `i`: a backslash before the newline
+    continues it."""
+    while True:
+        stop = blank.find("\n", i)
+        if stop < 0:
+            return len(blank)
+        if not blank[i:stop].rstrip(" \t\r").endswith("\\"):
+            return stop + 1
+        i = stop + 1
+
+
+def _dead_line(stack: list[str], line: str) -> bool:
+    """Whether `line` is blanked as part of an `#if 0` branch, updating `stack` ("dead",
+    "nested" inside a dead branch, or "else" for the live #else of an `#if 0`)."""
+    directive = _DIRECTIVE.match(line)
+    word = directive.group(1) if directive else None
+    top = stack[-1] if stack else None
+    if top not in ("dead", "nested"):
+        if _IF_ZERO.match(line):
+            stack.append("dead")
+            return True
+        if top == "else" and word == "endif":
+            stack.pop()
+            return True
+        if top == "else" and word in _OPENS:
+            stack.append("live")
+        elif top == "live" and word == "endif":
+            stack.pop()
+        return False
+    if word in _OPENS:
+        stack.append("nested")
+    elif word == "else" and top == "dead":
+        stack[-1] = "else"
+    elif word == "endif":
+        stack.pop()
+    return True
+
+
+def _drop_dead(blank: str) -> str:
+    """`blank` with each `#if 0` branch and its own directives turned into spaces; the #else
+    branch of one stays (configure.py's code_text drops the same branches)."""
+    stack: list[str] = []
+    lines = blank.split("\n")
+    return "\n".join(_NOT_NEWLINE.sub(" ", line) if _dead_line(stack, line) else line
+                     for line in lines)  # fmt: skip
+
+
+def _piece(text: str, blank: str, start: int, end: int, brace: int | None) -> _Item | None:
+    """The item text[start:end] (comments before its first code character dropped); `brace` is
+    the `{` of a definition's body."""
+    first = start + len(blank[start:end]) - len(blank[start:end].lstrip())
+    if first >= end:
+        return None
+    if brace is not None:
+        head = text[first:brace].rstrip()
+        return _Item(DEF, head + ";", unitdefs.declared_names(head + ";"),
+                     _idents(blank[first:brace]), text[first:end], (first, end))  # fmt: skip
+    piece = text[first:end]
+    if re.fullmatch(INCLUDE_ASM_MARKER.format(name=unitdefs._IDENT), piece):
+        return _Item(MARKER, piece, frozenset(), frozenset(), span=(first, end))
+    return _Item(DECL, piece, unitdefs.declared_names(piece), _idents(blank[first:end]),
+                 span=(first, end))  # fmt: skip
+
+
+def _items(text: str) -> list[_Item]:
+    """The file-scope items of a unit, in file order: a `;` at brace depth 0 ends a declaration,
+    the `}` closing a body that follows a `)` ends a definition, and a directive line outside
+    any pending item is an item of its own."""
+    blank = _drop_dead(_blank(text))
+    items: list[_Item | None] = []
+    start = depth = i = 0
+    brace: int | None = None
+    while i < len(blank):
+        line_start = i == 0 or blank[i - 1] == "\n"
+        if depth == 0 and line_start and _DIRECTIVE.match(blank, i) and not blank[start:i].strip():
+            stop = _line_end(blank, i)
+            line = text[i:stop]
+            first = i + len(line) - len(line.lstrip())
+            items.append(replace(_directive(line), span=(first, first + len(line.strip()))))
+            start = i = stop
+            continue
+        char = blank[i]
+        if char == "{":
+            if depth == 0:
+                brace = i if blank[start:i].rstrip().endswith(")") else None
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+            if depth == 0 and brace is not None:
+                items.append(_piece(text, blank, start, i + 1, brace))
+                start, brace = i + 1, None
+        elif char == ";" and depth == 0:
+            items.append(_piece(text, blank, start, i + 1, None))
+            start = i + 1
+        i += 1
+    return [item for item in items if item is not None]
+
+
+def _needed(items: Sequence[_Item], definition: str, own: str) -> list[_Item]:
+    """The items `definition` needs, transitively, in file order: each that declares a name it
+    (or an item already needed) uses, but never the definition of `own`. Every #include but
+    common.h is kept."""
+    used = set(_idents(_blank(definition)))
+    chosen: set[int] = set()
+    grew = True
+    while grew:
+        grew = False
+        for k, item in enumerate(items):
+            if k in chosen or item.kind == MARKER or not item.declared & used:
+                continue
+            if item.kind == DEF and own in item.declared:
+                continue
+            chosen.add(k)
+            used |= item.used
+            grew = True
+    return [item for k, item in enumerate(items)
+            if k in chosen or (item.kind == INCLUDE and item.text != _COMMON_H)]  # fmt: skip
+
+
+def _same(text: str) -> str:
+    """An item's text as two files' items compare: comments dropped, blanks collapsed (a
+    literal kept, its bytes are data)."""
+    kept = _COMMENT_OR_LITERAL.sub(lambda m: " " if m.group()[0] == "/" else m.group(), text)
+    return " ".join(kept.split())
+
+
+def _carried(unit: str, span: tuple[int, int], function: str, needed: Sequence[_Item]
+             ) -> tuple[list[str], list[tuple[int, int]]]:  # fmt: skip
+    """splice_definition's declarations: (the texts of `needed` to put at `span`, in file
+    order; the spans after `span` of the unit's own copies of them, to drop). An item the unit
+    holds before `span` stays where it is; one that only declares `function` is left to its
+    definition. SpliceConflict names each name an item declares that the unit declares
+    otherwise. The unit's items inside `span` (the definition replaced) are not compared."""
+    start, end = span
+    mine = [item for item in _items(unit) if not start <= item.span[0] < end]
+    carried: list[str] = []
+    moved: list[tuple[int, int]] = []
+    clashes: list[str] = []
+    for item in needed:
+        names = item.declared - {function}
+        if item.declared and not names:
+            continue
+        key = _same(item.text)
+        same = [m for m in mine if _same(m.text) == key]
+        clashes += sorted({name for m in mine if _same(m.text) != key
+                           for name in (m.declared - {function}) & names})  # fmt: skip
+        if any(m.span[0] < start for m in same):
+            continue
+        carried.append(item.text)
+        moved += [m.span for m in same if m.kind != DEF]  # a definition stays put
+    if clashes:
+        raise SpliceConflict(", ".join(dict.fromkeys(clashes)))
+    return carried, moved
 
 
 # ---- callers, callees and externs from the LE (D-13) ----

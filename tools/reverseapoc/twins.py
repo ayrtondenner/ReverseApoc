@@ -46,6 +46,7 @@ from pathlib import Path
 
 from . import contextpack, driver, flags, unitdefs, x86
 from .check import ExeInputs, exe_stem, load_exe, select_exe, unit_rule_path
+from .contextpack import _COMMENT_OR_LITERAL, DEF, MACRO, _blank, _idents, _items, _needed
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -238,167 +239,9 @@ def _first_candidate(sources: Sequence[Member], target: Member,
 
 # ---- twins: the C of a transfer ----
 
-_COMMENT_OR_LITERAL = re.compile(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'",
-                                 re.S)  # fmt: skip
-_NOT_NEWLINE = re.compile(r"[^\n]")
-_IDENT = re.compile(unitdefs._IDENT)
-_DIRECTIVE = re.compile(r"[ \t]*#[ \t]*(\w*)")
-_DEFINE_NAME = re.compile(r"[ \t]*#[ \t]*define[ \t]+(\w+)")
-_IF_ZERO = re.compile(r"[ \t]*#[ \t]*if[ \t]+0\b")
-_OPENS = frozenset({"if", "ifdef", "ifndef"})
-_COMMON_H = '#include "common.h"'
-DECL, DEF, INCLUDE, MACRO, MARKER, DIRECTIVE = ("decl", "def", "include", "define", "marker",
-                                                "directive")  # fmt: skip
-
-
-@dataclass(frozen=True)
-class _Item:
-    """One file-scope piece of a unit: a declaration, a definition, or a directive line."""
-
-    kind: str
-    text: str  # from its first code character; a definition: its head as a prototype
-    declared: frozenset[str]
-    used: frozenset[str]  # a definition: by its head
-    source: str = ""  # a definition: all of it
-
-
-def _blank(text: str) -> str:
-    """`text` with comments and literals turned into spaces, newlines kept: same length."""
-    return _COMMENT_OR_LITERAL.sub(lambda m: _NOT_NEWLINE.sub(" ", m.group()), text)
-
-
-def _idents(code: str) -> frozenset[str]:
-    return frozenset(_IDENT.findall(code)) - unitdefs.C_KEYWORDS
-
-
-def _directive(line: str) -> _Item:
-    """An #include (copied), a #define (copied when needed) or any other directive (never
-    copied: configure.py allows no live conditional, and an #undef is the target's business)."""
-    kind = _DIRECTIVE.match(line).group(1)
-    text = line.strip()
-    if kind == "include":
-        return _Item(INCLUDE, text, frozenset(), frozenset())
-    define = _DEFINE_NAME.match(line)
-    if define is not None:
-        return _Item(MACRO, text, frozenset({define.group(1)}), _idents(_blank(line)))
-    return _Item(DIRECTIVE, text, frozenset(), frozenset())
-
-
-def _line_end(blank: str, i: int) -> int:
-    """The index after the logical line starting at `i`: a backslash before the newline
-    continues it."""
-    while True:
-        stop = blank.find("\n", i)
-        if stop < 0:
-            return len(blank)
-        if not blank[i:stop].rstrip(" \t\r").endswith("\\"):
-            return stop + 1
-        i = stop + 1
-
-
-def _dead_line(stack: list[str], line: str) -> bool:
-    """Whether `line` is blanked as part of an `#if 0` branch, updating `stack` ("dead",
-    "nested" inside a dead branch, or "else" for the live #else of an `#if 0`)."""
-    directive = _DIRECTIVE.match(line)
-    word = directive.group(1) if directive else None
-    top = stack[-1] if stack else None
-    if top not in ("dead", "nested"):
-        if _IF_ZERO.match(line):
-            stack.append("dead")
-            return True
-        if top == "else" and word == "endif":
-            stack.pop()
-            return True
-        if top == "else" and word in _OPENS:
-            stack.append("live")
-        elif top == "live" and word == "endif":
-            stack.pop()
-        return False
-    if word in _OPENS:
-        stack.append("nested")
-    elif word == "else" and top == "dead":
-        stack[-1] = "else"
-    elif word == "endif":
-        stack.pop()
-    return True
-
-
-def _drop_dead(blank: str) -> str:
-    """`blank` with each `#if 0` branch and its own directives turned into spaces; the #else
-    branch of one stays (configure.py's code_text drops the same branches)."""
-    stack: list[str] = []
-    lines = blank.split("\n")
-    return "\n".join(_NOT_NEWLINE.sub(" ", line) if _dead_line(stack, line) else line
-                     for line in lines)  # fmt: skip
-
-
-def _piece(text: str, blank: str, start: int, end: int, brace: int | None) -> _Item | None:
-    """The item text[start:end] (comments before its first code character dropped); `brace` is
-    the `{` of a definition's body."""
-    first = start + len(blank[start:end]) - len(blank[start:end].lstrip())
-    if first >= end:
-        return None
-    if brace is not None:
-        head = text[first:brace].rstrip()
-        return _Item(DEF, head + ";", unitdefs.declared_names(head + ";"),
-                     _idents(blank[first:brace]), text[first:end])  # fmt: skip
-    piece = text[first:end]
-    if re.fullmatch(contextpack.INCLUDE_ASM_MARKER.format(name=unitdefs._IDENT), piece):
-        return _Item(MARKER, piece, frozenset(), frozenset())
-    return _Item(DECL, piece, unitdefs.declared_names(piece), _idents(blank[first:end]))
-
-
-def _items(text: str) -> list[_Item]:
-    """The file-scope items of a unit, in file order: a `;` at brace depth 0 ends a declaration,
-    the `}` closing a body that follows a `)` ends a definition, and a directive line outside
-    any pending item is an item of its own."""
-    blank = _drop_dead(_blank(text))
-    items: list[_Item | None] = []
-    start = depth = i = 0
-    brace: int | None = None
-    while i < len(blank):
-        line_start = i == 0 or blank[i - 1] == "\n"
-        if depth == 0 and line_start and _DIRECTIVE.match(blank, i) and not blank[start:i].strip():
-            stop = _line_end(blank, i)
-            items.append(_directive(text[i:stop]))
-            start = i = stop
-            continue
-        char = blank[i]
-        if char == "{":
-            if depth == 0:
-                brace = i if blank[start:i].rstrip().endswith(")") else None
-            depth += 1
-        elif char == "}" and depth:
-            depth -= 1
-            if depth == 0 and brace is not None:
-                items.append(_piece(text, blank, start, i + 1, brace))
-                start, brace = i + 1, None
-        elif char == ";" and depth == 0:
-            items.append(_piece(text, blank, start, i + 1, None))
-            start = i + 1
-        i += 1
-    return [item for item in items if item is not None]
-
-
-def _needed(items: Sequence[_Item], definition: str, own: str) -> list[_Item]:
-    """The items `definition` needs, transitively, in file order: each that declares a name it
-    (or an item already needed) uses, but never the definition of `own`. Every #include but
-    common.h is kept."""
-    used = set(_idents(_blank(definition)))
-    chosen: set[int] = set()
-    grew = True
-    while grew:
-        grew = False
-        for k, item in enumerate(items):
-            if k in chosen or item.kind == MARKER or not item.declared & used:
-                continue
-            if item.kind == DEF and own in item.declared:
-                continue
-            chosen.add(k)
-            used |= item.used
-            grew = True
-    return [item for k, item in enumerate(items)
-            if k in chosen or (item.kind == INCLUDE and item.text != _COMMON_H)]  # fmt: skip
+# The file-scope item parser (_items, _needed) lives in contextpack, which also splices a
+# definition with the items it needs into a flags candidate (todo
+# flags-merge-keeps-declarations).
 
 
 def _link(table: SymbolTable, ident: str) -> tuple[int, str] | None:

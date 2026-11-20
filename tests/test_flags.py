@@ -539,6 +539,120 @@ def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
     assert q.candidate_sha256 == p.candidate_sha256  # same function: the candidate stays
 
 
+# Todo flags-merge-keeps-declarations: each hit's file declares what its own function uses. A's
+# extern sits after F50's marker (the scaffold's markers come first, as in F-0088's candidate).
+STRUCT_8 = "struct unk_0008 {\n    /* 0x00 */ int f;\n    /* 0x04 */ int g;\n};"
+DECL_A = ('/* A */\n#include "apoc.h"\n\nINCLUDE_ASM(func_00061F50);\n\n'
+          "extern int D_00100000;\n\nint func_00061F30(int a)\n{\n    return a + D_00100000;\n}\n")
+DECL_B = ('/* B */\n#include "apoc.h"\n\nINCLUDE_ASM(func_00061F30);\n\n'
+          f"{STRUCT_8}\n\nextern struct unk_0008 D_00200000[];\nextern int D_00100000;\n\n"
+          "int func_00061F50(int a)\n{\n    return D_00200000[a].g + D_00100000;\n}\n")
+
+
+def _decl_unit(repo: Path, a: str = DECL_A, b: str = DECL_B) -> str:
+    """F30 then F50 hit under cell 5, each in its own attempt with its own declarations; the
+    path of F50's C that hit."""
+    make_attempt(repo, F30, checks=[(1, True, sweep_doc(F30, hits={5}), a)])
+    make_attempt(repo, F50, checks=[(1, True, sweep_doc(F50, hits={5}), b)])
+    return f"build/driver/{RUN}/ufo2p/{F50}/attempt-1/checks/0001.c"
+
+
+def test_merge_carries_the_hitting_files_declarations(tmp_path):
+    """A merged hit's function keeps the file-scope declarations it uses (E1011, E1031 in the
+    re-gates of F-0005..F-0040): each one the candidate lacks goes before the spliced
+    definition; one the candidate holds only further down moves up, so each is there once."""
+    repo = make_repo(tmp_path)
+    _decl_unit(repo)
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.functions) == ("proposed", (F30, F50))
+    text = (repo / p.candidate).read_text(encoding="utf-8")
+    assert p.candidate_sha256 == lf_sha256(text)
+    for decl in (STRUCT_8, "extern struct unk_0008 D_00200000[];", "extern int D_00100000;"):
+        assert text.count(decl) == 1, decl
+        assert text.index(decl) < text.index("int func_00061F50(int a)")
+    assert text.index("extern int D_00100000;") < text.index("int func_00061F30(int a)")
+    defs = contextpack.definitions(text)
+    assert defs[F50].source == contextpack.definitions(DECL_B)[F50].source
+    assert defs[F30].source == contextpack.definitions(DECL_A)[F30].source
+    assert "INCLUDE_ASM" not in text
+
+
+@pytest.mark.parametrize(("a_decl", "b_decl", "name"), [
+    ("struct unk_0008 {\n    int f;\n    int g;\n};", STRUCT_8.replace("int g", "short g"),
+     "unk_0008"),
+    ("typedef int T_0008;", "typedef short T_0008;", "T_0008"),
+    ("extern int D_00300000;", "extern short D_00300000;", "D_00300000"),
+])  # fmt: skip
+def test_merge_fails_on_a_name_the_two_files_declare_differently(tmp_path, a_decl, b_decl, name):
+    """F-0020's unk_00C0, F-0030's unk_000A: a struct tag, typedef or extern declared one way
+    in the candidate and another in the hitting file fails the proposal, naming both files;
+    no merge of the two is guessed and the candidate stays as it was."""
+    repo = make_repo(tmp_path)
+    use = f"    return a + (int)sizeof({'struct ' if 'struct' in a_decl else ''}{name});\n"
+    if name.startswith("D_"):
+        use = f"    return a + {name};\n"
+    a = (f'/* A */\n#include "apoc.h"\n\n{a_decl}\n\nint {F30}(int a)\n{{\n{use}}}\n\n'
+         f"INCLUDE_ASM({F50});\n")
+    b = (f'/* B */\n#include "apoc.h"\n\n{b_decl}\n\nINCLUDE_ASM({F30});\n\n'
+         f"int {F50}(int a)\n{{\n{use}}}\n")
+    hitting = _decl_unit(repo, a, b)
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.rule) == ("failed", "")
+    assert hitting in p.reason and p.candidate in p.reason and name in p.reason
+    assert (repo / p.candidate).read_text(encoding="utf-8") == a
+
+
+def test_rebuild_remakes_a_candidate_from_its_evidence(tmp_path):
+    """`flags rebuild`: an open sweep proposal whose candidate was merged without the hitting
+    file's declarations (as F-0088's was) is rebuilt from its evidence with the fixed merge, its
+    re-gate reset, so `flags regate` measures the C that compiles."""
+    repo = make_repo(tmp_path)
+    _decl_unit(repo)
+    flags.propose([RUN], repo=repo)
+    (good,) = flags.read_queue(queue_of(repo))
+    fixed = (repo / good.candidate).read_bytes()
+    broken = DECL_A.replace(f"INCLUDE_ASM({F50});", contextpack.definitions(DECL_B)[F50].source)
+    (repo / good.candidate).write_text(broken, encoding="utf-8", newline="\n")
+    flags.write_queue(queue_of(repo), [dataclasses.replace(
+        good, status="failed", regate_exit=1, regate_variant="as-written",
+        regate_cflags_sha256=SHA, regate_log="build/flags/F-0001/regate.json",
+        candidate_sha256=lf_sha256(broken), reason="re-gate exit 1 (as-written): compile failed")])
+    (rebuilt,) = flags.rebuild(["F-0001"], repo=repo)
+    assert (repo / good.candidate).read_bytes() == fixed
+    assert flags.read_queue(queue_of(repo)) == [rebuilt] == [good]
+
+
+def test_cli_rebuild(tmp_path, capsys):
+    repo = make_repo(tmp_path)
+    _decl_unit(repo)
+    flags.propose([RUN], repo=repo)
+    assert cli_main(["flags", "rebuild", "F-0001", "--repo", str(repo)]) == 0
+    assert "F-0001  proposed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("change", "message"), [
+    (dict(status="landed"), "landed"),
+    (dict(source="owner"), "owner"),
+    (dict(evidence=("build/batch/x.jsonl",)), "build/batch/x.jsonl"),
+])  # fmt: skip
+def test_rebuild_refusals(tmp_path, change, message):
+    """Only an open sweep proposal whose evidence is driver attempts is rebuilt; a refusal
+    writes nothing."""
+    repo = make_repo(tmp_path)
+    _decl_unit(repo)
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    flags.write_queue(queue_of(repo), [dataclasses.replace(p, **change)])
+    before = queue_of(repo).read_bytes()
+    with pytest.raises(flags.FlagsError, match=message):
+        flags.rebuild(["F-0001"], repo=repo)
+    with pytest.raises(flags.FlagsError, match="F-0002"):
+        flags.rebuild(["F-0002"], repo=repo)
+    assert queue_of(repo).read_bytes() == before
+
+
 # ---- Task 3: flags regate ----
 
 KEEP, OTHER = "func_00060C50", "func_0008A0E0"
