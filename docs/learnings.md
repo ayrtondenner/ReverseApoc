@@ -11,6 +11,28 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-21: the F-0035 and F-0077 landings recorded the wrong functions and co-authors
+
+- **F-0077's `Co-Authored-By: GPT-6 Astra` trailer (33b91481) is a duplicate hit, not landed C.**
+  The landed src/tacp/u_000743a0.c is byte for byte Opus's checks/0003.c
+  (20261119-claude-claude-opus-5-5, tacp func_000743A0 attempt 1). GPT-6 Astra's checks/0001.c
+  (20261119-quota5-gpt-6-astra) is a different text; its hit only added evidence. History is not
+  rewritten, so the trailer stays: anything that counts co-authors from trailers (stats, the
+  paper) must not credit GPT-6 Astra with func_000743A0. Today stats classes from status.csv and
+  attempts.jsonl only.
+- **F-0035 (a685ec0f) matched func_00077F00, although its message and the queue said partial.**
+  The queue entry now lists `functions` [func_00077ED0, func_00077F00], `keeps`
+  [func_00077EC0], and F00 left `siblings`. F00's C came from the 20261101 func_00077EC0
+  attempt 1 (claude-opus-5-5).
+- **F-0035 had replaced the committed C of the already matched func_00077EC0.** The pre-a685ec0f
+  text (`extern char D_000F3DC8[];` and `*(signed char *)((D_000F3DC8)) = 1; return;`) is
+  restored and still matches under the F-0035 rule (-oneatx): gate reports objdiff 100%, reloc
+  ok, bytes ok for EC0, ED0, F00 and 763E0, and both EXE SHA-1s hold.
+- **status.csv `attempts` now counts each function's own hitting attempt** (owner ruling R1,
+  2026-11-21; hand edit of that column): ufo2p func_00077ED0 1 (20261119 Opus attempt 1),
+  func_00077F00 0 (its C rode along with EC0's attempt), tacp func_000743A0 1 (20261119 Opus
+  attempt 1). The earlier 2 was EC0's 20261101 attempt 2, whose C did not land.
+
 ## 2026-11-20: four Copilot event types from the first capture let too much through
 
 - The 2026-11-18 review read only the 140 event types the audit did not know yet; the 39

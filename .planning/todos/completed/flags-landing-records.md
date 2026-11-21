@@ -89,3 +89,50 @@ the attempts whose C landed: 1 for F-0035, 1 for F-0077. Per-function attempts a
 - Should an independent duplicate hit with byte-identical C (two models, same text) be credited?
   The fix credits every attempt whose checks/NNNN.c defines the function exactly as landed, so
   identical texts are both credited.
+
+## Resolution (2026-11-21)
+
+Owner ruling 2026-11-21: options A + B + C; D is out (history is pushed). The two ruling
+questions above stay open.
+
+- **B, done: EC0's committed text is back and still matches.** src/ufo2p/u_00076240.c has the
+  pre-a685ec0f `extern char D_000F3DC8[];` and `*(signed char *)((D_000F3DC8)) = 1; return;`
+  again (the later `/* void: ... */` comment above it is kept). func_00077ED0 and func_00077F00
+  are unchanged and do not read D_000F3DC8, so they needed no edit.
+  `gate ufo2p/u_00076240 --attempts 0` under the F-0035 rule (`wcc386@10.6 -4r -oneatx -s -fpi`):
+  ```
+  OK        func_000763E0  0x000763E0  80 bytes  objdiff 100%  reloc ok  bytes ok
+  OK        func_00077EC0  0x00077EC0  16 bytes  objdiff 100%  reloc ok  bytes ok
+  OK        func_00077ED0  0x00077ED0  48 bytes  objdiff 100%  reloc ok  bytes ok
+  OK        func_00077F00  0x00077F00  47 bytes  objdiff 100%  reloc ok  bytes ok
+  splice OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 155
+  splice OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 157
+  ```
+  Gate rewrote only the unit's `source_sha256` (now dca82efa...b146) on the four matched rows; it
+  kept their attempts and dates.
+- **A, done.** config/cflags-proposals.toml F-0035: `functions` = [func_00077ED0,
+  func_00077F00], `keeps` = [func_00077EC0], func_00077F00 removed from `siblings`.
+  status.csv `attempts` per ruling R1 (own hitting attempt; 0 for C that rode along), by hand:
+  ufo2p func_00077ED0 2 -> 1 (20261119-claude-claude-opus-5-5 attempt 1, the evidence
+  checks/0002.json), func_00077F00 2 -> 0 (no attempt of its own hit; its C is the 20261101
+  EC0 attempt 1's), tacp func_000743A0 stays 1 (20261119-claude-claude-opus-5-5 attempt 1,
+  whose checks/0003.c is byte for byte the landed unit).
+- **C, done.** docs/learnings.md entry of 2026-11-21: F-0077's `Co-Authored-By: GPT-6 Astra`
+  trailer (33b91481) is a duplicate hit whose C did not land; the landed C is Opus's
+  checks/0003.c. The trailer stays (no history rewrite).
+- **Done gate, in the clone.** `gate --all`: every matched function OK (func_00077EC0,
+  func_00077ED0, func_00077F00 and tacp func_000743A0 objdiff 100%, reloc ok, bytes ok), then
+  ```
+  OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 155
+  OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 157
+  ```
+  `configure.py && ninja -t clean && ninja verify`:
+  ```
+  OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 155
+  OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 157
+  OK        UFO2P.EXE  sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 == manifest
+  OK        TACP.EXE   sha1 48ef00969d8880a0a152de1b652853fa7ac27393 == manifest
+  ```
+  The clone's compose default network could not be created (Docker's address pools are full),
+  so both container runs used `docker compose -p agent-aa3eb8b1133ac34cd`, a stale project
+  from 2026-11-13 with no containers, to reuse its network and uv volumes.

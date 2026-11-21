@@ -48,7 +48,7 @@ s16 func_000763E0(struct unk_010C *a)
     return r;
 }
 
-extern unsigned char D_000F3DC8;
+extern char D_000F3DC8[];
 extern short D_000F3DC4;
 extern unsigned char D_0016EF86;
 extern short D_001A4816;
@@ -59,7 +59,8 @@ void func_0002E480(void);
 /* void: EAX is not set before the ret. */
 void func_00077EC0(void)
 {
-    D_000F3DC8 = 1;
+    *(signed char *)((D_000F3DC8)) = 1;
+    return;
 }
 
 /* void: EAX holds only scratch (ah) at the ret. */
