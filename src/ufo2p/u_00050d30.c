@@ -7,7 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00050D30);
 INCLUDE_ASM(func_00050D70);
 INCLUDE_ASM(func_00050EA0);
 INCLUDE_ASM(func_00050EB0);
@@ -35,4 +34,31 @@ void func_00050F50(void)
         hover_info_changed = one;
         D_00182A20[i]++;
     }
+}
+
+extern short D_00183A52[];
+extern short D_000D4E28;
+extern short D_00183A80;
+
+/*
+ * int: EAX at ret holds the index on both paths; the callers decide.
+ * keep is never assigned: `keep - keep` folds away but makes the allocator
+ * hold a register for it, so two and one land in ebx and ecx.
+ */
+int func_00050D30(void)
+{
+    int i;
+    int keep;
+
+    i = D_000D5054;
+    if (D_00183A52[i] > 0) {
+        int two;
+        int one;
+
+        two = 2;
+        one = 1;
+        D_000D4E28 = (short)(two + (keep - keep));
+        D_00183A80 = hover_info_changed = (short)(one + (keep - keep));
+    }
+    return i;
 }
