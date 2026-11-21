@@ -15,7 +15,6 @@ void func_0005EDA0(void)
 {
     return;
 }
-INCLUDE_ASM(func_0005EDB0);
 INCLUDE_ASM(func_0005EDF0);
 INCLUDE_ASM(func_0005EE60);
 INCLUDE_ASM(func_0005EEA0);
@@ -48,6 +47,33 @@ struct unk_0008 *func_0005F3B0(void)
         p = 0;
     }
     return p;
+}
+struct unk_02BE {
+    /* 0x000 */ s16 id;
+    /* 0x002 */ u8 pad_002[0x13];
+    /* 0x015 */ u8 active;
+    /* 0x016 */ u8 data[0x2A8];
+}; /* size: 0x2BE */
+extern struct unk_02BE D_000D942E[];
+
+s16 func_0005EDB0(s16 id)
+{
+    s16 r;
+    s16 i;
+    struct unk_02BE *p;
+
+    r = -1;
+    p = D_000D942E;
+    i = 0;
+    do {
+        if (p->active != 0 && id == p->id) {
+            r = i;
+            break;
+        }
+        i++;
+        p++;
+    } while (i < 16);
+    return r;
 }
 INCLUDE_ASM(func_0005F3E0);
 INCLUDE_ASM(func_0005F410);
