@@ -9,13 +9,44 @@
 
 INCLUDE_ASM(func_00076240);
 INCLUDE_ASM(func_00076370);
-INCLUDE_ASM(func_000763E0);
 INCLUDE_ASM(func_00076430);
 INCLUDE_ASM(func_000764C0);
 INCLUDE_ASM(func_000768D0);
 INCLUDE_ASM(func_00076EF0);
 INCLUDE_ASM(func_000772A0);
 INCLUDE_ASM(func_00077560);
+
+struct unk_02BE {
+    /* 0x000 */ s16 id;
+    /* 0x002 */ u8 pad_002[0x2BC];
+}; /* size: 0x2BE */
+
+struct unk_010C {
+    /* 0x000 */ u8 pad_000[0x10A];
+    /* 0x10A */ s16 id;
+}; /* size: 0x10C */
+
+extern struct unk_02BE D_000D942E[];
+
+/* Index (0..15) of the D_000D942E record whose id equals a->id, else -1. */
+s16 func_000763E0(struct unk_010C *a)
+{
+    struct unk_02BE *p;
+    s16 i;
+    s16 r;
+
+    p = D_000D942E;
+    r = -1;
+    if (a->id != -1) {
+        for (i = 0; i < 16; i++, p++) {
+            if (p->id == a->id) {
+                r = i;
+                break;
+            }
+        }
+    }
+    return r;
+}
 
 extern unsigned char D_000F3DC8;
 extern short D_000F3DC4;
