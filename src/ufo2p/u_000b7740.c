@@ -10,10 +10,19 @@
 INCLUDE_ASM(func_000B7740);
 INCLUDE_ASM(func_000B77E0);
 INCLUDE_ASM(func_000B7800);
-INCLUDE_ASM(func_000B7870);
 INCLUDE_ASM(func_000B78A0);
 void func_000B78D0(void)
 {
     return;
 }
 INCLUDE_ASM(func_000B78E0);
+
+extern char *D_00138F80[];
+
+char *_inline_strcpy(char *dst, const char *src);
+
+/* void: EAX at ret holds the last byte copied, not a result. */
+void func_000B7870(int index, char *dst)
+{
+    _inline_strcpy(dst, D_00138F80[index]);
+}
