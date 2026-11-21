@@ -868,6 +868,62 @@ def test_regate_names_every_function_the_landing_newly_matches(tmp_path):
     assert p.siblings == (f"{KEEP} matched 100.00", f"{FA0} unattempted")
 
 
+def _commit_src(repo: Path, text: str) -> None:
+    (repo / "src" / "ufo2p" / f"{UNIT}.c").write_text(text, encoding="utf-8", newline="\n")
+
+
+def test_regate_splices_the_committed_c_of_matched_functions(tmp_path):
+    """Owner ruling R2 (2026-11-21): the committed text of the unit's matched functions
+    replaces the candidate's own definitions of them, the whole unit is re-proven on that
+    spliced candidate, and the queue pins it, so approve lands it and its refusal to change
+    matched C (_refuse_matched_rewrite) passes."""
+    committed = c_text(KEEP, marked=(F30, F50, FA0), tag="committed")
+    repo = regate_repo(tmp_path, matched=(OTHER, KEEP),
+                       candidate=c_text(KEEP, F30, marked=(F50, FA0), tag="hit"))
+    _commit_src(repo, committed)
+    fake = FakeCheck()
+    flags.regate(["F-0001"], repo=repo, check_fn=fake)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("regated", 0)
+    (call,) = fake.calls
+    keep = contextpack.definitions(committed)[KEEP].source
+    assert keep in call["text"] and f"int {F30}(int a)" in call["text"]
+    candidate = repo / p.candidate
+    assert candidate.read_text(encoding="utf-8") == call["text"]
+    assert p.candidate_sha256 == lf_sha256(call["text"])
+    log = json.loads((repo / p.regate_log).read_text(encoding="utf-8"))
+    assert log["spliced"] == [KEEP]
+    flags._refuse_matched_rewrite(repo, p, candidate, call["text"])  # approve's backstop passes
+
+
+SPLICE_FAILS = {
+    # F-0035's shape: the committed C reads an extern the candidate declares another way
+    "conflict": ("/* committed */\n#include \"apoc.h\"\n\nextern char D_000F3DC8[];\n\n"
+                 f"void {KEEP}(void)\n{{\n    *(signed char *)((D_000F3DC8)) = 1;\n}}\n",
+                 "/* hit */\n#include \"apoc.h\"\n\nextern unsigned char D_000F3DC8;\n\n"
+                 f"void {KEEP}(void)\n{{\n    D_000F3DC8 = 1;\n}}\n\nint {F30}(int a)\n{{\n"
+                 "    return a;\n}\n", "D_000F3DC8"),
+    "dropped": (c_text(KEEP, tag="committed"), c_text(F30, tag="hit"), "neither defines"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", SPLICE_FAILS)
+def test_regate_fails_when_the_matched_c_cannot_be_spliced(tmp_path, case):
+    """R2: a candidate the committed C cannot go into fails the regate with the reason, runs
+    no check and leaves the candidate as it was."""
+    committed, candidate, match = SPLICE_FAILS[case]
+    repo = regate_repo(tmp_path, matched=(OTHER, KEEP), candidate=candidate)
+    _commit_src(repo, committed)
+    fake = FakeCheck()
+    report = flags.regate(["F-0001"], repo=repo, check_fn=fake)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("failed", 1) and report.exit_code == 1
+    assert fake.calls == []
+    assert KEEP in p.reason and match in p.reason and "splice" in p.reason
+    assert (repo / p.candidate).read_text(encoding="utf-8") == candidate
+    assert p.candidate_sha256 == lf_sha256(candidate)
+
+
 def test_regate_records_cflags_sha(tmp_path):
     repo = regate_repo(tmp_path)
     flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
@@ -1160,8 +1216,8 @@ def test_approve_lands_one_commit(tmp_path):
     assert driver.COAUTHOR in lines and driver.MATCHED_BY in lines
     assert f"Flags-Approved-By: {OWNER} (F-0001, {DAY})" in lines
     assert f"{F50} partial 46.45" in message  # D-32: the siblings the approval covers
-    assert a.gate.calls == [[*driver.CONTAINER_CLI, "gate", f"ufo2p/{UNIT}", "--attempts", "3",
-                             "--json"]]  # fmt: skip
+    assert a.gate.calls == [[*driver.CONTAINER_CLI, "gate", f"ufo2p/{UNIT}", "--attempts", "0",
+                             "--attempts", "0x00061F30=3", "--json"]]  # fmt: skip
     assert "F-0001 approved" in a.gate.cflags_seen[0]  # the gate ran under the new rule
     shown = report.format()
     assert f"sibling {F50} partial 46.45" in shown and "F-0001" in shown
@@ -1610,7 +1666,44 @@ def test_approve_credits_only_attempts_whose_c_landed(tmp_path):
              evidence=(_evidence(RUN, F30, 3), _evidence(later, F30, 5)))  # fmt: skip
     assert a.approve(["F-0001"]).landed == ("F-0001",)
     assert _trailers(a) == [OPUS_LINE]
-    assert a.gate.calls[0][-3:] == ["--attempts", "3", "--json"]
+    assert a.gate.calls[0][-3:] == ["--attempts", "0x00061F30=3", "--json"]
+
+
+def test_approve_gives_each_function_its_own_attempts(tmp_path):
+    """Owner ruling R1 (2026-11-21): a function newly matched by the landing gets the attempt
+    number of its own hitting attempt (`--attempts START=N`); one whose C rode along with a
+    sibling's attempt has none of its own and gets 0, like a hand-matched row."""
+    a = approve_repo(tmp_path)
+    _requeue(a, c_text(F30, F50, tag="hit"), functions=(F30, F50))
+    a.gate.functions[UNIT] = (F30, F50)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert a.gate.calls[0][-5:] == ["--attempts", "0", "--attempts", "0x00061F30=3", "--json"]
+
+
+def test_approve_gives_two_hit_functions_their_own_attempts(tmp_path):
+    """R1: two functions, each with its own hitting attempt, get each its own number."""
+    a = approve_repo(tmp_path, records=(_attempt_record(F30, UNIT, 3),
+                                        _attempt_record(F50, UNIT, 2)))  # fmt: skip
+    _requeue(a, c_text(F30, F50, tag="hit"), functions=(F30, F50),
+             evidence=(_evidence(RUN, F30, 3), _evidence(RUN, F50, 2)))  # fmt: skip
+    a.gate.functions[UNIT] = (F30, F50)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert a.gate.calls[0][-7:] == ["--attempts", "0", "--attempts", "0x00061F30=3",
+                                    "--attempts", "0x00061F50=2", "--json"]  # fmt: skip
+
+
+def test_approve_credits_every_model_of_a_byte_identical_hit(tmp_path):
+    """Owner ruling R3 (2026-11-21): byte-identical C written by two models credits both, and
+    the function's own attempts is the larger of the two hitting attempt numbers."""
+    later = "20261030-010101"
+    records = (_v2_attempt(F30, 3, requested=OPUS, pass_n=1),
+               _v2_attempt(F30, 5, requested=FABLE, pass_n=3, run=later))  # fmt: skip
+    a = approve_repo(tmp_path, records=records)
+    _requeue(a, c_text(F30, marked=(F50,), tag="hit"),
+             evidence=(_evidence(RUN, F30, 3), _evidence(later, F30, 5)))  # fmt: skip
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [OPUS_LINE, FABLE_LINE]
+    assert a.gate.calls[0][-3:] == ["--attempts", "0x00061F30=5", "--json"]
 
 
 def test_approve_refuses_evidence_whose_c_is_missing(tmp_path):

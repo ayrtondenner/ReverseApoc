@@ -1454,6 +1454,31 @@ def _gate_roots(args: argparse.Namespace) -> GateRoots:
                      log=args.log)  # fmt: skip
 
 
+def _attempts(values: list[str] | None) -> tuple[int | None, dict[int, int]]:
+    """`--attempts N` (at most once) and `--attempts START=N` (repeatable, START in hex, each
+    start once; owner ruling R1, 2026-11-21): (N or None, start -> N). A bad value is a
+    CheckError (exit 2)."""
+    plain: list[int] = []
+    by_start: dict[int, int] = {}
+    for value in values or ():
+        start_text, sep, count_text = value.rpartition("=")
+        try:
+            count = int(count_text)
+            start = int(start_text, 16) if sep else None
+        except ValueError:
+            raise CheckError(f"--attempts {value!r}: expected N or START=N "
+                             "(START in hex)") from None  # fmt: skip
+        if start is None:
+            plain.append(count)
+            continue
+        if start in by_start:
+            raise CheckError(f"--attempts names 0x{start:08X} twice")
+        by_start[start] = count
+    if len(plain) > 1:
+        raise CheckError("--attempts N is given once; name single functions with START=N")
+    return (plain[0] if plain else None), by_start
+
+
 def _gate(args: argparse.Namespace) -> GateResult:
     """The gate mode the arguments name; a CheckError for a combination that makes no sense."""
     if args.all:
@@ -1469,7 +1494,9 @@ def _gate(args: argparse.Namespace) -> GateResult:
     targets = [_split_unit(text) for text in args.targets]
     if args.partial:
         return _gate_partial(args, targets)
-    return gate_units(targets, roots=_gate_roots(args), attempts=args.attempts or 0)
+    attempts, by_start = _attempts(args.attempts)
+    return gate_units(targets, roots=_gate_roots(args), attempts=attempts or 0,
+                      attempts_by_start=by_start)  # fmt: skip
 
 
 def _gate_partial(args: argparse.Namespace, targets: list[tuple[str, str]]) -> GateResult:
@@ -1480,9 +1507,12 @@ def _gate_partial(args: argparse.Namespace, targets: list[tuple[str, str]]) -> G
     if src.resolve() == Path(DEFAULT_SRC).resolve() or src.suffix != ".c" or not src.is_file():
         raise CheckError("--partial needs --src FILE naming the saved attempt's existing .c "
                          f"file, got {src}")  # fmt: skip
+    attempts, by_start = _attempts(args.attempts)
+    if by_start:
+        raise CheckError("--attempts START=N names a matched row's count; --partial takes N")
     (exe, unit), roots = targets[0], _gate_roots(args)
     roots = dataclasses.replace(roots, src_root=src.parent)
-    return gate_partial(exe, unit, src, roots=roots, attempts=args.attempts or 0)
+    return gate_partial(exe, unit, src, roots=roots, attempts=attempts or 0)
 
 
 def _run_gate(args: argparse.Namespace) -> int:
@@ -1528,8 +1558,10 @@ def _add_gate_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
     p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
     p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
-    p.add_argument("--attempts", type=int, default=None, metavar="N",
-                   help="matching attempts the rows record; 0 (the default) = matched by hand")
+    p.add_argument("--attempts", action="append", default=None, metavar="N|START=N",
+                   help="matching attempts the rows record; 0 (the default) = matched by hand. "
+                        "START=N (START in hex, repeatable) gives the function at START its own "
+                        "count (owner ruling R1, 2026-11-21)")  # fmt: skip
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_gate)
 

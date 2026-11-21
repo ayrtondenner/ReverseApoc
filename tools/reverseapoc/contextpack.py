@@ -598,18 +598,21 @@ class SpliceConflict(ContextPackError):
     the names, comma-separated."""
 
 
-def splice_definition(unit: str, function: str, source: str) -> str | None:
+def splice_definition(unit: str, function: str, source: str,
+                      pattern: re.Pattern[str] | None = None) -> str | None:  # fmt: skip
     """`unit` with `function` defined as `source` (a unit file that defines it) defines it:
     its definition slice (`definitions`) replaces the unit's own definition or INCLUDE_ASM
     marker, after the file-scope items of `source` it needs (`_needed`) that the unit does not
     hold before that point (todo flags-merge-keeps-declarations). An item the unit holds only
     further down moves up to there, so each is held once; a name the two files declare
     differently raises SpliceConflict. None when the definition or its place is not there
-    (flags' candidate splice; 07.2 review WR-06: --land-held's second function of a unit)."""
-    new = definitions(source).get(function)
+    (flags' candidate splice; 07.2 review WR-06: --land-held's second function of a unit).
+    `pattern` is `definitions`' own: unitdefs.DEFINITION_ANY splices a renamed function too
+    (flags regate's committed C, owner ruling R2, 2026-11-21)."""
+    new = definitions(source, pattern).get(function)
     if new is None:
         return None
-    old = definitions(unit).get(function)
+    old = definitions(unit, pattern).get(function)
     if old is not None:
         start = unit.find(old.source)
         end = start + len(old.source)

@@ -1231,6 +1231,36 @@ def _reduce_all(text: str, neighbours: Sequence[str]) -> str | None:
     return text
 
 
+def _with_matched(repo: Path, p: Proposal, text: str) -> tuple[str, tuple[str, ...]]:
+    """Owner ruling R2 (2026-11-21): `text` with the committed definition of each function the
+    committed unit defines (by any name: gate commits only matched C) in place of its own
+    (contextpack.splice_definition), and the names spliced. A definition the candidate
+    already holds byte for byte is left. A name the two files declare differently, or a
+    function the candidate neither defines nor marks INCLUDE_ASM, is a FlagsError naming it."""
+    committed = repo / p.glob
+    if not committed.is_file():
+        return text, ()
+    source = committed.read_bytes().decode("utf-8")
+    spliced = []
+    for name, old in contextpack.definitions(source, unitdefs.DEFINITION_ANY).items():
+        mine = contextpack.definitions(text, unitdefs.DEFINITION_ANY).get(name)
+        if mine is not None and mine.source == old.source:
+            continue
+        try:
+            new = _spliced(text, name, source, unitdefs.DEFINITION_ANY)
+        except contextpack.SpliceConflict as exc:
+            raise FlagsError(f"cannot splice the committed C of {name} ({p.glob}) into "
+                             f"{p.candidate}: the two declare {exc} differently; merge them by "
+                             "hand") from None  # fmt: skip
+        if new is None:
+            raise FlagsError(f"cannot splice the committed C of {name} ({p.glob}) into "
+                             f"{p.candidate}: it neither defines {name} nor marks it "
+                             "INCLUDE_ASM")  # fmt: skip
+        text = new
+        spliced.append(name)
+    return text, tuple(spliced)
+
+
 def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...]]:
     committed = env.config / "cflags.txt"
     sha = cflags_sha256(committed)
@@ -1238,7 +1268,15 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
     cflags = work / TEMP_CFLAGS
     temp_cflags(cflags, committed, p, versions=_versions(env.config))
     text = (env.repo / p.candidate).read_bytes().decode("utf-8")
-    first, result = _variant(env, p, AS_WRITTEN, text, cflags)
+    try:
+        text, spliced = _with_matched(env.repo, p, text)
+    except FlagsError as exc:
+        first, result, spliced = Variant(AS_WRITTEN, EXIT_MISMATCH, (_ascii(str(exc)),)), None, ()
+    else:
+        if spliced:  # R2: approve lands this text, pinned by the queue's candidate_sha256
+            write_atomic(env.repo / p.candidate, text.encode("utf-8"))
+            p = dataclasses.replace(p, candidate_sha256=lf_sha256(text))
+        first, result = _variant(env, p, AS_WRITTEN, text, cflags)
     runs = [first]
     neighbours = _neighbours(p, result) if result is not None and first.exit else []
     reduced = _reduce_all(text, neighbours) if neighbours else None
@@ -1253,7 +1291,7 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
     record = {"id": p.id, "exe": p.exe, "unit": p.unit, "rule": p.rule,
               "cflags": _relative(env.repo, cflags), "cflags_sha256": sha,
               "candidate_sha256": p.candidate_sha256, "variant_sha256": pinned.variant_sha256,
-              "reverted": list(pinned.reverted),
+              "reverted": list(pinned.reverted), "spliced": list(spliced),
               "variants": [run.to_json() for run in runs]}  # fmt: skip
     write_atomic(log, (json.dumps(record, indent=2) + "\n").encode("ascii"))
     reason = "" if final.exit == EXIT_OK else _ascii(
@@ -1550,7 +1588,8 @@ class _Landing:
     proposal: Proposal
     source: Path
     coauthors: tuple[str, ...]  # one Co-Authored-By line per model (ruling F33)
-    attempts: int  # the hitting attempt number gate records in status.csv
+    attempts: int  # gate's --attempts N for a function with no hitting attempt of its own
+    own: Mapping[int, int] = dataclasses.field(default_factory=dict)  # start -> its own (R1)
 
     @property
     def unit_rel(self) -> str:
@@ -1593,9 +1632,28 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
         if models is None:
             models = _attempt_models(repo / driver.ATTEMPT_LOG)
         hitting = _hitting_attempts(repo, p, landed)
-        attempts = max(n for *_, n in hitting)
-        out.append(_Landing(p, source, _coauthors(repo, p, models, hitting), attempts))
+        out.append(_Landing(p, source, _coauthors(repo, p, models, hitting), BY_HAND_ATTEMPTS,
+                            _own_attempts(repo, p, hitting)))  # fmt: skip
     return out
+
+
+def _own_attempts(repo: Path, p: Proposal, hitting: Sequence[tuple[str, str, str, int]]
+                  ) -> dict[int, int]:  # fmt: skip
+    """Owner ruling R1 (2026-11-21): start -> the attempt number of each function's own hitting
+    attempt (the larger when byte-identical C hit more than once, R3). A function whose C rode
+    along with a sibling's attempt has none, so gate gives it BY_HAND_ATTEMPTS, as a
+    hand-matched row."""
+    ctx: _Context | None = None
+    own: dict[int, int] = {}
+    for _, _, function, n in hitting:
+        found = _FUNC.fullmatch(function)
+        if found is None:
+            ctx = ctx or _Context(repo)
+        start = int(found.group(1), _HEX) if found else ctx.start(p.exe, function)
+        if start is None:
+            raise FlagsError(f"{p.id}: the start of {function}, whose attempt {n} hit, is unknown")
+        own[start] = max(own.get(start, 0), n)
+    return own
 
 
 def _refuse_matched_rewrite(repo: Path, p: Proposal, source: Path, landed: str) -> None:
@@ -1802,9 +1860,11 @@ def _check_matched(repo: Path, p: Proposal, before: frozenset[int]) -> None:
 
 def land_unit(repo: Path, runner: Runner, git: Git, *, paths: Sequence[str], unit: str,
               gate_unit: str, attempts: int, write: Callable[[], None],
-              passed: Callable[[], None], message: str, message_file: Path) -> str:  # fmt: skip
+              passed: Callable[[], None], message: str, message_file: Path,
+              own: Mapping[int, int] | None = None) -> str:  # fmt: skip
     """One landing, shared by `flags approve` and `twins`: write() the files, the container C89
-    lint of `unit` (src/<exe>/<unit>.c), the container `gate EXE/UNIT --attempts N`, passed()
+    lint of `unit` (src/<exe>/<unit>.c), the container `gate EXE/UNIT --attempts N` (plus one
+    `--attempts START=N` per entry of `own`, owner ruling R1), passed()
     (it checks the matched status.csv row), then one commit of every path that exists, its
     message written to `message_file`; the short commit is returned. A LandingFailed (a failed
     lint, gate or check) or any other error restores every path byte for byte, and the index
@@ -1819,8 +1879,10 @@ def land_unit(repo: Path, runner: Runner, git: Git, *, paths: Sequence[str], uni
         done = runner([*driver.CONTAINER_CLI, "lint", unit])
         if done.returncode != 0:
             raise LandingFailed(f"lint exit {done.returncode}: {_gate_output(done)}")
+        per_start = [arg for start, n in sorted((own or {}).items())
+                     for arg in ("--attempts", f"0x{start:08X}={n}")]  # fmt: skip
         done = runner([*driver.CONTAINER_CLI, "gate", gate_unit, "--attempts", str(attempts),
-                       "--json"])  # fmt: skip
+                       *per_start, "--json"])  # fmt: skip
         if done.returncode != 0:
             raise LandingFailed(f"gate exit {done.returncode}: {_gate_output(done)}")
         passed()
@@ -1864,7 +1926,8 @@ class _Approver:
         try:
             commit = land_unit(self.repo, self.runner, self.git, paths=self.paths(p),
                                unit=p.glob, gate_unit=f"{p.exe}/{p.unit}",
-                               attempts=land.attempts, write=lambda: self._write(land),
+                               attempts=land.attempts, own=land.own,
+                               write=lambda: self._write(land),
                                passed=lambda: self._passed(p, before),
                                message=_approve_message(land, self.by, self.today),
                                message_file=self.repo / FLAGS_DIR / p.id / COMMIT_MSG)  # fmt: skip

@@ -404,6 +404,55 @@ def test_a_match_replaces_a_partial_row(tree):
                                       sha=lf_sha256(text))]  # fmt: skip
 
 
+def test_per_start_attempts_override_the_count(tree):
+    """Owner ruling R1 (2026-11-21): `--attempts START=N` gives one newly matched function its
+    own count; every other function the targets define takes the plain count (0 = by hand)."""
+    text = tree.write_unit(UFO, UNIT_A, [A1, A2])
+    result = gate.gate_units([("ufo2p", UNIT_A)], roots=tree.roots, attempts=0,
+                             attempts_by_start={A2: 2}, today=TODAY,
+                             check_fn=FakeCheck(tree))  # fmt: skip
+    assert result.exit_code == 0
+    sha = lf_sha256(text)
+    assert tree.rows(UFO) == [matched(A1, UNIT_A, day="2026-10-25", sha=sha),
+                              matched(A2, UNIT_A, attempts=2, day="2026-10-25", sha=sha)]
+
+
+@pytest.mark.parametrize(("by_start", "match"), [
+    ({B1: 2}, "no gated unit defines"),
+    ({A2: -1}, "attempts"),
+], ids=["undefined start", "negative"])  # fmt: skip
+def test_per_start_attempts_refusals(tree, by_start, match):
+    tree.write_unit(UFO, UNIT_A, [A1, A2])
+    with pytest.raises(CheckError, match=match):
+        gate.gate_units([("ufo2p", UNIT_A)], roots=tree.roots, attempts_by_start=by_start,
+                        today=TODAY, check_fn=FakeCheck(tree))  # fmt: skip
+    assert not tree.status(UFO).exists()
+
+
+def test_gate_cli_per_start_attempts(tree, monkeypatch):
+    """The CLI form: `--attempts N` once at most, `--attempts START=N` (hex start) repeatable."""
+    tree.write_unit(UFO, UNIT_A, [A1, A2])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    argv = ["gate", f"ufo2p/{UNIT_A}", *tree.argv(), "--attempts", "1",
+            "--attempts", f"0x{A2:08X}=4"]  # fmt: skip
+    assert cli_main(argv) == 0
+    assert [r.attempts for r in tree.rows(UFO)] == [1, 4]
+
+
+@pytest.mark.parametrize("extra", [
+    ["--attempts", "1", "--attempts", "2"],
+    ["--attempts", f"0x{A2:08X}=1", "--attempts", f"0x{A2:08X}=2"],
+    ["--attempts", "zz=1"],
+    ["--attempts", f"0x{A2:08X}=x"],
+], ids=["two counts", "start twice", "bad start", "bad count"])  # fmt: skip
+def test_gate_cli_refuses_bad_attempts(tree, monkeypatch, capsys, extra):
+    tree.write_unit(UFO, UNIT_A, [A1, A2])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    assert cli_main(["gate", f"ufo2p/{UNIT_A}", *tree.argv(), *extra]) == 2
+    assert "attempts" in capsys.readouterr().err
+    assert not tree.status(UFO).exists()
+
+
 def test_merge_is_order_independent(tmp_path, monkeypatch):
     def run(order):
         tree = as_committed(make_tree(tmp_path / "-".join(order)), monkeypatch)

@@ -5,7 +5,10 @@ gate the driver runs before every commit (D-24, AGT-06).
 check exits 0 and the cross-check passes does it write `matched` rows (status.py) for every
 function the targets define: best_percent 100.00, the LF-normalised SHA-256 of the unit file
 (taken before and after the check, so a file edited while it ran is refused), `--attempts N`
-(0 = by hand) and today's UTC date. A unit gated again keeps the attempts and date of its
+(0 = by hand) and today's UTC date. `--attempts START=N` (repeatable, START in hex; owner ruling
+R1, 2026-11-21) gives the newly matched function at START its own count instead, so flags
+approve records each function's own hitting attempt: a START no gated unit defines, or one two
+gated EXEs define, is refused. A unit gated again keeps the attempts and date of its
 matched rows; only their source_sha256, and their name when symbols.csv renames the start, are
 rewritten (ruling F29, fix round 1): a matched row is keyed by (EXE, start). The targets are all
 or nothing: one failure writes no row of any (ruling F1), and each unit file is hashed again
@@ -243,6 +246,18 @@ def _today(today: date | None) -> str:
 def _check_attempts(attempts: int) -> None:
     if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
         raise CheckError(f"--attempts must be a count (0 = by hand), got {attempts!r}")
+
+
+def _check_attempts_by_start(by_start: Mapping[int, int],
+                             defined: Mapping[str, Mapping[int, str]]) -> None:  # fmt: skip
+    """R1 (2026-11-21): each `--attempts START=N` is a count for a start exactly one gated EXE
+    defines; a typo'd or ambiguous start writes nothing."""
+    for start, attempts in by_start.items():
+        _check_attempts(attempts)
+        owners = [name for name, starts in defined.items() if start in starts]
+        if len(owners) != 1:
+            why = "no gated unit defines it" if not owners else f"{' and '.join(owners)} define it"
+            raise CheckError(f"--attempts {_address(start)}={attempts}: {why}")
 
 
 def source_sha256(path: Path) -> str:
@@ -590,15 +605,15 @@ def _name(owners: Mapping[str, Mapping[int, FunctionRow]], exe: str, fn: Functio
 
 def _write_tables(config_root: Path, tables: Mapping[str, Sequence[StatusRow]],
                   passed: Sequence[tuple[_Target, CheckResult, str]], attempts: int,
-                  day: str, owners: Mapping[str, Mapping[int, FunctionRow]]
-                  ) -> tuple[Written, ...]:  # fmt: skip
+                  by_start: Mapping[int, int], day: str,
+                  owners: Mapping[str, Mapping[int, FunctionRow]]) -> tuple[Written, ...]:
     """Every touched table merged first, then written: a refused row writes no table. An OS
     error after a table was written names it (M2): restore config/ before committing."""
     new: dict[str, list[StatusRow]] = {}
     for target, result, sha in passed:
         new.setdefault(target.name, []).extend(
             StatusRow(fn.va, _name(owners, target.name, fn), target.unit, MATCHED, PERCENT_MAX,
-                      attempts, sha, day)
+                      by_start.get(fn.va, attempts), sha, day)
             for fn in result.functions)  # fmt: skip
     merged = {name: merge_matched(tables.get(name, []), rows) for name, rows in new.items()}
     paths = {name: status_path(config_root, exe_stem(name)) for name in merged}
@@ -626,12 +641,14 @@ def gate_units(
     *,
     roots: GateRoots,
     attempts: int = 0,
+    attempts_by_start: Mapping[int, int] | None = None,
     today: date | None = None,
     check_fn: Callable[..., CheckResult] | None = None,
 ) -> GateResult:
     """Check each (EXE, UNIT) of `targets`; when every check exits 0 and the cross-check passes,
-    write matched rows for every function they define, else write nothing (exit 1). Only the
-    committed src tree and compile options are accepted (_committed_src, _committed_options)."""
+    write matched rows for every function they define, else write nothing (exit 1). A new row
+    records `attempts_by_start[start]` when given, else `attempts` (R1). Only the committed src
+    tree and compile options are accepted (_committed_src, _committed_options)."""
     _committed_options(roots)
     _check_attempts(attempts)
     _committed_src(roots)
@@ -668,6 +685,8 @@ def gate_units(
             return GateResult(MODE_UNIT, labels, EXIT_MISMATCH, tuple(reports), tuple(docs))
         passed.append((target, result, sha))
     defined, problems = _defined(passed)
+    by_start = dict(attempts_by_start or {})
+    _check_attempts_by_start(by_start, defined)
     for _, result, _ in passed:
         found = cross_check(result.splices, _matched(tables), defined, owners=owners)
         problems += [p for p in found if p not in problems]
@@ -679,7 +698,8 @@ def gate_units(
         if _hash_or_none(src) != sha:
             raise CheckError(f"{src} changed after its check; gate it again")
     _progress()  # a checkout that cannot derive the feed fails before any table is written
-    written = _write_tables(roots.config_root, tables, passed, attempts, _today(today), owners)
+    written = _write_tables(roots.config_root, tables, passed, attempts, by_start, _today(today),
+                            owners)  # fmt: skip
     feed = write_feed(roots.config_root, sorted({w.path for w in written}, key=str))
     return GateResult(MODE_UNIT, labels, EXIT_OK, tuple(reports), tuple(docs), (), written,
                       feed=feed)  # fmt: skip

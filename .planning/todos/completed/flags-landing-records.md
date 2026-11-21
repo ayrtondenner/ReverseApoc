@@ -93,7 +93,7 @@ the attempts whose C landed: 1 for F-0035, 1 for F-0077. Per-function attempts a
 ## Resolution (2026-11-21)
 
 Owner ruling 2026-11-21: options A + B + C; D is out (history is pushed). The two ruling
-questions above stay open.
+questions above are answered below (R2, R3).
 
 - **B, done: EC0's committed text is back and still matches.** src/ufo2p/u_00076240.c has the
   pre-a685ec0f `extern char D_000F3DC8[];` and `*(signed char *)((D_000F3DC8)) = 1; return;`
@@ -136,3 +136,20 @@ questions above stay open.
   The clone's compose default network could not be created (Docker's address pools are full),
   so both container runs used `docker compose -p agent-aa3eb8b1133ac34cd`, a stale project
   from 2026-11-13 with no containers, to reuse its network and uv volumes.
+
+# Tooling rulings (2026-11-21)
+
+The owner answered the two ruling questions above; the tooling now follows them (the records
+items 1 to 4 are handled separately).
+
+- R2: `flags regate` splices the committed text of the unit's already-matched functions into
+  the candidate (replacing the candidate's own definitions of them, with the declarations they
+  need) and re-proves the whole unit under the new rule. The candidate file and its
+  `candidate_sha256` become the spliced text, so `flags approve` lands it; regate.json lists
+  `spliced`. A splice that fails (contextpack.SpliceConflict, or a matched function the
+  candidate neither defines nor marks INCLUDE_ASM) fails the regate with that reason and runs no
+  check. Approve's `_refuse_matched_rewrite` stays as the backstop.
+- R3: byte-identical C written by several models credits every model whose attempt wrote it
+  (the current `_hitting_attempts` behaviour), pinned by
+  `test_approve_credits_every_model_of_a_byte_identical_hit`.
+- R1 (per-function attempts) is in .planning/todos/completed/flags-per-function-attempts.md.
