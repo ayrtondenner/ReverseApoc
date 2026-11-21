@@ -7,8 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_000A5A50);
-
 struct unk_00CE {
     /* 0x00 */ u8 pad_00[0x7D];
     /* 0x7D */ s8 field_7D;
@@ -38,4 +36,58 @@ void func_000A59F0(char arg)
             }
         }
     }
+}
+
+/* Records addressed by func_000A5A50; their fields are not read here, only their sizes. */
+struct unk_00E2 {
+    /* 0x00 */ u8 data[0xE2];
+}; /* size: 0xE2 */
+
+struct unk_0276 {
+    /* 0x000 */ u8 data[0x276];
+}; /* size: 0x276 */
+
+struct unk_02BE {
+    /* 0x000 */ u8 data[0x2BE];
+}; /* size: 0x2BE */
+
+extern s16 D_000D4D7C;
+extern struct unk_00E2 *D_000D4D78;
+extern struct unk_00E2 *D_0018276C;
+extern s16 D_00183A56, D_00183A60, D_00183A54;
+extern s16 D_00183A58[];
+extern s16 D_00183952[], D_001839D4[];
+extern s16 D_0018391E[][13], D_00183938[];
+extern struct unk_0276 D_00160FD8[];
+extern struct unk_02BE D_000D942E[];
+extern struct unk_0276 *D_00182AD4[], *D_00182BD8[];
+extern struct unk_02BE *D_00182AA0[];
+extern struct unk_00CE *D_00182A6C[][13];
+extern s16 D_000D4E28, hover_info_changed;
+extern s32 D_000D5058, D_00182A58;
+
+/* The bytes show no result (EAX is only a loop counter at ret), so void. */
+void func_000A5A50(void)
+{
+    s16 i, j;
+    int k;
+
+    if (D_000D4D7C != 0)
+        D_000D4D78 = (struct unk_00E2 *)((s32)D_0018276C + D_000D4D7C * 226);
+    for (i = 0; i < D_00183A56; i++)
+        D_00182AD4[i] = &D_00160FD8[D_00183952[i]];
+    for (j = 0; j < 4; j++) {
+        for (i = 0; i < D_00183A58[j]; i++) {
+            k = i;
+            D_00182A6C[j + 3][k] = &slot_table_records[D_0018391E[j + 3][k]];
+        }
+    }
+    for (i = 0; i < D_00183A60; i++)
+        D_00182BD8[i] = &D_00160FD8[D_001839D4[i]];
+    for (i = 0; i < D_00183A54; i++)
+        D_00182AA0[i] = &D_000D942E[D_00183938[i]];
+    D_000D4E28 = 0;
+    D_000D5058 = 1;
+    D_00182A58 = 0;
+    hover_info_changed = 1;
 }
