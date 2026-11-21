@@ -63,7 +63,45 @@ L6F822:;
     return;
 }
 
-INCLUDE_ASM(func_0006F830);
+extern int D_000E0D0C[];
+extern int D_000E0CCC;
+extern u8 D_000D96EA[];
+extern u8 *D_0017FB4C;
+s16 func_0005EDB0(s16);
+int func_000922B0(s16, s16);
+void func_0004DFD0(void);
+
+/* The callers do not use a result. */
+void func_0006F830(int arg)
+{
+    int amounts[14];
+    int total, random, i, chance, id;
+    u8 *source, *dest;
+
+    source = D_0018276C + arg * 0xe2;
+    total = 0;
+    random = func_0005CD00(30);
+    for (i = 0; i < 14; i++) {
+        amounts[i] = source[0xd4 + i] * (D_000E0D0C[i] + random) / 100;
+        total += amounts[i];
+    }
+    if (total < 3) return;
+    dest = func_0006F600(source);
+    if (dest == 0) return;
+    chance = total * 3 + 15;
+    if (D_0017FB4C[source[0xc8] * 0x1b6 + 0x11] != 0 ||
+        (short)func_000922B0(source[0xc8], 1) != 0)
+        chance += 20;
+    if (func_0005CD00(100) >= chance) return;
+    id = func_0005EDB0((short)((dest - D_0018276C) / 0xe2));
+    if (id != -1 && func_0005CD00(100) < total * 5)
+        *(short *)(D_000D96EA + id * 0x2be) = 1;
+    for (i = 0; i < 14; i++) {
+        source[0xd4 + i] -= amounts[i];
+        dest[0xd4 + i] += amounts[i];
+    }
+    if (D_000E0CCC != 0) func_0004DFD0();
+}
 INCLUDE_ASM(func_0006F9B0);
 
 extern int D_000F3D78[];
