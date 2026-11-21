@@ -26,9 +26,40 @@ INCLUDE_ASM(func_00023890);
 INCLUDE_ASM(func_00023940);
 INCLUDE_ASM(func_00023A40);
 INCLUDE_ASM(func_00023AA0);
-INCLUDE_ASM(func_00023BB0);
 
 int rand(void);
+
+extern int type_hide_enabled;
+extern unsigned char type_hidden_flags[];
+struct unk_0022;
+s16 func_00089060(struct unk_0022 *a);
+
+int func_00023BB0(int index, struct unk_0022 *p)
+{
+    int result;
+    int value;
+
+    result = 1;
+    if (index < 0 || index >= 87) {
+        return 0;
+    }
+    value = func_00089060(p);
+    if (type_hide_enabled) {
+        switch (value) {
+        case 0:
+            if (type_hidden_flags[index]) {
+                result = 0;
+            }
+            break;
+        case 1:
+            break;
+        default:
+            result = 1;
+            break;
+        }
+    }
+    return result;
+}
 
 s16 func_00023130(s16 n)
 {
