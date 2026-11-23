@@ -35,3 +35,18 @@ use in between), update quota.toml's entries with source and date, and say in do
   reading this run would not isolate an arm.
 - Next try: read both bars right before and right after a single-arm Claude run with no agents
   working, and well before the Friday 16:00 reset.
+
+## Readings of 2026-11-21 to 2026-11-23
+
+- Claude, run 20261121-mix (one drive, Fable 5.1 near-miss 8 + Opus 5.5 near-miss 4 + Codex arms;
+  11:02-15:27 on 2026-11-21): weekly bar 6% (10:56), 8% (11:30), 13% (~12:16), 18% (13:10), 35%
+  at the stop; Fable bar 0%, 0%, 12%, 22%, 53% (S). 59 Fable and 46 Opus sessions, $277.46
+  recorded (T): about $9.6 recorded cost per weekly point and 0.9 Fable-bar points per Fable
+  session (derived; this session's own use falls in the same window, so both are upper bounds).
+- Codex (S, owner screenshots; sessions from the records, T):
+  - run 20261120-codex2: weekly 84% -> 37% left over 68 sessions, about 0.7 points a session;
+  - run 20261121-mix, Codex arms: 37% -> 21% left over 21 sessions, about 0.8 a session;
+  - run 20261123-codex, first window (12:36-13:33): 84% -> 69% left over 28 sessions, about 0.5 a
+    session; a 5-hour window held about 50 minutes of 8 workers.
+- These supersede the guesses above for sizing; update config/driver/quota.toml from them when
+  the todo is worked.
