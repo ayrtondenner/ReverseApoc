@@ -815,6 +815,29 @@ def test_partial_then_second_session_has_no_guardrail_stop(tmp_path):
     assert report.event == "ENDED"
 
 
+def test_attempts_1k_caps_the_pass_of_a_function_of_1_kb_and_up(tmp_path):
+    """Run 20261125-256h (owner ruling 2026-11-24, at most 1 attempt per 1 KB function):
+    `attempts_1k` caps the pass of a function of ATTEMPTS_1K_MIN bytes and up, whose console
+    label counts it; a smaller function keeps attempts_per_function."""
+    big = Pick(EXE, START + 0x10, f"func_{START + 0x10:08X}", UNIT, driver.ATTEMPTS_1K_MIN, 101)
+    small = Pick(EXE, START, FUNC, UNIT, driver.ATTEMPTS_1K_MIN - 1, 100)
+    night = Night(tmp_path, picks=(big, small))
+    lines: list[str] = []
+    report = night.run(config={"attempts_1k": 1}, say=lines.append)
+    assert report.event == "ENDED", report.detail
+    assert [(r["start"], r["attempt"]) for r in night.kinds("attempt")] == [
+        (f"0x{big.start:08X}", 1), *((f"0x{small.start:08X}", n) for n in (1, 2, 3))]
+    assert any(f"func_{big.start:08X} attempt 1/1" in line for line in lines), lines
+    assert any(f"func_{small.start:08X} attempt 3/3" in line for line in lines), lines
+
+
+def test_attempts_1k_off_keeps_every_pass_at_attempts_per_function(tmp_path):
+    big = Pick(EXE, START, FUNC, UNIT, driver.ATTEMPTS_1K_MIN, 100)
+    night = Night(tmp_path, picks=(big,))
+    night.run(config={"attempts_per_function": 2})
+    assert [r["attempt"] for r in night.kinds("attempt")] == [1, 2]
+
+
 def test_timeout_is_counted(tmp_path):
     night = Night(tmp_path, sessions=[Sess("no_result", write=None, timeout=True)])
     report = night.run(config={"attempts_per_function": 1})

@@ -1956,7 +1956,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   arm_budgets=tuple(args.arm_budget or ()),
                                   near_miss=args.near_miss,
                                   near_miss_arms=tuple(args.near_miss_arm or ()),
-                                  pack_variants=tuple(sorted(args.pack_variant or ())))  # fmt: skip
+                                  pack_variants=tuple(sorted(args.pack_variant or ())),
+                                  attempts_1k=args.attempts_1k)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -2216,6 +2217,15 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _attempts_1k(value: str) -> int:
+    """`--attempts-1k N`: 1 to ATTEMPTS_PER_FUNCTION sessions."""
+    n = _positive(value)
+    if n > driver.ATTEMPTS_PER_FUNCTION:
+        raise argparse.ArgumentTypeError(f"{value!r} is more than the "
+                                         f"{driver.ATTEMPTS_PER_FUNCTION} sessions of a pass")
+    return n
+
+
 def _stratify(value: str) -> tuple[int, int, int]:
     """`A,B,C`: the rows to take under 64 B, of 64 to 255 B and of 256 B and up (STRATA)."""
     parts = value.split(",")
@@ -2348,6 +2358,10 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--max-sessions", type=_positive, default=60, metavar="N",
                    help="sessions all workers launch before the night ends, a transient one "
                    "included; " + default)  # fmt: skip
+    p.add_argument("--attempts-1k", type=_attempts_1k, default=None, metavar="N",
+                   help=f"at most N sessions (1 to {driver.ATTEMPTS_PER_FUNCTION}) in the pass "
+                   f"of a function of {driver.ATTEMPTS_1K_MIN} bytes and up; default: "
+                   f"{driver.ATTEMPTS_PER_FUNCTION}, as for every function (D-07)")  # fmt: skip
     p.add_argument("--target-matched", type=_non_negative, default=0, metavar="N",
                    help="matches before the night ends, 0 = off; " + default)  # fmt: skip
     p.add_argument("--max-budget-usd", type=_positive_float, default=session.MAX_BUDGET_USD,

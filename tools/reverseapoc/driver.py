@@ -338,6 +338,9 @@ KNOWN_OVER_CAP_LINE = "skipped {count} known over the pack cap ({path})"
 # RESERVED is `_cascade_slot`'s, `_lane_state`'s and `_arm_state`'s answer when an arm can launch.
 ARM_CAPPED, ARM_WAITING, RESERVED = "arm capped", "arm waiting", "reserved"
 ATTEMPTS_PER_FUNCTION = 3  # D-07: the sessions of one pass (DriveConfig's default, the dry run)
+# Run 20261125-256h (owner ruling 2026-11-24): `drive --attempts-1k N` caps the pass of a
+# function of this many bytes and up at N sessions (DriveConfig.attempts_1k)
+ATTEMPTS_1K_MIN = 1024
 # `caps` names every arm of the row with its cap (--arm-cap's, else its max_sessions)
 ARM_CAP_LINE = ("{label}: every arm of its row has launched its cap tonight ({caps}); the "
                 "function waits for a later night")  # fmt: skip
@@ -431,6 +434,9 @@ class DriveConfig:
     max_sessions: int = 60  # D-07 (it was 30, D-48)
     target_matched: int = 0  # D-07 CONTEXT default: off (it was 10, D-48)
     attempts_per_function: int = ATTEMPTS_PER_FUNCTION  # D-07, per pass
+    # run 20261125-256h: `drive --attempts-1k N`, the sessions of a pass of a function of
+    # ATTEMPTS_1K_MIN bytes and up (None: attempts_per_function, as for every other)
+    attempts_1k: int | None = None
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
     workers: int = 1  # D-06: sessions at once; 1 is the Phase 6 serial driver (the verb: 3)
@@ -3955,7 +3961,7 @@ class _Night:
         rung (session.arms_for_attempt). Its first lane is the rung's, which fds' `_route` gave
         (folded in here). The pass is the dispatch lane's (`_pass`), counted once."""
         row = backends.route_for(self.config.routing, pick.size).arms
-        arms = arms_for_attempt(self._pass(pick), row=row, attempt=n, attempts=self._attempts())
+        arms = arms_for_attempt(self._pass(pick), row=row, attempt=n, attempts=self._attempts(pick))
         return tuple(self.arm_lanes[arm] for arm in arms)
 
     def _cascade_route(self, pick: Pick, n: int) -> str | None:
@@ -4477,10 +4483,10 @@ class _Night:
         if cascade:
             with self.cond:
                 first = self.lane.resume.pop(key, 1)
-            last = self._attempts() + 1
+            last = self._attempts(pick) + 1
         else:
             first = self.lane.attempted.get(key, 0) + 1
-            last = first + self._attempts()
+            last = first + self._attempts(pick)
         try:
             for n in range(first, last):
                 # a spent budget stops its arm before this launch: the arms that may take it
@@ -4676,10 +4682,15 @@ class _Night:
             self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         return outcome
 
-    def _attempts(self) -> int:
-        """Sessions per pass: attempts_per_function (D-07); one per unit on a readability night
-        (07-38, D-17)."""
-        return 1 if self.config.session == READABILITY else self.config.attempts_per_function
+    def _attempts(self, pick: Pick) -> int:
+        """Sessions per pass of `pick`: attempts_per_function (D-07); one per unit on a
+        readability night (07-38, D-17); run 20261125-256h: attempts_1k, when set, for a
+        function of ATTEMPTS_1K_MIN bytes and up."""
+        if self.config.session == READABILITY:
+            return 1
+        if self.config.attempts_1k is not None and pick.size >= ATTEMPTS_1K_MIN:
+            return self.config.attempts_1k
+        return self.config.attempts_per_function
 
     def _model(self, pick: Pick) -> str:
         """The requested model of `pick`'s session: Opus on a readability night (07-38:
@@ -4708,7 +4719,7 @@ class _Night:
         261112-fds: on a cascade night, the attempt's arm)."""
         several = len(self.lanes) > 1 or bool(self.config.routing)
         arm = f" ({self.arm_lane.arm})" if several else ""
-        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}{arm}"
+        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts(pick)}{arm}"
 
     def _announced(self, pick: Pick, n: int) -> str | None:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
@@ -6328,8 +6339,7 @@ class _Night:
                        requested_model=claim.model)  # fmt: skip
         if claim.session == READABILITY:
             return readability_message(**figures)
-        return commit_message(function=claim.function,
-                              attempts=self.config.attempts_per_function,
+        return commit_message(function=claim.function, attempts=self._attempts(claim.pick),
                               arm=claim.arm_in(self.arms), **figures)  # fmt: skip
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
@@ -7747,6 +7757,7 @@ class DriveOptions:
     # (attempt.PACK_VARIANTS): the pack ones reach every session's pack, an effort one its claude
     # argv; all of them the STARTED record's environment and its digest
     pack_variants: tuple[str, ...] = ()
+    attempts_1k: int | None = None  # run 20261125-256h: `--attempts-1k N` (DriveConfig's)
 
     @property
     def config_root(self) -> Path:
@@ -9655,6 +9666,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          max_budget_usd=options.max_budget_usd,
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
+                         attempts_1k=options.attempts_1k,
                          wall_clock_s=options.session_minutes * 60,
                          session=options.session,
                          fable_trial=options.fable_trial,

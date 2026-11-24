@@ -1709,6 +1709,26 @@ def test_near_miss_write_picks_reach_the_options(tmp_path, monkeypatch):
     assert (seen[-1].write_picks, seen[-1].max_picks) == (picks, None)
 
 
+# ---- run 20261125-256h (owner ruling 2026-11-24): drive --attempts-1k N ----
+
+def test_attempts_1k_reaches_the_options(monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--dry-run"]) == 0
+    assert seen[-1].attempts_1k is None
+    assert main(["drive", "--dry-run", "--attempts-1k", "1"]) == 0
+    assert seen[-1].attempts_1k == 1
+
+
+@pytest.mark.parametrize("value", ["0", "4", "x"])
+def test_attempts_1k_outside_1_to_3_is_refused(value, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["drive", "--dry-run", "--attempts-1k", value])
+    assert exc.value.code == 2
+    assert "--attempts-1k" in capsys.readouterr().err
+    assert seen == []
+
+
 # ---- todo similarity-first-picking: drive --order score|similarity ----
 
 
