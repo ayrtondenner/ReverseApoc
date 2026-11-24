@@ -154,3 +154,44 @@ only if more closure rows turn up at 100.
 The u_000502b0 pair (func_00050A20, func_00050A80) is not a flags question. F-0071 landed `-ox`
 with `-4r -oneatx` as its first alternative, so a sweep with func_000509C0 in C could show
 whether `-oneatx` avoids the tail merge. Untested; noted here only so the pair is not lost.
+
+## Q2 done (2026-11-24): the leading-table span accepts our alignment filler (ruling B)
+
+Owner ruling 2026-11-24, Q2: B. The gate change is in `relocs.py` (`_table_surplus`,
+`_surplus_reason`, called by `check_function(..., table=True)`) and `check.py`
+(`_padded_table`), with tests in `tests/test_check.py` (`test_padded_table_*`, synthetic bytes).
+
+**The 12 bytes, decoded** (our object, `-4r -oneatx`): our `_TEXT` is the 20-byte table
+(5 off32 entries) at offset 0, then `lea eax, [eax+0]` and `lea edx, [edx+0]` (disp32 0, 6
+bytes each), then func_000B4B80 at offset 0x20. No fixup of ours lies in the 12 bytes. Both are
+`x86.is_alignment_filler`. The original's D_000B4B6C runs right up to 0xB4B80.
+
+**The rule.** A leading table's span longer than the original's passes its length rule only when
+all of these hold: the original's span is its data-in-code row alone, with no filler after the
+table (`_padded_table`); the surplus is at most 15 bytes; the original head and our head are
+both 16-aligned; no fixup of ours overlaps the surplus; and the surplus decodes exactly to
+alignment filler. The span is then compared over the original's length: equal bytes and every
+entry checked against its LE fixup, as before. A shorter span, non-filler bytes, filler past the
+16-aligned head, an unaligned head, or a fixup in the surplus are refused, and each refusal is
+named.
+
+**Why it cannot land a non-identical function.**
+- The rule only covers the table's span. The head function's own check is unchanged: its full
+  row, byte-equal, objdiff 100%, every relocation resolved.
+- Inside the span, every byte of the original's table is still compared, and reverse coverage
+  still requires each original LE fixup to be one of ours. A table of ours with more entries
+  would have fixups in the surplus, which is refused (d). One with fewer entries would put filler
+  where the original has entries, which fails the byte and fixup checks.
+- The surplus is never compared, but it is never landed either: land splices the head's row
+  alone (07-48b). The original's table bytes stay, and the whole-EXE SHA-1 still decides.
+
+**e2e (clone container, F-0072's candidate `build/flags/F-0072/u_000b4470.c` under the unit's
+own rule `-4r -oneatx`; status.csv written to a scratch config copy only):**
+- before: `MISMATCH func_000B4B80 ... reloc FAILED (1)`: `0x000B4B80: length differs: ours 32
+  bytes, original 20 bytes; ours is longer than the row`. UFO2P splice MISMATCH, landed 155.
+- after: `OK func_000B4B80 0x000B4B80 96 bytes objdiff 100% reloc ok bytes ok`; `splice OK
+  UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 156`; TACP unchanged (157).
+
+So func_000B4B80 lands under the unit's existing rule, with no `-5r`. F-0072 can be rejected.
+Landing it is still a normal gate run on a committed unit file that holds this C. The owner or
+the orchestrator does that; this unit did not.

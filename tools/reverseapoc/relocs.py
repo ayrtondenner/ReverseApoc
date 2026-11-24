@@ -22,6 +22,15 @@ independent of objdiff and fails that case:
    leading jump table only (check.py `_head_reloc`, plan 07-48b): a table is data and has no
    terminal instruction, so condition 4 is skipped there and conditions 1, 2, 3 and 5 accept
    the original's filler between the table and its 16-aligned head. The table is never landed.
+   The span may also be longer than the row by our own alignment filler (owner ruling
+   2026-11-24, flag-blocked-rows Q2-B: ours sits at `_TEXT+0` and wcc386 pads it to a 16-aligned
+   head, while the original's table ends right at its head). With `table` that surplus is
+   accepted when all of these hold, in this order: (a) surplus <= `_MAX_FILLER`; (b) the row
+   end (the original head) is a multiple of `_ALIGN`; (c) our head, off + size, is a multiple
+   of `_ALIGN`; (d) no fixup of ours overlaps the surplus [off + row length, off + size); (e)
+   the surplus decodes exactly to its end, every instruction `x86.is_alignment_filler`. Rules
+   2-5 then run over the row's length; the surplus is never compared and never landed. Check.py
+   refuses it first when the original's span holds filler after its table (`_padded_table`).
 2. Fields: `ours` are the VAs our OMF fixups cover (segment offset mapped to start + offset - off);
    `theirs` are the LE fixup fields inside the row.
 3. Bytes: every byte outside the fields of both sides is equal (`_bytes`).
@@ -62,7 +71,7 @@ import hashlib
 import struct
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Any
 
@@ -99,6 +108,11 @@ REASON_TAIL_FIXUP = "an LE fixup field lies in the original's tail"
 REASON_OURS_OPEN = "ours does not decode to a terminal instruction at its end"
 REASON_TAIL_UNDECODED = "the original's tail does not decode to the row end"
 REASON_TAIL_NOT_FILLER = "the original's tail is not alignment filler"
+# A leading table's span longer by our alignment filler (flag-blocked-rows Q2-B).
+REASON_PAD_LONG = f"ours is more than {_MAX_FILLER} bytes longer, more than alignment filler"
+REASON_PAD_UNALIGNED = f"our head is not on a {_ALIGN}-byte boundary"
+REASON_PAD_FIXUP = "a fixup of ours lies in our bytes after the table"
+REASON_PAD_NOT_FILLER = "our bytes after the table are not alignment filler"
 
 
 class RelocError(ValueError):
@@ -280,14 +294,46 @@ def _tail_reason(pair: _Pair) -> str | None:
     return None
 
 
+def _surplus_reason(pair: _Pair) -> str | None:
+    """Conditions (c) to (e) of a table span longer than its row: our head (the span's end) is
+    16-aligned, and our surplus after the row's length holds no fixup of ours and decodes
+    exactly to alignment filler. The reason names the first other instruction by mnemonic and
+    our segment offset, never bytes."""
+    lo, hi = pair.off + pair.row.end - pair.row.start, pair.off + pair.size
+    if hi % _ALIGN:
+        return REASON_PAD_UNALIGNED
+    if any(fx.offset < hi and fx.offset + fx.size > lo for fx in pair.segment.fixups):
+        return REASON_PAD_FIXUP
+    insns = list(decode(bytes(pair.segment.data[lo:hi]), lo))
+    if sum(insn.size for insn in insns) != hi - lo:
+        return REASON_PAD_NOT_FILLER
+    other = next((insn for insn in insns if not insn.is_alignment_filler), None)
+    if other is not None:
+        return f"{REASON_PAD_NOT_FILLER} ({other.mnemonic} at our offset {other.va:#x})"
+    return None
+
+
+def _table_surplus(pair: _Pair) -> str | None:
+    """A leading table's span longer than its row (Q2-B): None when the surplus is our
+    alignment filler before our 16-aligned head (conditions (a) to (e), the module
+    docstring's order), else the first failing condition's reason."""
+    if pair.size - (pair.row.end - pair.row.start) > _MAX_FILLER:
+        return REASON_PAD_LONG
+    return _alignment_reason(pair.row) or _surplus_reason(pair)
+
+
 def _trailing_filler(pair: _Pair, *, table: bool) -> int | str:
     """Rule 1: 0 for equal lengths; the shortfall when it is the original's trailing Watcom
     filler (the five conditions, in the module docstring's order); else the first failing
     condition's reason. With `table` (the span of a leading jump table, 07-48b) condition 4 is
-    skipped: a table is data, so it has no terminal instruction."""
+    skipped: a table is data, so it has no terminal instruction; and a negative shortfall is
+    accepted when it is our alignment filler before our 16-aligned head (Q2-B)."""
     shortfall = pair.row.end - pair.row.start - pair.size
     if shortfall == 0:
         return 0
+    if shortfall < 0 and table:
+        reason = _table_surplus(pair)
+        return shortfall if reason is None else reason
     reason = (
         _shortfall_reason(shortfall)
         or _alignment_reason(pair.row)
@@ -454,18 +500,21 @@ def check_function(
     unit's other publics to their original rows (rule 4); a reference to our own `_TEXT` outside
     the checked public fails without it. `table=True` is for the span of a leading jump table
     only (check.py `_head_reloc`, 07-48b): a table is data with no terminal instruction, so rule
-    1 skips condition 4 for it; the table is never landed. Every function check keeps the
-    default. Raises RelocError for a zero-size public, a zero-length row, or a public, own public
-    or row outside its data."""
+    1 skips condition 4 for it, and accepts a span of ours longer by our own alignment filler
+    before our 16-aligned head (Q2-B), checking only the row's length; the table is never
+    landed. Every function check keeps the default. Raises RelocError for a zero-size public, a
+    zero-length row, or a public, own public or row outside its data."""
     _check_inputs(segment, off, size, row, flat)
     _check_own_publics(own_publics, segment)
     ordered = sorted(fixups, key=lambda fx: fx.src_va)
     theirs = {fx.src_va: fx for fx in _le_fields(ordered, row.start, row.end)}
     publics = tuple(sorted(own_publics, key=lambda public: public.offset))
     pair = _Pair(segment, off, size, row, flat, symbols, theirs, publics)
+    filler = _trailing_filler(pair, table=table)
+    if not isinstance(filler, str) and filler < 0:  # Q2-B: our filler past the row, uncompared
+        pair, filler = replace(pair, size=row.end - row.start), 0
     ours = list(_our_fixups(pair))
     fields = {pair.va(fx.offset) for fx in ours}
-    filler = _trailing_filler(pair, table=table)
     if isinstance(filler, str):  # the rest compares [start, start + size) with the row's bytes
         return _verdict(pair, [_length(pair, filler)], fields)
     problems = [

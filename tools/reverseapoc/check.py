@@ -498,7 +498,8 @@ def _head_reloc(
     reloc = _reloc(d, exe, (table.public, *seg_map.publics))
     head = tuple(p for p in seg_map.publics if p.name == d.symbol)
     span = Defined(table.span, table.span.name, d.segment, 0, table.size)
-    return _with_table(reloc, _short_table(table) or _reloc(span, exe, head, table=True))
+    checked = _short_table(table) or _padded_table(table) or _reloc(span, exe, head, table=True)
+    return _with_table(reloc, checked)
 
 
 def _short_table(table: LeadingTable) -> RelocResult | None:
@@ -510,6 +511,19 @@ def _short_table(table: LeadingTable) -> RelocResult | None:
         return None
     problem = (f"{_hex(end)}: our table is {table.size} bytes, shorter than its data-in-code row "
                f"{table.span.name} [{_hex(table.span.start)}, {_hex(table.table_end)})")
+    return RelocResult(False, (problem,), frozenset(), frozenset())
+
+
+def _padded_table(table: LeadingTable) -> RelocResult | None:
+    """A failed verdict when our span is longer than the original's and the original's span
+    holds filler after its data-in-code row: the longer span is accepted only as our own
+    alignment filler where the original's table runs right up to its head (owner ruling
+    2026-11-24, flag-blocked-rows Q2-B; relocs checks the rest). None otherwise."""
+    length = table.span.end - table.span.start
+    if table.size <= length or table.table_end == table.span.end:
+        return None
+    problem = (f"{_hex(table.span.end)}: length differs: ours {table.size} bytes, original "
+               f"{length} bytes; the original's span holds filler after its table")
     return RelocResult(False, (problem,), frozenset(), frozenset())
 
 

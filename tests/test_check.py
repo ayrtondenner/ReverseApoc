@@ -1686,6 +1686,84 @@ def test_table_gap_refuses_a_tail_inside_the_table_row():
     assert any("shorter than its data-in-code row" in p for p in head.problems), head.problems
 
 
+# ---- flag-blocked-rows Q2-B: ours is longer by our alignment filler before a 16-aligned head ----
+#
+# The mirror of 07-48b: the original table runs right up to its 16-aligned head (no filler in
+# its span), while ours sits at `_TEXT+0` and is padded to the next 16-byte boundary. Made-up
+# original: _gap_layout(SHIFTED_TABLE_VA, GAP_LESS), the 12-byte table ending at a 16-aligned
+# head. Ours: table_module(filler=..., symbol=...), so our span is 12 + len(filler) bytes.
+
+PAD_4 = MOV_GAP  # 12 + 4 = 16: our head 16-aligned
+
+
+def _padded(filler: bytes, table_va: int = SHIFTED_TABLE_VA, gap: bytes = GAP_LESS):
+    orig, rows, symbol = _gap_layout(table_va, gap)
+    return table_check(table_module(filler=filler, symbol=symbol), orig, rows), rows
+
+
+def test_padded_table_accepts_our_filler_before_a_16_aligned_head():
+    """The tracer (ufo2p func_000B4B80's shape): our span is 16 bytes, the original's 12; the 4
+    extra bytes are our alignment filler up to our 16-aligned head. The head passes."""
+    verdicts, rows = _padded(PAD_4)
+    assert rows[-1].start % 16 == 0 and rows[0].end == rows[-1].start
+    head = verdicts[rows[-1].name]
+    assert head.ok, head.problems
+    assert head.filler == 0
+
+
+def _padded_refusal(verdicts, rows, reason: str) -> None:
+    """The head fails with the span's length problem at the original table's end."""
+    head = verdicts[rows[-1].name]
+    assert not head.ok
+    found = [p for p in head.problems if "length differs: ours" in p]
+    assert len(found) == 1, head.problems
+    assert reason in found[0], found[0]
+
+
+def test_padded_table_refuses_our_extra_bytes_that_are_not_filler():
+    verdicts, rows = _padded(INT3_GAP)
+    _padded_refusal(verdicts, rows, "our bytes after the table are not alignment filler")
+
+
+def test_padded_table_refuses_our_unaligned_head():
+    verdicts, rows = _padded(bytes.fromhex("8bc0" "8bc0" "8bc0"))  # 12 + 6: our head at 18
+    _padded_refusal(verdicts, rows, "our head is not on a 16-byte boundary")
+
+
+def test_padded_table_refuses_filler_past_the_16_aligned_head():
+    """20 extra bytes reach the next-but-one boundary (32): more than alignment filler."""
+    verdicts, rows = _padded(bytes.fromhex("8bc0" * 10))
+    _padded_refusal(verdicts, rows, "more than 15 bytes long")
+
+
+def test_padded_table_refuses_an_unaligned_original_head():
+    verdicts, rows = _padded(PAD_4, table_va=TABLE_VA + 8)  # original head at +0x14
+    assert rows[-1].start % 16 == 4
+    _padded_refusal(verdicts, rows, "the row does not end on a 16-byte boundary")
+
+
+def test_padded_table_refuses_an_original_span_with_filler():
+    """The original keeps 12 bytes of filler after its table (head 16-aligned at +0x20); ours
+    has 20 (head at 32). The rule is for an original span that is the table alone."""
+    verdicts, rows = _padded(bytes.fromhex("8bc0" * 10), table_va=TABLE_VA + 8,
+                             gap=bytes.fromhex("8bc0" * 6))  # fmt: skip
+    assert rows[-1].start % 16 == 0 and rows[0].end < rows[-1].start
+    _padded_refusal(verdicts, rows, "the original's span holds filler after its table")
+
+
+def test_padded_table_refuses_our_fixup_in_the_filler():
+    """lea esi, [esi+0] is filler-shaped, but ours carries a fixup on it: an address, refused."""
+    orig, rows, symbol = _gap_layout(SHIFTED_TABLE_VA, GAP_LESS)
+    module_ = table_module(filler=bytes.fromhex("8d742600"), symbol=symbol)
+    text = next(seg for seg in module_.segments if seg.name == "_TEXT")
+    data = bytes(text.data)
+    fixups = [to_segment(fx.offset, TEXT_INDEX) for fx in text.fixups]
+    fixups.append(to_segment(TABLE_SIZE, TEXT_INDEX))
+    publics = tuple((p.name, p.offset) for p in module_.publics)
+    padded = our_module(data, fixups, publics=publics)
+    _padded_refusal(table_check(padded, orig, rows), rows, "fixup")
+
+
 def test_only_the_table_span_is_checked_as_a_table(monkeypatch):
     """Only `_head_reloc`'s check of the table span passes `table=True`: every function's check
     keeps condition 4 (07-48b, T-07-145)."""
