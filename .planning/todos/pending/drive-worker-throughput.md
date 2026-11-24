@@ -112,3 +112,10 @@ the total lock wait. The knee is the setting past which sessions per hour stop r
 `land_wait` grows with the workers while `gate` stays flat, the landing's gate-lock hold caps
 the night, not the worker count. Record the knee in docs/model-routing.md and cap
 `max_workers` to it.
+
+## Owner ruling (2026-11-24): the ladder
+
+Haiku's max_workers is 10 (backends.toml), so 12 and 16 would be refused. The options were:
+(a) 4/8/10; (b) raise max_workers to 16 and run 4/8/12/16; (c) 4/6/8/10. Chosen: **(c) 4 / 6 /
+8 / 10**, four drives of about 25 sessions each, about 1% of the Claude week, run as `ladder-w4`,
+`ladder-w6`, `ladder-w8` and `ladder-w10` with the commands above and the worker count changed.
