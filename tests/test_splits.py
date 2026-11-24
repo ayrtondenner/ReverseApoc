@@ -515,11 +515,13 @@ def test_cli_interior_reads_status_csv(tmp_path, monkeypatch, capsys):
 
 # checked by hand 2026-11-18. Splits batch 2 (2026-11-20) landed the ufo2p 0x00024470 merge and the
 # 0x0002E100 split at 0x0002E280, so their examples are now the skipped merge 0x00018577 +
-# 0x0001863E (a shared exit of two hand-asm routines) and the partial row's jcc into 0x0002E100
-# (the cluster's fix is a review: it holds matched rows)
+# 0x0001863E (a shared exit of two hand-asm routines). The 2026-11-24 rulings split 0x0002FAF0
+# at 0x0002FE10 and made `add esp, N; pop ...; ret` a shared epilogue, so the jcc of the new
+# row into 0x0002E100 proposes no fix, nor do 0x0006F9B0's into 0x0006F3C0
 REAL_INTERIOR = {  # (exe, source, site): (target, offset, fix)
     ("ufo2p", 0x0001863E, 0x20): (0x00018577, 0xB5, "merge"),  # into a shared exit
-    ("ufo2p", 0x0002FAF0, 0x44C): (0x0002E100, 0x171, "merge"),  # a fix of review
+    ("ufo2p", 0x0002FE10, 0x12C): (0x0002E100, 0x171, "shared-epilogue"),  # add esp, 4 first
+    ("ufo2p", 0x0006F9B0, 0x1C): (0x0006F3C0, 0x22E, "shared-epilogue"),  # add esp, 0xC first
     ("tacp", 0x000AF170, 0x0): (0x000B12E0, 0x100, "split"),  # a tail-jump stub
     # the 2026-11-19 merge review's shared epilogues: `pop edx; pop ecx; pop ebx; ret` ...
     ("ufo2p", 0x00029830, 0x8E): (0x00028E20, 0x154, "shared-epilogue"),
@@ -533,7 +535,8 @@ REAL_FIXES = {
     ("tacp", "split", (0x000B12E0,), 0x000B13E0),
 }
 REAL_NO_MERGE = {("ufo2p", 0x00028E20), ("ufo2p", 0x0004A9D0), ("ufo2p", 0x000AEAB0),
-                 ("ufo2p", 0x000AF700), ("tacp", 0x00034450)}  # (exe, first row)  # fmt: skip
+                 ("ufo2p", 0x000AF700), ("tacp", 0x00034450), ("ufo2p", 0x0002E100),
+                 ("ufo2p", 0x0006F3C0)}  # (exe, first row)  # fmt: skip
 
 
 def test_real_interior_branches():

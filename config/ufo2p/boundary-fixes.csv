@@ -21,3 +21,4 @@ merge,0x0007DD64,0x0007DEA1,2026-11-20,case 0 of the jmp cs:[eax*4+0x7DD64] at 0
 merge,0x0007DEA1,0x0007E4FA,2026-11-20,case 1 of the 0x7DD64 table; no prologue
 merge,0x0007E4FA,0x0007E57B,2026-11-20,case 2 of the 0x7DD64 table; no prologue
 merge,0x0007E57B,0x0007E5F9,2026-11-20,case 3 of the 0x7DD64 table; holds the shared epilogue
+split,0x0002FAF0,0x0002FE10,2026-11-24,no reference (tail-merged into 0x0002E100 epilogue at 0x2FF3C); ret 0x2FE02 + filler lea eax/[eax] + aligned push ebx..edi; sub esp 4

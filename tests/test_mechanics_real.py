@@ -54,7 +54,9 @@ REACH_DIRECT_POINTER_TABLE = {"ufo2p": 1_445, "tacp": 1_484}
 # (ufo2p 13, tacp 12) and, in UFO2P, 3 callees now called from two pieces of one old row
 # (0x000187B8, 0x00027020, 0x00018005). Splits batch 2 (2026-11-20) removes the edges that a
 # merged chain held twice (ufo2p -18, tacp -7 net) and adds ufo2p 0x0002E350 -> 0x0002E280.
-CALLINDEX_EDGES = {"ufo2p": 5_287, "tacp": 4_890}
+# The 0x0002FAF0 split at 0x0002FE10 (2026-11-24) adds 0x0002FE10 -> 0x0002FAF0, once the old
+# row calling itself; the two pieces share no other callee.
+CALLINDEX_EDGES = {"ufo2p": 5_288, "tacp": 4_890}
 TOLERANCE = 0.01
 
 
