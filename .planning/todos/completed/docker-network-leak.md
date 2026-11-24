@@ -21,3 +21,18 @@ work. Mind that the checkout's drive also uses compose; do not change what a run
 
 **Done when.** Running the container suite from several clones leaves no extra networks behind,
 or docs/toolchain.md names the cleanup step and when to run it.
+
+## Resolution (2026-11-23)
+
+Owner ruling (2026-11-23): docs only, no compose or driver change. Options were a documented
+prune step after clone work, a fixed `-p` for clones, or a `name:` in compose.yaml. Chosen: the
+documented prune step.
+
+- docs/toolchain.md "Clone work": every clone is its own compose project, so its first
+  `docker compose run` leaves a `<dir>_default` network and `<dir>_uv-venv`/`<dir>_uv-cache`
+  volumes; run `docker compose down -v` in the clone when its work is done, then delete it;
+  `docker network prune` only with the owner's OK.
+- Why no fixed name: the driver's container cleanup filters on the directory-derived project
+  (`driver.compose_project`), so a shared project would let a drive's cleanup remove a clone's
+  containers, and clones would share one uv-venv.
+- No code change, so no test.

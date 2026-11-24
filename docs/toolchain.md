@@ -317,6 +317,24 @@ capstone 5.0.9 is not an image package: it is a Python dependency (`[project].de
 
 Watcom 10.x/11.0 is proprietary and its current IP owner was not verified, so it is never baked into an image layer. Open Watcom's licence permits redistribution, but it cannot match.
 
+## Clone work
+
+Every clone directory is its own compose project: compose names the project after the
+directory. The first `docker compose run` in a new clone creates a `<dir>_default` network and
+`<dir>_uv-venv` and `<dir>_uv-cache` volumes, and they stay after the clone is gone. Docker's
+address pools run out after about 30 such networks. On 2026-11-21 a clone's `docker compose run`
+failed with "all predefined address pools have been fully subnetted"; the owner approved
+`docker network prune`, which took 32 networks down to 3.
+
+When a clone's work is done, run `docker compose down -v` in the clone, then delete it. Run
+`docker network prune` only with the owner's OK.
+
+There is deliberately no fixed `name:` in the compose file and no `-p` for clones. The driver's
+container cleanup filters on the directory-derived project (`driver.compose_project`), so a
+shared name would let a drive's cleanup remove a clone's containers, and every clone would share
+one uv-venv. Never touch the checkout's own project (its network, volumes or containers) while a
+drive runs.
+
 ## Getting the Watcom compilers
 
 The original compilers are not distributed here. Three opt-in commands fetch, install and check them on your machine. They are never run by the Dockerfile or CI.
