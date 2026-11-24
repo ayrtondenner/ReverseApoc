@@ -910,6 +910,47 @@ def test_limit_pauses_all(tmp_path, monkeypatch):
     assert later and all(t >= seen["now"] + 60 for t in later), (seen["now"], later)
 
 
+_OUTCOME_WAITS = re.compile(r": \w+ after (\d+\.\d) s "
+                            r"\((\d+\.\d) s wall, (\d+\.\d) s limit waits\)$")  # fmt: skip
+
+
+def test_console_seconds_leave_out_a_wait_at_another_workers_pause(tmp_path, monkeypatch):
+    """Todo session-seconds-include-pauses (ufo2p func_00075310 attempt 3 of 20261121-codex):
+    B's session ends LIMIT under A's pause ("already paused"), then B is held at the pause
+    through A's 60 s backoff. B's outcome line leaves that wait out and names it; so does A's
+    for the backoff it slept."""
+    nights = _capture_nights(monkeypatch)
+    by_unit = {_unit(0): [Sess("rate_limit", write=None)],
+               _unit(1): [Sess("rate_limit", write=None), Sess(write=None)]}  # fmt: skip
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)), by_unit=by_unit)
+    start = threading.Barrier(2, timeout=WAIT_S)
+    paused = threading.Event()
+
+    def before(unit, index):
+        if index < 2:
+            start.wait()
+
+    def after(unit, index):
+        if index < 2 and unit == _unit(1):
+            assert paused.wait(WAIT_S), "the pause never began"
+
+    def sleep(seconds):
+        paused.set()
+        assert _held(nights[-1], 1), "B never waited at the pause"
+        night._sleep(seconds)
+
+    night.before, night.after = before, after
+    lines: list[str] = []
+    report = night.run(config=_workers(2, attempts_per_function=1), sleep=sleep,
+                       say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert any(line.endswith("usage limit, the night is already paused") for line in lines)
+    for pick in (_wpick(0), _wpick(1)):
+        (line,) = [x for x in lines if f"{pick.name} attempt 1/" in x and " after " in x]
+        shown, wall, waits = map(float, _OUTCOME_WAITS.search(line).groups())
+        assert waits >= 60 and shown == pytest.approx(wall - waits, abs=0.11), line
+
+
 def _alone(events: list[tuple[str, int]], index: int) -> bool:
     """No other session started while launch `index` ran."""
     begin, end = events.index(("start", index)), events.index(("end", index))

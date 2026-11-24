@@ -2021,7 +2021,9 @@ def test_console_attempt_lines_for_each_gave_up_attempt(tmp_path):
                                   f"{LABEL} {n}/3: GAVE_UP after 45.0 s")]  # fmt: skip
 
 
-def test_console_attempt_seconds_cover_relaunches_and_backoffs(tmp_path):
+def test_console_attempt_seconds_leave_out_limit_waits(tmp_path):
+    """Todo session-seconds-include-pauses: three 45 s launches and 60 + 120 s of backoff; the
+    outcome line shows the 135 s without the waits, then the wall time and the waits."""
     night = Night(tmp_path, sessions=[Sess("rate_limit", write=None),
                                       Sess("rate_limit", write=None), Sess()],
                   gate_exits=[0])  # fmt: skip
@@ -2030,7 +2032,8 @@ def test_console_attempt_seconds_cover_relaunches_and_backoffs(tmp_path):
     assert lines == [f"{LABEL} 1/3: started",
                      f"{LABEL} 1/3: usage limit, next launch in 60 s",
                      f"{LABEL} 1/3: usage limit, next launch in 120 s",
-                     f"{LABEL} 1/3: MATCHED after 315.0 s"]  # fmt: skip
+                     f"{LABEL} 1/3: MATCHED after 135.0 s (315.0 s wall, 180.0 s limit waits)"]
+    assert night.kinds("attempt")[0]["seconds"] == 45.0  # the record: the counted session alone
 
 
 def test_console_attempt_aborted_after_transient_retries(tmp_path):

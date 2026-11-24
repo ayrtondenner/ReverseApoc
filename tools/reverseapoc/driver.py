@@ -4471,13 +4471,17 @@ class _Night:
 
     def _announced(self, pick: Pick, n: int) -> str | None:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
-        attempt's wall time on Deps.clock, relaunches, backoffs and the gate included (the
-        record's `seconds` is the session alone). A stop or an interrupt prints no outcome line:
-        the STOPPED summary names why. Quick 261113: a pack over the cap prints OVER_CAP_LINE as
-        its outcome line and ends the pass OVER_CAP (`_over_cap`)."""
+        attempt's wall time on Deps.clock, relaunches and the gate included, less its usage-limit
+        waits (todo session-seconds-include-pauses: the backoffs it slept and the time it was
+        held by its arm's pause, `local.waited`); when it waited, the wall time and the waits
+        follow in brackets. The record's `seconds` is the counted session alone. A stop or an
+        interrupt prints no outcome line: the STOPPED summary names why. Quick 261113: a pack
+        over the cap prints OVER_CAP_LINE as its outcome line and ends the pass OVER_CAP
+        (`_over_cap`)."""
         label = self._label(pick, n)
         self.deps.say(f"{label}: started")
         start = self.deps.clock()
+        self.local.waited = 0.0
         try:
             outcome = self._guarded(pick, n)
         except _PackOver as refused:
@@ -4486,7 +4490,9 @@ class _Night:
             stop.label = stop.label or label
             raise
         shown = f"ABORTED ({TRANSIENT})" if outcome in (ABORTED, None) else outcome
-        self.deps.say(f"{label}: {shown} after {self.deps.clock() - start:.1f} s")
+        wall, waited = self.deps.clock() - start, self.local.waited
+        waits = f" ({wall:.1f} s wall, {waited:.1f} s limit waits)" if waited else ""
+        self.deps.say(f"{label}: {shown} after {wall - waited:.1f} s{waits}")
         return outcome
 
     def _guarded(self, pick: Pick, n: int) -> str | None:
@@ -4562,7 +4568,9 @@ class _Night:
             if cascade:
                 probe = getattr(self.local, "probe", False)
             else:
+                held = self.deps.clock()
                 probe = self.arm_lane.pause.wait_to_launch()
+                self.local.waited += self.deps.clock() - held  # a pause held it (or not at all)
             claim = self._claim(pick, n)
             try:
                 session = self._launch(claim)
@@ -4653,9 +4661,11 @@ class _Night:
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
         try:
             self._record_limit(seconds, streak)  # 07-23 (DEC-06): every wait is recorded
+            napped = self.deps.clock()
             self._nap(seconds)
         finally:
             pause.backoff_done()
+        self.local.waited += self.deps.clock() - napped
 
     def _nap(self, seconds: float) -> None:
         """The backoff wait. With the real clock it ends early when the night stops, so a stop
