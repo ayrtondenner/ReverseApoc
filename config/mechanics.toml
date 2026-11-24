@@ -296,8 +296,8 @@ source = "spike 007 q3"
 id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-20
-members_sha256 = "b9520bd602cd1336a8d1f2b7eb8929efca880ba02b3cfd9cb85e0f554f2433c0"
+signed_off_date = 2026-11-24
+members_sha256 = "081a1d3ad2c71bf7990a06c515f192bf2cbba707f1a8fc30e9be2f20b728a6d7"
 
 [[item]]
 id = "263-2"
@@ -700,8 +700,8 @@ source = "mechanics locate; research Q2"
 id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-11-20
-members_sha256 = "ab734bfdc48a5efb990a2a627ec4116418ff08940f9885bcf369f8d308e2fb20"
+signed_off_date = 2026-11-24
+members_sha256 = "9a6e83268ac46c5a8a593c1146f16bb2de9f85cc4baa6afb6afb5d76bf8e3bcb"
 
 [[item]]
 id = "264-1"
