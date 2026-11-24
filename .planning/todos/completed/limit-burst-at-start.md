@@ -69,3 +69,10 @@ other workers behind one probe, and until when?" Options:
 3. No change: on an `--arm` night the saving is (workers - 1) limited launches per arm, with
    no slot spent. Instead, file the over-cap rows at the queue head as their own todo (they
    are "left for tonight" and come back every night).
+
+## Owner ruling (2026-11-23)
+
+Chosen: option 3, no change to the driver. The limited part of the burst is (workers - 1)
+launches per arm, with no slot spent and no pick cycled. The two real causes of the noisy start
+are filed as their own todos: `over-cap-rows-open-every-night.md` and
+`started-line-before-pack-check.md`.
