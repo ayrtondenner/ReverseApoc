@@ -7,8 +7,67 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_0005DB20);
-INCLUDE_ASM(func_0005DB80);
+struct unk_016A {
+    /* 0x000 */ u8 pad_000[4];
+    /* 0x004 */ s16 unk_004;
+    /* 0x006 */ u8 pad_006[0x160];
+    /* 0x166 */ u8 unk_166;
+    /* 0x167 */ u8 pad_167;
+    /* 0x168 */ s16 unk_168;
+};
+struct unk_007E {
+    /* 0x00 */ s16 unk_00;
+    /* 0x02 */ u8 pad_02[0x7C];
+};
+struct unk_0094 {
+    /* 0x00 */ u8 unk_00;
+    /* 0x01 */ u8 pad_01[0x93];
+};
+extern struct unk_007E D_00128616[];
+extern struct unk_0094 D_0012D950[];
+
+void func_0005DB20(struct unk_016A *arg0)
+{
+    arg0->unk_168 = D_00128616[arg0->unk_004].unk_00 * D_0012D950[arg0->unk_166].unk_00 / 100;
+}
+extern s16 D_000D75C4[][16];
+extern unsigned char D_001285E8[];
+
+int func_0005DB80(unsigned char *self)
+{
+    s16 index;
+    int result;
+    s16 *rec;
+    unsigned char *entry;
+    s16 val;
+
+    result = 1;
+    rec = D_000D75C4[0];
+    index = 0;
+    do {
+        if ((int)rec[0] == -1) {
+            *(s16 *)(self + 0x108) = index;
+            rec[11] = *(s16 *)(self + 0x30);
+            rec[12] = *(s16 *)(self + 0x32);
+            rec[13] = *(s16 *)(self + 0x34);
+            *(s32 *)((unsigned char *)rec + 2) = *(s32 *)(self + 0x36);
+            *(s32 *)((unsigned char *)rec + 6) = *(s32 *)(self + 0x3a);
+            entry = D_001285E8 + *(s16 *)(self + 4) * 126;
+            rec[6] = *(s16 *)(entry + 0x22);
+            rec[7] = *(s16 *)(entry + 0x24);
+            rec[8] = *(s16 *)(entry + 0x1e);
+            rec[9] = *(s16 *)(entry + 0x20);
+            rec[0] = *(s16 *)(entry + 0x1c);
+            val = *(s16 *)(entry + 4);
+            result = 0;
+            rec[10] = val;
+            break;
+        }
+        index++;
+        rec += 16;
+    } while (index < 200);
+    return result;
+}
 INCLUDE_ASM(func_0005DC30);
 INCLUDE_ASM(func_0005DCC0);
 INCLUDE_ASM(func_0005DEF0);
@@ -16,8 +75,6 @@ INCLUDE_ASM(func_0005E140);
 INCLUDE_ASM(func_0005E230);
 INCLUDE_ASM(func_0005E3C0);
 INCLUDE_ASM(func_0005E430);
-INCLUDE_ASM(func_0005E500);
-
 struct unk_0276 {
     /* 0x000 */ s16 pad_000;
     /* 0x002 */ s16 unk_002;
@@ -28,9 +85,31 @@ struct unk_0276 {
     /* 0x175 */ u8 pad_175[0xFC];
     /* 0x271 */ u8 unk_271;
     /* 0x272 */ u8 pad_272[4];
-}; /* size: 0x276 */
-
+};
 extern struct unk_0276 D_00160FD8[];
+
+int func_0005E500(s16 arg0)
+{
+    s16 index;
+    int result;
+    struct unk_0276 *rec;
+
+    rec = D_00160FD8;
+    result = 0;
+    index = 0;
+    do {
+        if (rec->unk_002 != -1 && rec->unk_174 == arg0 && rec->unk_12C == 0) {
+            result = 1;
+            break;
+        }
+        index++;
+        rec++;
+    } while (index < 0x50);
+    return result;
+}
+
+ /* size: 0x276 */
+
 
 int func_0005E550(s16 arg0)
 {
