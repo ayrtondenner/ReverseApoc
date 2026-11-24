@@ -42,3 +42,48 @@ Why 0:
 Spike 011's 2 of 5 at 256-1023 B stays the number to beat, and this result does not compare like for like with it: spike 011 sampled 5 fresh rows for Claude agents, this night gave Terra near-miss rows at 3 checks each.
 
 **Next.** Two owner rulings: how the three-shapes rule counts shapes at 256 B and up (todo `three-shapes-rule-256b`), and what to do with packs over the cap at 1 KB and up. Then run this night again.
+
+## Rerun prepared: run 20261125-256h on Haiku 5.5 (2026-11-24)
+
+**Owner ruling (2026-11-24).** Run the rows whose packs fit, 1 KB rows first, at most 1 attempt
+per 1 KB function. Arm claude-haiku-5-5, budget about 1-1.5% of the Claude week (about 0.01% a
+session, so about 100-150 sessions).
+
+**Picks.** `build/driver/20261125-256h-picks.txt` (gitignored; built in a clone at 9b98ecc7).
+Each row carries a comment with its size, best percent, bytes left and pack size.
+- Source: every row of 256 B and up that a `--picks` night can queue (`picks_queue_keys`), not
+  matched and not on the hand-off board: 828 rows. No over-cap verdicts existed yet (the
+  checkout has no build/driver/over-cap.json), so each row's pack was built with the driver's
+  own `ExeWorld.pack` (listings regenerated, the checkout's Ghidra drafts copied): 661 fit,
+  167 are over the 24,576-byte cap (163 of 1 KB and up, 4 of 256-1023 B) and are left out.
+- 1 KB and up: all 77 rows that fit, 1 attempt each (29 near misses), 93,648 bytes, 72,579
+  bytes left.
+- 256-1023 B: the first 24 of 584 that fit, by bytes left (size * (100 - best_percent) / 100),
+  3 attempts each; all 24 are near misses (best 86.99 to 99.97), 9,459 bytes, 606 bytes left.
+  The band is cut where 77 + 3 * 24 = 149 sessions fills the budget (the next row has 43.5
+  bytes left).
+- 27 of the 50 rows of 20261118-256 are in it (its 5 rows of 1 KB and up among them).
+- Order: a `--picks` night queues the picks in the tier queue's order, not the file's (the
+  file lists 1 KB rows first, for reading). With `--max-sessions` at the picks' demand,
+  every pick gets its pass, so the order only matters if the budget meter stops the arm early.
+
+**The cap.** New flag `drive --attempts-1k N` (1 to 3; default off, so 3 as for every row):
+the pass of a function of `driver.ATTEMPTS_1K_MIN` (1024) bytes and up runs at most N
+sessions (`DriveConfig.attempts_1k`, `_Night._attempts(pick)`); the console label and a match
+commit read `attempt 1/1`. Tests: `test_attempts_1k_caps_the_pass_of_a_function_of_1_kb_and_up`,
+`test_attempts_1k_off_keeps_every_pass_at_attempts_per_function` (tests/test_driver.py),
+`test_attempts_1k_reaches_the_options`, `test_attempts_1k_outside_1_to_3_is_refused`
+(tests/test_cli.py), `test_run_drive_hands_attempts_1k_to_the_night` (tests/test_drive.py).
+
+**The command** (5 workers, within Haiku's max_workers 10; 150 sessions = the budget's cap and
+the picks' 149 with one to spare for a transient launch):
+
+```
+uv run reverseapoc drive --run 20261125-256h --picks build/driver/20261125-256h-picks.txt --arm claude-haiku-5-5=5 --arm-budget claude-haiku-5-5=1.5%week --max-sessions 150 --attempts-1k 1
+```
+
+Checked with the same arguments under `--dry-run` in the clone, through `cli.main` with only
+the docker steps stubbed (the preflight's container `uv sync` and the container's Ghidra
+drafts): exit 0, the budget line reads 150 sessions and about 10.6 expected matches, and all
+101 picks are listed with packs that fit (no over-cap line). The real `--dry-run` in the
+checkout runs the full preflight; run it there before the night.
