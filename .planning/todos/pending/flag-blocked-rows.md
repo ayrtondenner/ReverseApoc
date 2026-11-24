@@ -195,3 +195,51 @@ own rule `-4r -oneatx`; status.csv written to a scratch config copy only):**
 So func_000B4B80 lands under the unit's existing rule, with no `-5r`. F-0072 can be rejected.
 Landing it is still a normal gate run on a committed unit file that holds this C. The owner or
 the orchestrator does that; this unit did not.
+
+## Update (2026-11-24): owner rulings and the rebuild
+
+Owner rulings of 2026-11-24: **Q1 B** (fix the merge, rebuild F-0029 with the fixed tool, re-gate
+it), **Q2 B** (the gate's leading-table span check; another unit of work), **Q3 yes**, **Q4 A**
+(a hand pass, later).
+
+Q3 was already built on 2026-11-20 (b079dac3, todo `flags-merge-keeps-declarations`): `_merge`
+carries the hitting file's file-scope items that its definition uses, and fails the proposal
+with a named reason when a struct tag, typedef or extern is declared differently on the two
+sides; `flags rebuild ID...` remakes a candidate from its evidence. No code change was needed.
+
+`flags rebuild` run on 2026-11-24 in a clone, with the evidence copied from the checkout's
+`build/driver/`:
+- **F-0029: refused, stays failed.** `20261113-cascade-glm-5.3/.../func_0005DB80/attempt-2/checks/0005.c`
+  and the candidate declare `struct unk_007E` differently: DB20's file (20261107-030004 a1
+  `checks/0003.c`) has `{ s16 unk_00; u8 pad_02[0x7C]; }` for `D_00128616`, DB80's has
+  fields at 0x04 and 0x1C..0x24 for `D_001285E8`. This is the refusal the Q3 ruling asks for, so
+  Q1 B ends here and nothing was re-gated. The first hit (20261101-023246 E500 a2 `checks/0002.c`)
+  is a stale base as well: its `struct unk_0276` (`unk_000`, `state`, `owner`) differs from the
+  committed one, so the R2 splice of matched func_0005E550 at re-gate would refuse it too. No
+  rebuild from the queued evidence can compile. A clean set exists only outside the sweep
+  evidence: DB80 from 20261118-flags a1 `checks/0002.c` (a sweep hit, 100% under `-4r -oneatx`,
+  raw pointers, no struct), E500 from nearmiss4-copilot a2 `checks/0005.c` (a plain check, not a
+  sweep, so no tool route takes it; its `unk_0276` equals the committed one) and DB20 as above.
+  That is Q1 A. **Owner question:** Q1 A as the fallback (a hand proposal of those three, re-gated
+  under `-4r -oneatx`), or park u_0005db20.
+- **F-0018: refused, now failed.** `20261119-claude-claude-opus-5-5/.../func_000A5BC0/attempt-1/checks/0001.c`
+  and the candidate declare `D_002A18EC` differently (`char` against `unsigned char ...[]`). Before the
+  rebuild it was `proposed` with a candidate merged by the old tool. It needs a hand merge.
+- **F-0013: rebuilt, proposed.** The candidate gained `D_001C6F18`, `D_001C6F1C`, `D_001D3738`
+  and `D_00293050` (the four names its 2026-11-07 re-gate failed on with E1011). Re-gate below.
+- F-0088 needed nothing: it landed on 2026-11-20.
+
+Nothing here is approvable yet: F-0029, F-0018 and F-0013 (re-gate below) each wait on an owner answer first.
+
+F-0013 re-gate (container, `flags regate F-0013`, 2026-11-24): **exit 2, failed, compile error**,
+no objdiff measured. The R2 splice put in the committed C of func_0007A000, 7A010, 7A040, 7A060,
+7A070 and 7A090. Then wcc386 stops at E1062 / E1071 on func_0007A000: the candidate's
+func_00079FE0 is its first hit's C (20261031-231600 a1 `checks/0003.c`), which declares
+`unsigned char func_0007A000(unsigned char a);` and tail-calls it, while the committed, matched
+definition is `void func_0007A000(void)`. The later hit of the same function
+(20261119-claude-claude-opus-5-5 a1 `checks/0003.c`) agrees with the committed C, but `_merge` keeps
+a function's first hit and records later ones as evidence only. The R2 splice's conflict check
+does not compare a candidate's prototype with a spliced definition, so the compiler is what
+names the mismatch here. **Owner question (tooling):** should `_merge`/`rebuild` take a function's
+latest hit instead of its first (or the first one consistent with the committed C)? Or should
+F-0013 go to a hand proposal built on the 20261119 C? Either way, regate it again afterwards.
