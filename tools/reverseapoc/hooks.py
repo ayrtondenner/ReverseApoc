@@ -1607,6 +1607,27 @@ _GIT_FETCH_OPTIONS = frozenset({"--ff-only", "--no-rebase", "--prune", "--tags",
 # PowerShell `$name = <literal>`: a quoted string with no expansion, or a number.
 _POWERSHELL_LITERAL = re.compile(r"""\$\w+\s*=\s*(?:'[^']*'|"[^"`$]*"|\d+(?:\.\d+)?)""")
 _AND = "&&"  # the one separator after which a cd has surely moved the next command
+# todo image-build-during-drive: the compose image name is fixed, so a build anywhere re-tags the
+# image a running drive recorded. docker's and compose's options before the subcommand (one in a
+# *_VALUES set takes the next word; any other unlisted option fails closed, as a build).
+_DOCKERS = frozenset({"docker", "docker-compose"})
+_COMPOSE = "compose"
+_DOCKER_COMPOSE = "docker-compose"
+_DOCKER_VALUES = frozenset({"-c", "--context", "-H", "--host", "--config", "-l", "--log-level",
+                            "--tlscacert", "--tlscert", "--tlskey"})  # fmt: skip
+_DOCKER_FLAGS = frozenset({"-D", "--debug", "--tls", "--tlsverify", "-v", "--version", "--help"})
+_COMPOSE_VALUES = frozenset({"-f", "--file", "-p", "--project-name", "--project-directory",
+                             "--env-file", "--profile", "--ansi", "--progress",
+                             "--parallel"})  # fmt: skip
+_COMPOSE_FLAGS = frozenset({"--dry-run", "--compatibility", "--all-resources", "--help", "-v",
+                            "--version"})  # fmt: skip
+_DOCKER_IMAGE = "image"  # `docker image <sub>`: the same subcommands under a group
+_IMAGE_BUILDERS = frozenset({"build", "buildx", "builder"})
+_DOCKER_TAG = "tag"
+_COMPOSE_BUILDS = frozenset({"build", "watch"})
+_COMPOSE_RUNS = frozenset({"run", "up", "create"})  # these build when given --build
+_COMPOSE_BUILD_FLAG = "--build"
+_SHARED_IMAGE = "reverseapoc-build"  # reverseapoc-build:local, the tag a retag would move
 
 
 def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
@@ -1663,8 +1684,73 @@ def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
     command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
     if not isinstance(command, str):
         raise HookError(f"the {tool} payload has no command string")
-    offender = _drive_offender(tool, command, here[0], live)
+    try:
+        offender = _drive_offender(tool, command, here[0], live)
+    except _ImageBuild as build:
+        return _image_denial(live[0], str(build))
     return _drive_denial(live[0], f"the {tool} command's {offender!r}") if offender else NO_OPINION
+
+
+class _ImageBuild(Exception):  # noqa: N818 -- a verdict, not an error: the call is refused
+    """A docker image build found anywhere in a call (a nested shell's or substitution's text
+    included): refused from every cwd under a live drive, with its own reason."""
+
+
+def _image_denial(root: str, build: str) -> Decision:
+    return _deny(f"a reverseapoc drive holds {root}/{DRIVE_LOCK.as_posix()}, so the image build "
+                 f"{build!r} is refused from any directory, a clone included: the compose image "
+                 "name is fixed, so a build re-tags the shared reverseapoc-build:local image "
+                 "whose id the running drive recorded in STARTED (run 20261120-codex lost its "
+                 "digest that way). Build after the drive process exits (docs/toolchain.md); "
+                 "`docker compose run --rm -T build ...` from a clone still works")  # fmt: skip
+
+
+def _past_options(words: Sequence[str], values: frozenset[str],
+                  flags: frozenset[str]) -> Sequence[str] | None:  # fmt: skip
+    """`words` from the first one that is not an option: one in `values` takes the next word,
+    `--opt=value` and one in `flags` none; None at any other option, since it may take a value
+    and hide the subcommand."""
+    index = 0
+    while index < len(words) and words[index].startswith("-"):
+        word = words[index]
+        if word in values:
+            index += 2
+        elif word in flags or (word.startswith("--") and "=" in word):
+            index += 1
+        else:
+            return None
+    return words[index:]
+
+
+def _image_build(name: str, rest: Sequence[str]) -> bool:
+    """Whether a docker or docker-compose call builds or re-tags an image: build, buildx,
+    builder or `image build`, a `tag` naming reverseapoc-build, or a compose build
+    (_compose_build); an unlisted option before the subcommand counts as one."""
+    if name == _DOCKER_COMPOSE:
+        return _compose_build(rest)
+    words = _past_options(rest, _DOCKER_VALUES, _DOCKER_FLAGS)
+    if words is None:
+        return True
+    sub, args = (words[0], words[1:]) if words else ("", ())
+    if sub == _COMPOSE:
+        return _compose_build(args)
+    if sub == _DOCKER_IMAGE:
+        sub, args = (args[0], args[1:]) if args else ("", ())
+    if sub in _IMAGE_BUILDERS:
+        return True
+    return sub == _DOCKER_TAG and any(_SHARED_IMAGE in word.casefold() for word in args)
+
+
+def _compose_build(rest: Sequence[str]) -> bool:
+    """`compose build` or `watch`, or `run`, `up` or `create` with --build anywhere after it."""
+    words = _past_options(rest, _COMPOSE_VALUES, _COMPOSE_FLAGS)
+    if words is None:
+        return True
+    if not words:
+        return False
+    sub, args = words[0], words[1:]
+    built = any(word.split("=", 1)[0] == _COMPOSE_BUILD_FLAG for word in args)
+    return sub in _COMPOSE_BUILDS or (sub in _COMPOSE_RUNS and built)
 
 
 @dataclass(frozen=True)
@@ -1790,6 +1876,8 @@ def _drive_segment(
         return here, (_Run("", here, values, True) if values else None), ""
     head, rest = words[0], words[1:]
     name = _command_name(head)
+    if name in _DOCKERS and _image_build(name, rest):
+        raise _ImageBuild(" ".join(words))
     if name in _MOVES:
         return _moved(rest, here), None, ""
     if name in _RETURNS:

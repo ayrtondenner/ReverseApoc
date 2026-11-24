@@ -2979,3 +2979,59 @@ def test_drive_guard_keeps_a_cd_before_a_semicolon_unknown(live_drive, scratch):
     clone = scratch.as_posix()
     assert guard(shell("Bash", f"cd {clone}; uv run pytest", live_drive), live_drive).deny
     assert not guard(shell("Bash", f"cd {clone}; cat f", live_drive), live_drive).deny
+
+
+# todo image-build-during-drive: the compose image name is fixed, so a build anywhere, a clone
+# included, re-tags the reverseapoc-build:local image the running drive recorded in STARTED.
+IMAGE_BUILDS = [
+    ("Bash", "docker compose build"),
+    ("Bash", "docker compose -f {scratch}/docker-compose.yml build"),
+    ("Bash", "docker compose run --build --rm test"),
+    ("Bash", "docker compose up --build"),
+    ("Bash", "docker build -t reverseapoc-build:local ."),
+    ("Bash", "docker buildx build ."),
+    ("Bash", "docker image build ."),
+    ("Bash", "docker builder build ."),
+    ("Bash", "docker tag abc123 reverseapoc-build:local"),
+    ("Bash", "docker --unknown-option compose build"),  # an unlisted option fails closed
+    ("Bash", "docker-compose build"),
+    ("Bash", "cd {scratch} && docker compose build"),
+    ("Bash", "bash -c 'docker compose build'"),
+    ("Bash", "echo $(docker build .)"),
+    ("PowerShell", "docker compose build"),
+    ("PowerShell", "& docker.exe compose --progress plain build test"),
+]
+
+
+@pytest.mark.parametrize("where", ["scratch", "live_drive"])
+@pytest.mark.parametrize("name,command", IMAGE_BUILDS)
+def test_drive_guard_refuses_an_image_build_from_any_cwd(live_drive, scratch, where, name,
+                                                         command):  # fmt: skip
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert decision.deny, text
+    assert "reverseapoc-build:local" in decision.reason
+    assert "STARTED" in decision.reason
+    assert "docs/toolchain.md" in decision.reason
+
+
+@pytest.mark.parametrize("command", [
+    "docker compose run --rm -T build uv run --frozen reverseapoc gate --all",
+    "docker compose run --rm -T test",
+    "docker ps",
+    "docker images",
+    "docker tag abc123 other:1",
+])  # fmt: skip
+def test_drive_guard_allows_image_use_from_a_clone(live_drive, scratch, command):
+    decision = guard(shell("Bash", command, scratch), live_drive)
+    assert not decision.deny, (command, decision.reason)
+
+
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+@pytest.mark.parametrize("name,command", IMAGE_BUILDS)
+def test_drive_guard_allows_image_builds_without_a_live_drive(state, name, command, scratch,
+                                                              request):  # fmt: skip
+    repo = request.getfixturevalue(state)
+    text = _placed(name, command, repo, scratch)
+    assert not guard(shell(name, text, repo), repo).deny, text

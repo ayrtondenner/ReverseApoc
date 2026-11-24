@@ -317,6 +317,8 @@ capstone 5.0.9 is not an image package: it is a Python dependency (`[project].de
 
 Watcom 10.x/11.0 is proprietary and its current IP owner was not verified, so it is never baked into an image layer. Open Watcom's licence permits redistribution, but it cannot match.
 
+Do not build the image while a drive runs. The compose image name is fixed (`reverseapoc-build:local`), not per checkout, so a build in any clone moves the tag that the running drive recorded in its STARTED record. On 2026-11-20 (run 20261120-codex) a clone's `docker compose build` moved it from `79f99708…` to `48d709f2…` with the same config, and the old image was gone, so the tag could not be put back. While `build/driver/drive.lock` is held, the reverseapoc hook refuses every image build or retag from any directory, a clone included: `docker compose build`, `run`/`up --build`, `docker build`, `buildx`, `image build`, and `docker tag` onto `reverseapoc-build`. `docker compose run --rm -T build ...`, `docker ps` and `docker images` from a clone still work. Build after the drive process exits.
+
 ## Clone work
 
 Every clone directory is its own compose project: compose names the project after the
