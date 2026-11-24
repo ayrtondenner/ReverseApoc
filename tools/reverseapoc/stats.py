@@ -34,6 +34,10 @@ tokens. The recorded `cost_usd` is never read by it: it is 0 on every subscripti
 MATCHED landing counts as matched for its own arm and for every arm that held the function
 exact among the selected records (`_holders`), in by_arm, by_model_size and the comparison; the
 function still counts once in the matched totals and per_match.
+
+Todo drive-worker-throughput: `stats --run` also sums the driver's steps per attempt (the
+records' `step_seconds`, driver.STEPS): each step's median and max, the total lock wait and the
+sessions per hour of the selected end records (`_steps`).
 """
 
 from __future__ import annotations
@@ -48,7 +52,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from fractions import Fraction
 from pathlib import Path
-from statistics import NormalDist
+from statistics import NormalDist, median
 
 from . import backends, driver, twins
 from .functions import FunctionsError, read_functions_csv
@@ -1119,8 +1123,48 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "funnel": _funnel(matching, sizes),
         "errata": list(errata),
         "environments": None if arms is None else _environments(records),
+        "steps": None if arms is None else _steps(records),
     }  # fmt: skip
     return Report(data)
+
+
+# ---- todo drive-worker-throughput: the driver's steps per attempt (`stats --run`) ----
+
+
+def _spread(values: Sequence[float]) -> dict:
+    return {"median": tenth(Decimal(str(median(values)))), "max": tenth(Decimal(str(max(values))))}
+
+
+def _steps(records: Sequence[Mapping]) -> dict:
+    """Over the attempt records that carry driver.STEPS seconds (`step_seconds`): the median
+    and max of the session's own `seconds` and of each step, in STEPS order; the total of every
+    lock wait (the `_wait` steps); and the counted sessions per hour of night wall clock over
+    the end records' totals (None without one)."""
+    timed = [r for r in records if r["kind"] == driver.KIND_ATTEMPT and "step_seconds" in r]
+    steps = {name: [r["step_seconds"][name] for r in timed if name in r["step_seconds"]]
+             for name in driver.STEPS}  # fmt: skip
+    waits = sum(Decimal(str(v)) for name, values in steps.items() if name.endswith(driver.WAIT)
+                for v in values)  # fmt: skip
+    ends = [r["totals"] for r in records if r["kind"] == driver.KIND_RUN and r.get("totals")]
+    wall = sum(Decimal(str(t["wall_seconds"])) for t in ends)
+    counted = sum(sum(t["sessions"].values()) for t in ends)
+    return {"attempts": len(timed),
+            "session": _spread([r["seconds"] for r in timed]) if timed else None,
+            "steps": {name: _spread(values) for name, values in steps.items() if values},
+            "lock_wait": tenth(Decimal(waits)),
+            "per_hour": tenth(counted * Decimal(3600) / wall) if wall else None}  # fmt: skip
+
+
+def _step_lines(steps: Mapping | None) -> list[str]:
+    if steps is None:
+        return []
+    if not steps["attempts"]:
+        return ["driver steps per attempt: none timed"]
+    per_hour = "" if steps["per_hour"] is None else f"; {steps['per_hour']} sessions per hour"
+    return [f"driver steps per attempt (seconds, {steps['attempts']} attempts timed{per_hour}):",
+            *(f"  {name}: median {s['median']}, max {s['max']}"
+              for name, s in {"session": steps["session"], **steps["steps"]}.items()),
+            f"  lock wait (every {driver.WAIT} step): total {steps['lock_wait']}"]  # fmt: skip
 
 
 def _na(figure: Mapping) -> str:
@@ -1347,6 +1391,7 @@ class Report:
             *_model_size_lines(d["by_model_size"]),
             *_comparison_lines(d["comparison"]),
             *_environment_lines(d["environments"]),
+            *_step_lines(d["steps"]),
             *_split_lines("per session kind", d["by_session"], d["by_session"]["kinds"]),
             *_tier_lines(d["by_tier"]),
         ])  # fmt: skip

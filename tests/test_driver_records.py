@@ -743,3 +743,101 @@ def test_log_commit_after_drain(tmp_path):
         _unit(i) for i in range(3)]  # fmt: skip
     assert committed[-1]["event"] == "ENDED" and committed[-1]["totals"]["sessions"]["PARTIAL"] == 3
 
+
+
+# ---- todo drive-worker-throughput: the driver's own steps around each session ----
+
+
+def _ticking(night: Night, fake, seconds: float):
+    """`fake` (a Night fake), with the night's clock moved `seconds` on while it runs."""
+
+    def ticked(*args, **kw):
+        night.now += seconds
+        return fake(*args, **kw)
+
+    return ticked
+
+
+def test_step_seconds_time_the_landing(tmp_path):
+    """Each attempt record carries `step_seconds`: the seconds of the driver's own steps around
+    its session on Deps.clock (cleanup, the gate lock's waits and holds, lint, gate, git). The
+    landing's hold runs up to the record's write, so it holds the lint and the gate."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    report = night.run(gate=_ticking(night, night._gate, 90.0),
+                       lint=_ticking(night, night._lint, 2.0),
+                       remove_containers=_ticking(night, night.removed.append, 3.0))  # fmt: skip
+    assert report.matched == 1, report.detail
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    steps = record["step_seconds"]
+    assert set(steps) <= set(driver.STEPS)
+    assert (steps["cleanup"], steps["lint"], steps["gate"], steps["land"]) == (3.0, 2.0, 90.0,
+                                                                               92.0)
+    assert (steps["launch_wait"], steps["audit_wait"], steps["land_wait"]) == (0.0, 0.0, 0.0)
+    assert steps["git_wait"] == steps["git"] == steps["audit"] == steps["launch"] == 0.0
+    assert record["seconds"] == 48.0  # the session's 45 s and the cleanup, as before
+
+
+def test_step_seconds_time_a_partial_gate(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 40.0),))], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1},
+              partial_gate=_ticking(night, night._partial, 7.0))  # fmt: skip
+    steps = _one(night.kinds("attempt"))["step_seconds"]
+    assert (steps["partial_gate"], steps["land"]) == (7.0, 7.0)
+
+
+def test_step_seconds_time_a_wait_for_the_gate_lock(tmp_path, monkeypatch):
+    """A worker that finds the gate lock held at its audit records the wait as `audit_wait`:
+    here another thread holds the lock while 30 s pass on the night's clock."""
+    import threading
+
+    from test_driver import _capture_nights
+
+    nights = _capture_nights(monkeypatch)
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    held, entering = threading.Event(), threading.Event()
+
+    class Entering:
+        """The night's gate lock, which says when its next taker comes to it."""
+
+        def __init__(self, lock) -> None:
+            self.lock = lock
+
+        def __enter__(self):
+            entering.set()
+            return self.lock.__enter__()
+
+        def __exit__(self, *exc):
+            return self.lock.__exit__(*exc)
+
+    def holder(lock) -> None:
+        with lock:
+            held.set()
+            assert entering.wait(30)
+            night.now += 30.0
+
+    def session(argv, **kw):
+        result = night._session(argv, **kw)
+        real = nights[-1].gate_lock
+        thread = threading.Thread(target=holder, args=(real,))
+        thread.start()
+        assert held.wait(30)
+        nights[-1].gate_lock = Entering(real)
+        return result
+
+    night.run(config={"attempts_per_function": 1}, session=session)
+    steps = _one(night.kinds("attempt"))["step_seconds"]
+    assert (steps["audit_wait"], steps["land_wait"]) == (30.0, 0.0)
+
+
+def test_step_seconds_are_validated(tmp_path):
+    """`step_seconds` is optional (no earlier record has it); a step it names is one of
+    driver.STEPS, with seconds a number of at least 0."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    without = {k: v for k, v in record.items() if k != "step_seconds"}
+    driver.validate_record(without)
+    for bad in ({"made_up": 1.0}, {"gate": -1.0}, {"gate": True}, {"gate": "1"}, [1.0]):
+        with pytest.raises(driver.RecordError):
+            driver.validate_record({**record, "step_seconds": bad})

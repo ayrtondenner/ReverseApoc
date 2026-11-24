@@ -1032,6 +1032,18 @@ RECORD_FIELDS_V3: dict[str, dict[str, Callable[[object], bool]]] = {
         "commit": _optional(_matches(_SHA1)),  # a MATCHED landing's only
     },
 }  # fmt: skip
+# Todo drive-worker-throughput: an attempt record names the seconds of the driver's own steps
+# around its session on Deps.clock (`step_seconds`, `_Night._step`): each gate-lock section's
+# wait for the lock (`<step>_wait`) and its hold (the launch's snapshot, the audit, a readability
+# session's proposals, the landing up to the record's write), the container cleanup, the lint,
+# the gate, `gate --partial`, and every git call's wait for the git lock and its run (`git`,
+# which overlaps the gate-lock holds). What follows the record (a match's commit, the claim's
+# release) is not in it. An optional key: no earlier record has it, and `schema` stays 3.
+WAIT = "_wait"
+STEPS = ("launch_wait", "launch", "cleanup", "audit_wait", "audit", "proposals_wait",
+         "proposals", "land_wait", "land", "lint", "gate", "partial_gate", "git_wait",
+         "git")  # fmt: skip
+_STEP_SECONDS_FIELD = {"step_seconds": _mapping_of(_one_of(*STEPS), _is_number)}
 # Spike 013: a Copilot attempt record also carries the session's AI credits (copilotjson.credits,
 # null when its usage file named none); no other record has the field, so the committed records
 # stay valid.
@@ -1115,8 +1127,11 @@ def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
     fields = table.get(kind) if isinstance(kind, str) else None
     if fields is None:
         raise RecordError(f"unknown {version} record kind {kind!r}")
-    if version == "v3" and kind == KIND_ATTEMPT and obj.get("harness") == backends.COPILOT:
-        return {**fields, **_COPILOT_ATTEMPT_FIELDS}
+    if version == "v3" and kind == KIND_ATTEMPT:
+        fields = {**fields, **(_STEP_SECONDS_FIELD if "step_seconds" in obj else {})}
+        if obj.get("harness") == backends.COPILOT:
+            return {**fields, **_COPILOT_ATTEMPT_FIELDS}
+        return fields
     if version == "v3" and kind == KIND_RUN:
         fields = {**fields, **(_UNENDED_FIELD if "unended" in obj else {})}
         return fields if _STARTED_FIELDS.keys().isdisjoint(obj) else {**fields, **_STARTED_FIELDS}
@@ -3775,6 +3790,43 @@ class _Night:
         """This thread's worker number (0 on the calling thread with one worker)."""
         return getattr(self.local, "worker", 0)
 
+    # --- todo drive-worker-throughput: the attempt's step seconds (STEPS) ---
+
+    def _step(self, name: str, since: float) -> float:
+        """Add Deps.clock's seconds since `since` to step `name` of this thread's launch (none
+        outside one: the totals, a `--land-held` landing); returns the clock's reading."""
+        now = self.deps.clock()
+        steps = getattr(self.local, "steps", None)
+        if steps is not None:
+            steps[name] = steps.get(name, 0.0) + now - since
+        return now
+
+    @contextmanager
+    def _timed(self, lock, name: str) -> Iterator[None]:
+        """`with lock`, with its wait for the lock timed as `<name>_wait` and its hold as
+        `name`; while it is held, `local.holding` keeps when it was taken, so a record written
+        under it counts the hold up to the write (`_step_seconds`)."""
+        holding = getattr(self.local, "holding", {})
+        since = self.deps.clock()
+        with lock:
+            held = self._step(name + WAIT, since)
+            holding[name] = held
+            self.local.holding = holding
+            try:
+                yield
+            finally:
+                holding.pop(name, None)
+                self._step(name, held)
+
+    def _step_seconds(self) -> dict[str, float]:
+        """This launch's step seconds to 1 decimal, in STEPS order, the holds still open up to
+        now (the landing's, when its record is written under it)."""
+        now = self.deps.clock()
+        steps = dict(getattr(self.local, "steps", None) or {})
+        for name, held in getattr(self.local, "holding", {}).items():
+            steps[name] = steps.get(name, 0.0) + now - held
+        return {name: round(steps[name], 1) for name in STEPS if name in steps}
+
     @property
     def lane(self) -> _Lane:
         """07.2-16: this worker's arm; the first lane on a thread no worker runs (the canary's
@@ -4305,7 +4357,7 @@ class _Night:
              ) -> subprocess.CompletedProcess:  # fmt: skip
         """Every driver git call, one at a time behind the git lock (D-27 P4). `input` is git's
         stdin (fix round 2); a call without one keeps the plain `git(args)` seam."""
-        with self.git_lock:
+        with self._timed(self.git_lock, "git"):
             return self.deps.git(args) if input is None else self.deps.git(args, input=input)
 
     def _git_retry(self, args: list[str]) -> bytes:
@@ -5067,6 +5119,7 @@ class _Night:
         return allowed
 
     def _launch(self, claim: _Claim) -> _Session:
+        self.local.steps = {}  # todo drive-worker-throughput: this launch's step seconds
         self._fresh_dir(claim)
         view_head, scaffolded = self._make_view(claim)
         unit_before = claim.view_unit.read_bytes()
@@ -5082,7 +5135,7 @@ class _Night:
         launch_files = self._guard_launch(claim) if claim.signed_in else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
-        with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
+        with self._timed(self.gate_lock, "launch"):  # 07-21: never during another's landing
             before = self._snapshot()
             drift = self._pinned_drift(before)
             if drift:  # fix round 1 (C1): another live session's stray; nothing launches
@@ -5138,13 +5191,15 @@ class _Night:
                 raise
             why = f"the session raised {type(exc).__name__}: {exc}{contained}"
             raise _Stop(ERROR, why) from exc
+        cleaning = self.deps.clock()
         note = self._clean_up(claim, base, served)
+        self._step("cleanup", cleaning)
         launch_files = {**launch_files, **broker_files(served)}  # the broker's responses
         seconds = self.deps.clock() - start
         # 07-21: the audit runs under the gate lock, so it never meets another worker's landing
         # half done (its unit in src/, its gate writing status.csv): git can see only HEAD and
         # the driver's own bytes (D-24 a).
-        with self.gate_lock:
+        with self._timed(self.gate_lock, "audit"):
             session = self._measure(claim, result, pack, seconds, before, scaffolded,
                                     unit_before, view_head, view_hashes,
                                     launch_files)  # fmt: skip
@@ -5974,7 +6029,9 @@ class _Night:
         pick, n = session.claim.pick, session.claim.n
         self.pre_gate = {}
         self._land(session)
+        linting = self.deps.clock()
         lint = self.deps.lint(pick)
+        self._step("lint", linting)
         if lint == EXIT_TOOL:
             self._tool_failure(session, "the C89 lint could not run (exit 2)")
         if lint != EXIT_OK:
@@ -5983,9 +6040,11 @@ class _Night:
         self._guard(claim.status_rel, FEED)  # fix round 1: the gate starts from the driver's bytes
         self.pre_gate = {rel: self.ledger.expected(rel) for rel in (claim.status_rel, FEED)}
         before = matched_starts(self.pre_gate[claim.status_rel], pick.unit)  # `regressions`
+        gating = self.deps.clock()
         try:
             gate = replace(self.deps.gate(pick, n), matched_before=before)
         finally:
+            self._step("gate", gating)
             self.ledger.note(claim.status_rel, FEED)  # the gate's output: the one read-back
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
             self._tool_failure(session, f"gate exited {gate.exit_code}", gate=gate)
@@ -6036,7 +6095,7 @@ class _Night:
         inside it (not a _Stop: every stop path has reset already) puts the unit back while the
         lock is still held, so no other worker's whole-EXE gate sees the failed C in src/
         (07-18 fix round 1); a failing reset there is left to the stop that follows."""
-        with self.gate_lock:
+        with self._timed(self.gate_lock, "land"):
             try:
                 yield
             except (_Stop, _Halt):
@@ -6112,10 +6171,12 @@ class _Night:
         best = self._best_file(claim)
         write_atomic(best, source.read_bytes())
         self._guard(claim.status_rel, FEED)  # fix round 1
+        gating = self.deps.clock()
         try:
             return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(),
                                           claim.n)  # fmt: skip
         finally:
+            self._step("partial_gate", gating)
             self.ledger.note(claim.status_rel, FEED)  # the partial gate's output (read back)
 
     # --- the readability landing (07-38; D-17, D-18, D-20, DEC-04) ---
@@ -6614,7 +6675,7 @@ class _Night:
         blocks it: its view unit is rewritten in place instead (CONTEXT default). Nothing is
         applied once the night is stopping or after a breach (J2: nothing more is committed)."""
         claim = session.claim
-        with self.gate_lock:
+        with self._timed(self.gate_lock, "proposals"):
             if self.breached or self.stop.is_set():
                 return
             for item in _latest_first(_read_proposal_file(claim.proposals)):
@@ -7257,6 +7318,7 @@ class _Night:
                   "hold_run": self.config.hold}  # fmt: skip
         if session.claim.copilot:  # spike 013: the AI credits it really spent (its usage file)
             record["credits"] = copilotjson.credits(session.usage_doc)
+        record["step_seconds"] = self._step_seconds()  # todo drive-worker-throughput
         self._append(record)
         if _parks(record):  # quick 261109-gzu; lock order gate, then cond (_append holds gate)
             with self.cond:

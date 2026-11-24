@@ -1902,3 +1902,92 @@ def test_held_v1b_dropped_exactly_the_matched_picks(tmp_path):
         matched |= {f"{exe} 0x{row.start:08X}" for row in read_status(tmp_path / f"{exe}.csv")
                     if row.status == "matched"}  # fmt: skip
     assert {line for line in _listed(HELD_V1) if line in matched} == set(_HELD_V1B_DROPPED)
+
+
+# ---- todo drive-worker-throughput: the driver's steps per attempt (`stats --run`) ----
+
+
+def _ended_run(run: str, sessions: int, wall_seconds: float) -> dict:
+    """A made-up v3 ENDED run record with `sessions` GAVE_UP sessions over `wall_seconds`."""
+    outcomes = dict.fromkeys(("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED",
+                              "HOLD_EXACT"), 0)  # fmt: skip
+    share = {"sessions": sessions, "matched": 0, "cost_usd": 0.0}
+    totals = {"sessions": {**outcomes, "GAVE_UP": sessions}, "turns": 0,
+              "tokens": dict.fromkeys(("input", "output", "cache_read", "cache_creation"), 0),
+              "cost_usd": 0.0, "session_seconds": 0.0,
+              "wall_seconds": wall_seconds, "hook_blocks": 0, "regressions_stopped": 0,
+              "limit_waits": {"count": 0, "seconds": 0.0}, "aborts": 0,
+              "by_model": {"claude-haiku-5-5": share}, "by_session": {"matching": share},
+              "parked": 0}  # fmt: skip
+    return {"kind": "run", "schema": 3, "run": run, "event": "ENDED", "reason": "max sessions",
+            "detail": None, "sessions": sessions, "matched": 0, "checks_failed": [],
+            "uncommitted": [], "date": "2026-11-24", "workers": 4, "recovered": [],
+            "totals": totals}  # fmt: skip
+
+
+
+def _timed(start: int, seconds: float, **steps: float) -> dict:
+    return _on_v3(start, run="ladder-4", seconds=seconds, step_seconds=steps)
+
+
+def _ladder_records() -> tuple[dict, ...]:
+    return (_timed(0x10000, 100.0, cleanup=1.0, audit_wait=0.0, land_wait=10.0, gate=60.0),
+            _timed(0x10100, 300.0, cleanup=3.0, audit_wait=4.0, land_wait=50.0, gate=80.0),
+            _timed(0x10200, 200.0, cleanup=2.0, audit_wait=2.0, land_wait=30.0),
+            _on_v3(0x10300, run="ladder-4", seconds=999.0),  # before the field: not timed
+            _timed(0x10400, 50.0, gate=500.0) | {"run": "other"},
+            _ended_run("ladder-4", 4, 1800.0))  # fmt: skip
+
+
+def test_step_seconds_summary(tmp_path, capsys):
+    """`stats --run`: over the selected attempts that carry step_seconds, the median and max of
+    each step (in driver.STEPS order in the text) and of the session's own seconds, the total
+    of every lock wait (the `_wait` steps), and sessions per hour over the selected end
+    records' wall clock."""
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, *_ladder_records())
+    steps = _json(capsys, repo, log, "--run", "ladder-4", config=tmp_path / "config")["steps"]
+    assert steps == {
+        "attempts": 3,
+        "session": {"median": "200.0", "max": "300.0"},
+        "steps": {"cleanup": {"median": "2.0", "max": "3.0"},
+                  "audit_wait": {"median": "2.0", "max": "4.0"},
+                  "land_wait": {"median": "30.0", "max": "50.0"},
+                  "gate": {"median": "70.0", "max": "80.0"}},
+        "lock_wait": "96.0",
+        "per_hour": "8.0",
+    }  # fmt: skip
+
+
+def test_step_seconds_text(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, *_ladder_records())
+    assert _run(repo, log, "--run", "ladder-4", config=tmp_path / "config") == 0
+    lines = capsys.readouterr().out.splitlines()
+    start = lines.index("driver steps per attempt (seconds, 3 attempts timed; 8.0 sessions per "
+                        "hour):")
+    assert lines[start + 1:start + 7] == [
+        "  session: median 200.0, max 300.0",
+        "  cleanup: median 2.0, max 3.0",
+        "  audit_wait: median 2.0, max 4.0",
+        "  land_wait: median 30.0, max 50.0",
+        "  gate: median 70.0, max 80.0",
+        "  lock wait (every _wait step): total 96.0",
+    ]  # fmt: skip
+
+
+def test_step_seconds_only_with_run(tmp_path, capsys):
+    """The default report has none (JSON null, no text); a --run with no timed attempt says so,
+    and no end record gives no per-hour figure."""
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, *_ladder_records())
+    config = tmp_path / "config"
+    assert _json(capsys, repo, log, config=config)["steps"] is None
+    assert _run(repo, log, config=config) == 0
+    assert "driver steps per attempt" not in capsys.readouterr().out
+    old = _json(capsys, repo, _log(tmp_path, _on_v3(0x10000, run="old"), name="old.jsonl"),
+                "--run", "old", config=config)["steps"]  # fmt: skip
+    assert old == {"attempts": 0, "session": None, "steps": {}, "lock_wait": "0.0",
+                   "per_hour": None}  # fmt: skip
+    assert _run(repo, tmp_path / "old.jsonl", "--run", "old", config=config) == 0
+    assert "driver steps per attempt: none timed" in capsys.readouterr().out.splitlines()
