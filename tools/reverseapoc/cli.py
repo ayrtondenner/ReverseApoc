@@ -1,8 +1,8 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
-batch, search, lift, target, land, gate, context, signatures, structs, attempt, drive, mechanics,
-flags, stats, causes, requests, meters, compare-objects, twins, cd-map, fetch-watcom,
-install-watcom, check-watcom."""
+batch, search, lift, target, land, gate, context, signatures, structs, attempt, drive, drive-stop,
+drive-status, mechanics, flags, stats, causes, requests, meters, compare-objects, twins, cd-map,
+fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from . import (
     causes,
     classify,
     compare_objects,
+    drivectl,
     driver,
     flags,
     handoff,
@@ -2366,6 +2367,57 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_drive)
 
 
+# ---- drive-stop and drive-status: stop and inspect a drive (todo drive-stop-helpers-in-repo) ----
+
+
+def _off_windows(args: argparse.Namespace) -> bool:
+    if sys.platform == "win32":
+        return False
+    print(f"reverseapoc {args.command}: error: Windows only (the console Ctrl-C and the job "
+          "check are Win32)", file=sys.stderr)  # fmt: skip
+    return True
+
+
+def _cmd_drive_stop(args: argparse.Namespace) -> int:
+    """Exit 0 when the driver exited, 1 when it still runs after --wait-minutes (or the Ctrl-C
+    was not sent), 2 when no drive process for RUN exists or off Windows."""
+    if _off_windows(args):
+        return drivectl.NOT_RUNNING
+    return drivectl.stop(args.run, args.wait_minutes, REPO_ROOT, drivectl.default_seams())
+
+
+def _cmd_drive_status(args: argparse.Namespace) -> int:
+    """Exit 0 when a drive process for RUN exists, 2 when none does or off Windows."""
+    if _off_windows(args):
+        return drivectl.NOT_RUNNING
+    return drivectl.status(args.run, args.log, drivectl.default_seams())
+
+
+def _add_drive_control_commands(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "drive-stop",
+        help="Windows: send the console Ctrl-C to run RUN's drive, wait for it to exit and print "
+        "its last kind=run record from progress/attempts.jsonl; writes nothing",
+        description="Exit 0 when the driver exited, 1 when it is still running after "
+        "--wait-minutes, 2 when no drive process for RUN exists. See docs/model-routing.md "
+        "\"Stopping and inspecting a detached night\".",
+    )
+    p.add_argument("run", type=_run_id, metavar="RUN", help="the drive's --run id")
+    p.add_argument("--wait-minutes", type=_positive, default=15, metavar="N",
+                   help="how long to wait for the driver to exit; default: %(default)s")
+    p.set_defaults(func=_cmd_drive_stop)
+    p = sub.add_parser(
+        "drive-status",
+        help="Windows: list run RUN's drive processes (pid, parent, name, in a job or not) and, "
+        "with --log, its finished sessions and last log lines; writes nothing",
+        description="Exit 0 when a drive process for RUN exists, 2 when none does.",
+    )
+    p.add_argument("run", type=_run_id, metavar="RUN", help="the drive's --run id")
+    p.add_argument("--log", type=Path, default=None, metavar="PATH",
+                   help="the drive's --log file (drive --detach)")
+    p.set_defaults(func=_cmd_drive_status)
+
+
 # ---- structs: struct shapes inferred across functions (todo struct-shapes-across-functions) ----
 
 
@@ -3323,6 +3375,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_signatures_command(sub)
     _add_attempt_command(sub)
     _add_drive_command(sub)
+    _add_drive_control_commands(sub)
     _add_mechanics_command(sub)
     _add_flags_command(sub)
     _add_stats_command(sub)
@@ -3372,6 +3425,7 @@ _ERRORS = (
     flags.FlagsError,
     twins.TwinsError,
     stats.StatsError,
+    drivectl.DriveCtlError,
     OSError,
 )
 

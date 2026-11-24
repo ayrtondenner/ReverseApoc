@@ -116,6 +116,34 @@ then names each earlier run with a STARTED record and no ENDED or STOPPED one, i
 and its `unended` field, and writes no record on their behalf; their stale claims are
 recovered as before.
 
+### Stopping and inspecting a detached night
+
+Two repo commands replace the PowerShell scripts that used to be copied from one session's
+scratchpad to the next. They are Windows only (exit 2 elsewhere) and write nothing under the
+checkout, so they run while the drive holds its lock. Both find the drive by its command line:
+`reverseapoc drive` (uv's, the console script's or its Python's) with `--run RUN`, the exact id,
+so `20261124-codex` does not match `20261124-codex2`. A drive started without `--run` and
+without `--detach` cannot be found this way.
+
+- `uv run reverseapoc drive-status RUN [--log PATH]` prints each of the drive's processes (pid,
+  parent, name, `in_job=yes|no|unknown` from `IsProcessInJob`) and, with the drive's `--log`, the
+  sessions finished so far (its `MATCHED`, `PARTIAL` and `GAVE_UP after` lines) and its last 5
+  lines. Exit 0 while the drive runs, 2 when no process of RUN is left. Detached, uv's process
+  is in no job; a Python under a venv launcher can show `in_job=yes`, because the launcher puts
+  its own child in a job of its own.
+- `uv run reverseapoc drive-stop RUN [--wait-minutes N]` is the console Ctrl-C stop. Ask the
+  owner first (CLAUDE.md "Drives"). A helper child process attaches to the drive Python's
+  console, ignores Ctrl-C itself and raises it there, so the caller's own console stays as it
+  was. It refuses when the caller is on that same console (a drive started in the caller's own
+  terminal, not detached), because the Ctrl-C would reach the caller too. Then it polls every 10
+  seconds until no process of RUN is left, at most N minutes (default 15), and prints RUN's last
+  `kind=run` record from progress/attempts.jsonl of the checkout it runs from (run it from the
+  drive's checkout to see the STOPPED record). Exit 0 when the driver has exited, 1 when it is
+  still running after N minutes (or the Ctrl-C was not sent), 2 when no drive process for RUN
+  exists.
+  Exit 0 means the driver is gone, so its records can be committed and `ninja verify` and
+  `gate --all` run by hand.
+
 ## Landing a hold run
 
 `reverseapoc drive --land-held RUN...` runs on the main checkout with the drive lock and the

@@ -31,6 +31,7 @@ packages = ["tools/reverseapoc"]
 testpaths = ["tests"]
 # configure.py lives at the repo root and is imported by its tests.
 pythonpath = ["."]
+markers = ["slow: a real-process test of several seconds (Windows-only ones skip elsewhere)"]
 
 [tool.ruff]
 line-length = 100
