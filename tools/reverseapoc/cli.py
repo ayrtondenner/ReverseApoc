@@ -1955,7 +1955,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   arm_caps=tuple(args.arm_cap or ()),
                                   arm_budgets=tuple(args.arm_budget or ()),
                                   near_miss=args.near_miss,
-                                  near_miss_arms=tuple(args.near_miss_arm or ()))  # fmt: skip
+                                  near_miss_arms=tuple(args.near_miss_arm or ()),
+                                  pack_variants=tuple(sorted(args.pack_variant or ())))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -2097,6 +2098,25 @@ def _arm_budget_conflict(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _pack_variant_conflict(args: argparse.Namespace) -> str | None:
+    """Todo held-context-ablations: a `--pack-variant` named twice, two effort ones, or one on
+    a run that launches no matching session it could change (a canary, a --land-held run, a
+    readability night), or None."""
+    names = list(args.pack_variant or ())
+    if not names:
+        return None
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        return f"--pack-variant {twice[0]} is given twice; name each variant once"
+    if sum(name.startswith(attempt.EFFORT_PREFIX) for name in names) > 1:
+        return "--pack-variant names one effort at most"
+    clash = [flag for name, flag in (("canary", "--canary"), ("land_held", "--land-held"))
+             if getattr(args, name)]  # fmt: skip
+    if args.session == driver.READABILITY:
+        clash.append("--session readability")
+    return f"--pack-variant cannot be used with {', '.join(clash)}" if clash else None
+
+
 def _night_names(args: argparse.Namespace) -> list[str | None]:
     """The arms of this run: the --cascade rows' arms, else the --arm arms (or the --night-model
     one, None without it), then (todo near-miss-lane) the --near-miss-arm arms."""
@@ -2150,7 +2170,8 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
     the --night-model arm or an --arm; quick 261112-fds: an arm of the --cascade rows), and
     that arm sends the context pack to a non-Anthropic backend."""
     for conflict in (_cascade_conflict(args), _arm_cap_conflict(args),
-                     _near_miss_conflict(args), _arm_budget_conflict(args)):  # fmt: skip
+                     _near_miss_conflict(args), _arm_budget_conflict(args),
+                     _pack_variant_conflict(args)):  # fmt: skip
         if conflict is not None:
             return conflict
     readability = args.session == driver.READABILITY
@@ -2296,6 +2317,15 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    help="a hold run: nothing lands (no lint, gate or status.csv write), each "
                    "function is attempted once, the records say hold_run; refused with "
                    "--canary, --dry-run and --session readability")  # fmt: skip
+    p.add_argument("--pack-variant", choices=attempt.PACK_VARIANTS, action="append",
+                   default=None, metavar="NAME",
+                   help="repeatable, for the held context ablations: no-lookalikes packs no "
+                   "look-alikes, no-carry no earlier best C, give-ups, notes or records, "
+                   "effort-LEVEL (one of " + ", ".join(attempt.EFFORTS) + ") runs each claude "
+                   "session with --effort LEVEL (Claude-login arms only); named in the STARTED "
+                   "record's environment and its digest; refused with --canary, --land-held "
+                   "and --session readability; default: none, the full pack and the CLI's "
+                   "own effort")  # fmt: skip
     p.add_argument("--land-held", type=_run_name, nargs="+", default=None, metavar="RUN",
                    help="land each function a hold run checked exactly, once, from the "
                    "cheapest attempt of the named runs (a trailing * is a prefix), through "

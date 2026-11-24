@@ -479,6 +479,9 @@ class DriveConfig:
     # (a night built without the verb): the record has neither key.
     environment: Mapping | None = None
     controls: Mapping | None = None
+    # Todo held-context-ablations (owner ruling 2026-11-24): `drive --pack-variant NAME`'s
+    # names (attempt.PACK_VARIANTS); empty: every session as before
+    pack_variants: tuple[str, ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -1039,14 +1042,31 @@ _COPILOT_ATTEMPT_FIELDS = {"credits": _optional(_is_number)}
 # night built without the verb) stays valid, and `schema` stays 3 (D-23: no line is rewritten).
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")  # `docker image inspect --format {{.Id}}`
-_ENVIRONMENT = _shaped({
+_ENVIRONMENT_FIELDS = {
     "digest": _matches(_SHA256),  # environment_digest of the other keys but head
     "head": _matches(_SHA1),
     "image": _optional(_matches(_IMAGE_ID)),  # null: not known
     "cli": _mapping_of(_one_of(*HARNESSES), _optional(_is_text)),  # null: no version answered
     "files": _mapping_of(_is_text, _optional(_matches(_SHA256))),  # null: no such file
     "prompt": _matches(_SHA256),
-})  # fmt: skip
+}  # fmt: skip
+_ENVIRONMENT = _shaped(_ENVIRONMENT_FIELDS)
+
+
+def _variant_names(value: object) -> bool:
+    return (isinstance(value, list) and bool(value)
+            and all(name in attempt.PACK_VARIANTS for name in value))  # fmt: skip
+
+
+# todo held-context-ablations: a night with --pack-variant adds `variants`; one without keeps
+# the shape every earlier STARTED record has (D-23)
+_ENVIRONMENT_VARIANTS = _shaped({**_ENVIRONMENT_FIELDS, "variants": _variant_names})
+
+
+def _environment_shape(value: object) -> bool:
+    return _ENVIRONMENT(value) or _ENVIRONMENT_VARIANTS(value)
+
+
 _CONTROLS_FIELDS = {"exe": _CLAIM_FIELDS["exe"], "unit": _CLAIM_FIELDS["unit"],
                     "function": _matches(_C_NAME), "gold": _is_int, "null": _is_int,
                     "null_percent": _is_number}  # fmt: skip
@@ -1061,7 +1081,7 @@ def _controls_shape(value: object) -> bool:
 
 
 # controls null: a --land-held night, which runs no session check and so no control
-_STARTED_FIELDS = {"environment": _ENVIRONMENT, "controls": _optional(_controls_shape)}
+_STARTED_FIELDS = {"environment": _environment_shape, "controls": _optional(_controls_shape)}
 # Todo drive-outlives-session (owner ruling 2026-11-23): a v3 STARTED record names the earlier
 # runs with a STARTED record and no end record; an optional key, so earlier lines stay valid.
 _UNENDED_FIELD = {"unended": _list_of(_CLAIM_FIELDS["run"])}
@@ -5083,6 +5103,8 @@ class _Night:
         try:
             argv = self._argv(claim, prompt, skill)
             env = claim.env(base, self.arms)
+            if self.config.pack_variants:  # todo held-context-ablations: the wrapper's pack too
+                env[attempt.PACK_VARIANT_ENV] = ",".join(sorted(self.config.pack_variants))
             # owner ruling 2026-11-11: a Codex session's wrapper calls run through the driver's
             # broker, served while the session runs and stopped when it ends
             served = codex_broker(claim, env, self.deps.broker_wrapper)
@@ -5202,8 +5224,10 @@ class _Night:
                                       timeout_s=self.config.wall_clock_s)  # fmt: skip
         if claim.copilot:
             return self.deps.copilot_argv(prompt, **copilot_values(claim))
+        effort = variant_effort(self.config.pack_variants)  # todo held-context-ablations
         return self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                              max_turns=self.config.max_turns, **skill)  # fmt: skip
+                              max_turns=self.config.max_turns, **skill,
+                              **({"effort": effort} if effort is not None else {}))  # fmt: skip
 
     def _clean_up(self, claim: _Claim, base: Mapping[str, str],
                   served: broker.Broker | None = None) -> str:  # fmt: skip
@@ -7187,7 +7211,8 @@ class _Night:
         wall clock killed it: abort_reason timeout, or lint, tool or guardrail when one of those
         followed the timeout) carries the stream lower bound of `streamjson.stream_usage` in
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
-        "estimate". A night passes no effort (null: the CLI default, D-17); `harness` and
+        "estimate". A night passes no effort (null: the CLI default, D-17) unless a
+        --pack-variant names one (todo held-context-ablations); `harness` and
         `backend` are the session's arm's (07.2-12: DEFAULT_BACKEND on the Claude Code login,
         else the backends.toml entry's provider). A hosted arm's `cost_usd` is what it really
         pays, `cost_source` "estimate" (RESEARCH A3: the CLI's figure for a model it does not
@@ -7224,7 +7249,8 @@ class _Night:
                                   if session.claim.copilot else _hook_blocks(session.events)),
                   "gate": _gate_field(gate, session.claim.pick),
                   "sweep_source": source, "sweep_cells_100": cells,
-                  "effort": None, "harness": arm.harness, "backend": arm.backend,
+                  "effort": variant_effort(self.config.pack_variants),
+                  "harness": arm.harness, "backend": arm.backend,
                   "duration_ms": use.duration_ms if measured else None,
                   "cost_source": "cli" if measured and not hosted else "estimate",
                   "giveup": self._giveup(session.claim),
@@ -7655,6 +7681,10 @@ class DriveOptions:
     # NAME=WORKERS`, repeatable: the lane's arms, beside `arms` in this drive
     near_miss: float | None = None
     near_miss_arms: tuple[tuple[str, int], ...] = ()
+    # todo held-context-ablations (owner ruling 2026-11-24): `--pack-variant NAME`, repeatable
+    # (attempt.PACK_VARIANTS): the pack ones reach every session's pack, an effort one its claude
+    # argv; all of them the STARTED record's environment and its digest
+    pack_variants: tuple[str, ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -8253,9 +8283,13 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
             if options.near_miss_arms else None)  # fmt: skip
     base = seams.base_env if seams.base_env is not None else os.environ
     notify = notifier(base.get(NOTIFY_ENV), base, say)  # todo drive-stop-notification
+    # todo held-context-ablations: the launch pack as the wrapper's (none: the call as before)
+    variants = ({"variants": tuple(sorted(options.pack_variants))}
+                if options.pack_variants else {})  # fmt: skip
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees, near_miss=near,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
-                pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
+                pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src,
+                                                                        **variants),
                 pack_key=lambda pick: _world_pack_key(worlds[pick.exe], pick),
                 argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
                 copilot_argv=seams.copilot_argv, broker_wrapper=seams.broker_wrapper,
@@ -9172,7 +9206,8 @@ def environment(options: DriveOptions, seams: Seams, arms: Mapping[str, backends
     """The STARTED record's `environment`: HEAD, the build image's id (null: docker named
     none), each harness's CLI version, the sha256 of each ENVIRONMENT_FILES file and of the
     prompt templates, and `digest` over all of them but HEAD (a docs commit is the same
-    environment; the files and prompts that change a session are hashed on their own)."""
+    environment; the files and prompts that change a session are hashed on their own). Todo
+    held-context-ablations: a night with --pack-variant names them, sorted, in `variants`."""
     repo = Path(options.repo)
     head = _git_text(seams, ["rev-parse", "HEAD"], "environment").strip()
     image = (seams.run(list(IMAGE_ID_ARGV)).stdout or "").strip()
@@ -9180,6 +9215,8 @@ def environment(options: DriveOptions, seams: Seams, arms: Mapping[str, backends
            "cli": _cli_versions(options, seams, arms),
            "files": {rel: _file_sha256(repo / rel) for rel in ENVIRONMENT_FILES},
            "prompt": _prompt_sha256()}  # fmt: skip
+    if options.pack_variants:  # todo held-context-ablations; absent: the digest as before
+        doc["variants"] = sorted(options.pack_variants)
     return {"digest": environment_digest({k: v for k, v in doc.items() if k != "head"}),
             **doc}  # fmt: skip
 
@@ -9373,6 +9410,7 @@ def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
                                      f"max_workers {arms[name].max_workers} in {shown} (the "
                                      "local server has one slot)")  # fmt: skip
     _refuse_arm_caps(options, arms, shown)
+    _refuse_effort_arms(options, [arms[name] for name, _ in night])
     base = seams.base_env if seams.base_env is not None else os.environ
     try:
         backends.refuse_stray_egress(options.allow_egress, [arms[name] for name, _ in night])
@@ -9382,6 +9420,25 @@ def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     except backends.ArmError as exc:
         raise Refused("backends", str(exc)) from exc
     return arms
+
+
+def variant_effort(variants: Sequence[str]) -> str | None:
+    """Todo held-context-ablations: the `claude --effort` level an attempt.EFFORT_PREFIX pack
+    variant names (the cli lets a drive name one), or None: the CLI's own (D-17)."""
+    return next((name.removeprefix(attempt.EFFORT_PREFIX) for name in variants
+                 if name.startswith(attempt.EFFORT_PREFIX)), None)  # fmt: skip
+
+
+def _refuse_effort_arms(options: DriveOptions, night: Sequence[backends.Arm]) -> None:
+    """Todo held-context-ablations: an effort variant is a Claude Code `--effort` on the Claude
+    login, so every arm of the night must be a claude-harness arm of the default backend."""
+    if variant_effort(options.pack_variants) is None:
+        return
+    other = [arm.name for arm in night
+             if (arm.harness, arm.backend) != (backends.CLAUDE, DEFAULT_BACKEND)]  # fmt: skip
+    if other:
+        raise Refused("pack variant", f"an effort variant sets `claude --effort` on the Claude "
+                                      f"login, and arm {other[0]} is not such an arm")  # fmt: skip
 
 
 def _refuse_arm_caps(options: DriveOptions, arms: Mapping[str, backends.Arm], shown: str) -> None:
@@ -9546,7 +9603,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          # todo resumed-held-run-budgets: what is left of each budget
                          budgets=tuple((sizing.arm, sizing.left) for sizing in sizings),
                          near_miss=tuple(name for name, _ in options.near_miss_arms),
-                         environment=env_doc, controls=controls)  # fmt: skip
+                         environment=env_doc, controls=controls,
+                         pack_variants=options.pack_variants)  # fmt: skip
     for line in _budget_lines(options, sizings):  # todo budget-runs-and-contributors
         console(options, seams)(line)
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json

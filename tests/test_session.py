@@ -735,3 +735,12 @@ def test_a_signed_in_prompt_leaves_out_claude_only_blocks():
     prompt = session.codex_prompt("/goal do it", skill)
     assert "keep one" in prompt and "keep two" in prompt
     assert "only claude" not in prompt and session.CLAUDE_ONLY_START not in prompt
+
+
+def test_build_argv_effort():
+    """Todo held-context-ablations: an effort is `--effort LEVEL` after D-06's argv; none (the
+    default) is D-06's argv token for token, the CLI's own effort."""
+    assert build_argv("/goal x", claude="claude", effort="high") == [*D06_ARGV[:2], "/goal x",
+                                                                     *D06_ARGV[3:], "--effort",
+                                                                     "high"]  # fmt: skip
+    assert build_argv("/goal stand-in", claude="claude", effort=None) == D06_ARGV

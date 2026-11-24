@@ -3662,3 +3662,49 @@ def test_view_context_cache_misses_on_the_other_exes_inputs(tree: attempt.Roots,
     assert (TWIN_LOOKALIKE in after[1]) is twin
     _entry(attempt_dir, "context.json").unlink()
     assert _attempt(capsys, "context") == after  # the new pack, not the stored one
+
+
+# ---- todo held-context-ablations (owner ruling 2026-11-24): `drive --pack-variant NAME` ----
+
+
+def test_pack_variants_come_from_the_claim_env(view: Path, monkeypatch, capsys):
+    """REVERSEAPOC_PACK_VARIANTS: absent or empty is the full pack, else comma-separated names
+    of attempt.PACK_VARIANTS; any other name is exit 2 listing them."""
+    env = _env()
+    assert attempt.Claim.from_env(env, roots=attempt.ROOTS).variants == ()
+    env[attempt.PACK_VARIANT_ENV] = ""
+    assert attempt.Claim.from_env(env, roots=attempt.ROOTS).variants == ()
+    env[attempt.PACK_VARIANT_ENV] = "no-lookalikes,no-carry"
+    claim = attempt.Claim.from_env(env, roots=attempt.ROOTS)
+    assert claim.variants == ("no-lookalikes", "no-carry")
+    monkeypatch.setenv(attempt.PACK_VARIANT_ENV, "no-lookalikes,bogus")
+    _refused(monkeypatch, capsys, attempt.PACK_VARIANT_ENV, *attempt.PACK_VARIANTS)
+
+
+def test_context_no_carry_leaves_the_earlier_work_out(tree: attempt.Roots, monkeypatch, capsys,
+                                                      loads):  # fmt: skip
+    """no-carry: no earlier notes, records, give-ups or best C; the variant is in the cache
+    key, so the stored full pack is a miss."""
+    _claim_b_view(tree, monkeypatch)
+    _run_notes(tree.repo, "run3", "made-up earlier note\n")
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert "made-up earlier note" in first[1] and len(loads) == 1
+    monkeypatch.setenv(attempt.PACK_VARIANT_ENV, attempt.NO_CARRY)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2, after[2]
+    assert "made-up earlier note" not in after[1]
+    assert "\n## Earlier notes\n" in after[1] and "\n## Look-alikes\n" in after[1]
+
+
+def test_context_no_lookalikes_leaves_the_lookalikes_out(tree: attempt.Roots, monkeypatch,
+                                                         capsys, loads):  # fmt: skip
+    """no-lookalikes: the section says none, and the other EXE is not even loaded."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _tacp_twin(tree, _view(attempt_dir, "src"))
+    _run_notes(tree.repo, "run3", "made-up earlier note\n")
+    monkeypatch.setenv(attempt.PACK_VARIANT_ENV, attempt.NO_LOOKALIKES)
+    text = _attempt(capsys, "context")
+    assert text[0] == 0, text[2]
+    assert "\n## Look-alikes\n\nnone\n" in text[1] and TWIN_LOOKALIKE not in text[1]
+    assert "made-up earlier note" in text[1] and len(loads) == 1  # UFO2P.EXE only

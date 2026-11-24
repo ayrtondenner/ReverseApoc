@@ -1303,6 +1303,8 @@ def _environment_line(entry: Mapping) -> str:
                f"({controls['null_percent']:g}%)" if controls else "no controls")  # fmt: skip
     if controls and "reloc" in controls:  # absent before todo relocation-null-control
         checked += f", reloc {controls['reloc']}"
+    if "variants" in env:  # todo held-context-ablations: `drive --pack-variant`'s names
+        checked += f"; variants {', '.join(env['variants'])}"
     return (f"  {entry['run']}: digest {env['digest'][:12]}, head {env['head'][:12]}, image "
             f"{image}, cli {cli}; {checked}")
 

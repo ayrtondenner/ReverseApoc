@@ -153,11 +153,13 @@ def build_argv(
     max_budget_usd: float = MAX_BUDGET_USD,
     max_turns: int = MAX_TURNS,
     skill: str = SKILL,
+    effort: str | None = None,
 ) -> list[str]:
     """D-06's argv for one session, `claude` being the CLI executable. `model`, `max_budget_usd`
     and `max_turns` are the session's own values (Phase 7 D-09, D-25), `skill` the repo-relative
     skill appended to the system prompt (07-38, D-18: READABILITY_SKILL for a readability
-    session); the defaults give D-06's argv token for token."""
+    session), `effort` a `--effort` level (todo held-context-ablations; None: the CLI's own);
+    the defaults give D-06's argv token for token."""
     return [
         claude,
         "-p",
@@ -184,6 +186,7 @@ def build_argv(
         skill,
         "--max-budget-usd",
         str(max_budget_usd),
+        *(("--effort", effort) if effort is not None else ()),
     ]
 
 

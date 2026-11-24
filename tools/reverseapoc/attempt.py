@@ -64,7 +64,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,6 +140,17 @@ DRIVER_PARTS = ("build", "driver")
 # out of later packs. Defined here because earlier_notes reads it and the wrapper cannot import
 # the driver; driver.HOLD_RUN_MARKER is this object.
 HOLD_RUN_MARKER = "HELD"
+# Todo held-context-ablations (owner ruling 2026-11-24): `drive --pack-variant NAME`, each
+# turning one factor of a session off or on; the driver names them in the session's
+# REVERSEAPOC_PACK_VARIANTS (comma-separated) and the pack honours the two pack ones:
+# NO_LOOKALIKES leaves the look-alikes out, NO_CARRY the earlier notes, records, give-ups and
+# best C. An EFFORT_PREFIX one is the session's `claude --effort` level (EFFORTS, the CLI's).
+PACK_VARIANT_ENV = "REVERSEAPOC_PACK_VARIANTS"
+NO_LOOKALIKES = "no-lookalikes"
+NO_CARRY = "no-carry"
+EFFORT_PREFIX = "effort-"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # `claude --help`, Claude Code 2.1.311
+PACK_VARIANTS = (NO_LOOKALIKES, NO_CARRY, *(EFFORT_PREFIX + level for level in EFFORTS))
 CONTAINER_RUN = ("docker", "compose", "run", "--rm", "-T")
 CONTAINER_CHECK = ("build", "uv", "run", "--frozen", "reverseapoc", "check")
 CONTAINER_PREFIX = "reverseapoc-attempt-"  # + 8 hex of the attempt dir + -NNNN (M7, 06-23)
@@ -259,6 +270,7 @@ class Claim:
     proposals: Path | None = None  # REVERSEAPOC_PROPOSALS: <attempt dir>/proposals.jsonl
     kind: str = SESSION_KINDS[0]  # REVERSEAPOC_SESSION_KIND; absent means matching
     ledger: Path | None = None  # 07.2-13: REVERSEAPOC_WRAPPER_LEDGER, resolved; None: no ledger
+    variants: tuple[str, ...] = ()  # REVERSEAPOC_PACK_VARIANTS; empty: the full pack
 
     @property
     def view_root(self) -> Path:
@@ -288,7 +300,19 @@ class Claim:
         view = unit_file is not None
         return cls(exe, unit, function, attempt_dir, _notes(env, roots, attempt_dir), unit_file,
                    _proposals(env, roots, attempt_dir, view=view),
-                   _kind(env, view=view), _ledger_path(env, roots, attempt_dir))  # fmt: skip
+                   _kind(env, view=view), _ledger_path(env, roots, attempt_dir),
+                   _variants(env))  # fmt: skip
+
+
+def _variants(env: Mapping[str, str]) -> tuple[str, ...]:
+    """REVERSEAPOC_PACK_VARIANTS: unset or empty is the full pack; else comma-separated names,
+    each one of PACK_VARIANTS."""
+    names = tuple(name for name in (env.get(PACK_VARIANT_ENV) or "").split(",") if name)
+    wrong = [name for name in names if name not in PACK_VARIANTS]
+    if wrong:
+        raise AttemptError(f"{PACK_VARIANT_ENV} names {wrong[0]!r}, not one of "
+                           f"{', '.join(PACK_VARIANTS)}")  # fmt: skip
+    return names
 
 
 def _ledger_path(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path | None:
@@ -2096,6 +2120,7 @@ def make_pack(
     asm_root: Path,
     roots: Roots,
     calls: contextpack.CallIndex | None = None,
+    variants: Collection[str] = (),
 ) -> contextpack.Pack:
     """The D-13 pack of `row`: status from config/<exe>/status.csv, every unit text of the EXE,
     the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
@@ -2103,7 +2128,8 @@ def make_pack(
     table from build/signatures/<exe>.json (U10) and the struct shapes `reverseapoc structs`
     left under the repo's build/structs/<exe>/, with the other EXEs' matched rows as look-alike
     candidates (_other_candidates: roots.orig and roots.manifest, `src` and `config`). Pass
-    `calls` to reuse one CallIndex across functions."""
+    `calls` to reuse one CallIndex across functions. Todo held-context-ablations: `variants`
+    NO_CARRY packs no earlier notes, NO_LOOKALIKES no look-alikes (no other EXE is loaded)."""
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
     starts = {other.start for other in data.rows if other.kind in CLAIMABLE_KINDS}
     hints = contextpack.read_hints(contextpack.hints_path(config, data.stem), starts)
@@ -2114,11 +2140,15 @@ def make_pack(
         status=status, unit_texts=_unit_texts(src, data, row.unit), listing_dir=listing_dir,
         draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
-        notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
+        notes=(None if NO_CARRY in variants
+               else earlier_notes(roots.repo, data.stem, placeholder(row))), calls=calls,
         hint=hints.get(row.start), signatures=table,
         shapes=_struct_shapes(roots.repo, data.stem),
-        others=_other_candidates(data, src=src, config=config, roots=roots),
+        others=({} if NO_LOOKALIKES in variants
+                else _other_candidates(data, src=src, config=config, roots=roots)),
     )  # fmt: skip
+    if NO_LOOKALIKES in variants:
+        inputs["lookalikes"] = ()
     return contextpack.build_pack(**inputs)
 
 
@@ -2193,6 +2223,8 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
     paths = _exe_paths(ROOTS, claim.exe, target.name)
     if form == "context":
         facts["notes"] = _notes_digest(claim)
+        if claim.variants:  # todo held-context-ablations; absent: the keys stored before it
+            facts["variants"] = list(claim.variants)
         paths += _context_paths(ROOTS, claim.exe)
         paths += [*_other_exe_paths(claim.exe)]
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
@@ -2371,6 +2403,7 @@ def _rebuild_pack(claim: Claim) -> tuple[str, Path, dict[str, str | None]]:
     for stem in _other_stems(ROOTS.manifest, ROOTS.config, data.stem):
         read += _other_unit_paths(src, ROOTS.config, stem)
     derived = _digests(read)
-    pack = make_pack(data, row, src=src, config=ROOTS.config, asm_root=ROOTS.asm, roots=ROOTS)
+    pack = make_pack(data, row, src=src, config=ROOTS.config, asm_root=ROOTS.asm, roots=ROOTS,
+                     variants=claim.variants)  # fmt: skip
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     return pack.text, path, derived

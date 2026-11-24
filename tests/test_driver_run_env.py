@@ -15,12 +15,13 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 
 from reverseapoc import attempt, driver, hooks
+from reverseapoc.picker import Pick
 from test_attempts_schema import _run_v3
 from test_drive import Rig, Runner, _git
 from test_driver import RUN as NIGHT_RUN
@@ -543,3 +544,144 @@ def test_sessions_never_see_the_notifier_command():
     arms = backends.load_arms()
     env = backends.session_env(arms[driver.MODEL], {driver.NOTIFY_ENV: "x", "KEEP": "1"}, arms)
     assert env == {"KEEP": "1"}
+
+
+# ---- todo held-context-ablations (owner ruling 2026-11-24): `drive --pack-variant NAME` ----
+
+ABLATION = ("no-lookalikes", "effort-high")
+ENVIRONMENT_KEYS = {"digest", "head", "image", "cli", "files", "prompt"}
+
+
+def test_no_pack_variant_keeps_the_environment_as_before(tmp_path):
+    """The default: no `variants` key, so the digest is the one every earlier night has."""
+    assert set(_environment(Rig(tmp_path))) == ENVIRONMENT_KEYS
+
+
+def test_the_environment_and_its_digest_name_the_pack_variants(tmp_path):
+    rig = Rig(tmp_path)
+    plain = _environment(rig)
+    env = _environment(rig, pack_variants=ABLATION)
+    assert env["variants"] == sorted(ABLATION)
+    assert env["digest"] != plain["digest"]
+    rest = {key: value for key, value in env.items() if key not in ("digest", "head")}
+    assert env["digest"] == driver.environment_digest(rest)
+    driver.validate_record({**_started_v3(), "environment": env, "controls": CONTROLS})
+    for wrong in ([], ["no-such-variant"], "no-carry"):
+        with pytest.raises(driver.RecordError):
+            driver.validate_record({**_started_v3(), "environment": {**env, "variants": wrong},
+                                    "controls": CONTROLS})  # fmt: skip
+
+
+def test_an_effort_variant_is_for_claude_login_arms_only(tmp_path):
+    rig = Rig(tmp_path)
+    driver.refuse_arms(rig.options(night_model="claude-haiku-5-5", pack_variants=ABLATION),
+                       rig.seams())  # fmt: skip
+    driver.refuse_arms(rig.options(night_model="gpt-6.1-terra", allow_egress=("gpt-6.1-terra",),
+                                   pack_variants=("no-carry",)), rig.seams())  # fmt: skip
+    with pytest.raises(driver.Refused) as refused:
+        driver.refuse_arms(rig.options(night_model="gpt-6.1-terra",
+                                       allow_egress=("gpt-6.1-terra",),
+                                       pack_variants=("effort-high",)), rig.seams())  # fmt: skip
+    assert refused.value.reason == "pack variant" and "gpt-6.1-terra" in refused.value.detail
+
+
+def _effort_argv(night: Night, efforts: list):
+    def argv(prompt, *, model, max_budget_usd, max_turns, skill=driver.SKILL, **effort):
+        efforts.append(effort)
+        return night._argv(prompt, model=model, max_budget_usd=max_budget_usd,
+                           max_turns=max_turns, skill=skill)  # fmt: skip
+
+    return argv
+
+
+def test_a_night_without_variants_passes_no_effort_and_no_variant_env(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    efforts: list = []
+    night.run(config={"attempts_per_function": 1}, argv=_effort_argv(night, efforts))
+    assert efforts == [{}]
+    assert attempt.PACK_VARIANT_ENV not in _one(night.launched).env
+    assert _one(night.kinds("attempt"))["effort"] is None
+
+
+def test_a_night_with_variants_names_them_to_the_session_and_its_record(tmp_path):
+    """The session's env names every variant (the wrapper's pack honours them), the claude
+    argv gets the effort, and the attempt record says which effort was asked."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    efforts: list = []
+    night.run(config={"attempts_per_function": 1, "pack_variants": ABLATION},
+              argv=_effort_argv(night, efforts))
+    assert efforts == [{"effort": "high"}]
+    assert _one(night.launched).env[attempt.PACK_VARIANT_ENV] == "effort-high,no-lookalikes"
+    record = _one(night.kinds("attempt"))
+    assert record["effort"] == "high"
+    driver.validate_record(record)
+
+
+def test_real_deps_build_the_launch_pack_with_the_variants(tmp_path):
+    from test_drive import _world
+
+    rig = Rig(tmp_path)
+    seen: list = []
+
+    def pack(pick, directory, src=None, **variants):
+        seen.append(variants)
+
+    worlds = {exe: replace(world, pack=pack) for exe, world in _world(rig.packs).items()}
+    pick = Pick("ufo2p", 0x00010010, "func_00010010", "u_x", 20, 10)
+    driver.real_deps(rig.options(), rig.seams(), worlds).pack(pick, tmp_path, tmp_path)
+    driver.real_deps(rig.options(pack_variants=ABLATION), rig.seams(), worlds).pack(
+        pick, tmp_path, tmp_path)  # fmt: skip
+    assert seen == [{}, {"variants": tuple(sorted(ABLATION))}]
+
+
+def _cli_options(monkeypatch, *argv: str):
+    from reverseapoc import cli
+
+    seen = []
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: seen.append(options) or 0)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: "seams")
+    monkeypatch.setattr(driver, "take_console_ctrl_c", lambda: None)
+    return cli.main(["drive", *argv]), seen
+
+
+def test_the_cli_hands_each_pack_variant_to_the_drive(monkeypatch):
+    code, seen = _cli_options(monkeypatch, "--run", "abl1")
+    assert code == 0 and _one(seen).pack_variants == ()
+    code, seen = _cli_options(monkeypatch, "--run", "abl1", "--pack-variant", "no-lookalikes",
+                              "--pack-variant", "effort-high")  # fmt: skip
+    assert code == 0 and _one(seen).pack_variants == ("effort-high", "no-lookalikes")
+
+
+@pytest.mark.parametrize(("argv", "says"), [
+    (["--pack-variant", "no-carry", "--pack-variant", "no-carry"], "given twice"),
+    (["--pack-variant", "effort-high", "--pack-variant", "effort-low"], "one effort"),
+    (["--pack-variant", "no-carry", "--canary"], "--canary"),
+    (["--pack-variant", "no-carry", "--land-held", "spike012-*"], "--land-held"),
+    (["--pack-variant", "no-carry", "--session", "readability"], "--session readability"),
+])  # fmt: skip
+def test_the_cli_refuses_a_pack_variant_it_cannot_honour(monkeypatch, capsys, argv, says):
+    code, seen = _cli_options(monkeypatch, *argv)
+    assert (code, seen) == (2, [])
+    assert says in capsys.readouterr().err
+
+
+def test_the_cli_refuses_an_unknown_pack_variant(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _cli_options(monkeypatch, "--pack-variant", "no-such-variant")
+    assert "no-lookalikes" in capsys.readouterr().err
+
+
+def test_stats_run_names_a_nights_pack_variants(tmp_path, capsys):
+    """A held ablation run is told apart in `stats --run` by its variants, not only its digest;
+    a night without them prints as before."""
+    repo, _ = _repo(tmp_path)
+    varied = {**ENVIRONMENT, "variants": ["effort-high", "no-lookalikes"]}
+    log = _log(tmp_path, {**_started_v3(), "run": "abl1", "environment": varied,
+                          "controls": CONTROLS},
+               {**_started_v3(), "run": "base1", "environment": ENVIRONMENT,
+                "controls": CONTROLS})  # fmt: skip
+    assert _stats_run(repo, log, "--run", "*", config=tmp_path / "config") == 0
+    out = capsys.readouterr().out.splitlines()
+    head = out.index("environment per run:")
+    assert out[head + 1].endswith("; variants effort-high, no-lookalikes")
+    assert "variants" not in out[head + 2]
