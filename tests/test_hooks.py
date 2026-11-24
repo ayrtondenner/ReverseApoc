@@ -2642,9 +2642,12 @@ REFUSED_BASH = [
 
 
 def _placed(name: str, command: str, repo: Path, scratch: Path) -> str:
-    """`command` with {repo} and {scratch} spelled the way each shell spells a path."""
+    """`command` with {repo} and {scratch} spelled the way each shell spells a path, and {sep} as
+    the host's separator in PowerShell (a backslash is a file name character on Linux)."""
     form = native if name == "PowerShell" else Path.as_posix
-    return command.replace("{repo}", form(repo)).replace("{scratch}", form(scratch))
+    sep = os.sep if name == "PowerShell" else "/"
+    placed = command.replace("{repo}", form(repo)).replace("{scratch}", form(scratch))
+    return placed.replace("{sep}", sep)
 
 
 @pytest.mark.parametrize("command", REFUSED_BASH)
@@ -2747,8 +2750,8 @@ ALLOWED_POWERSHELL = [
     "ls build 2>&1",
     "Get-ChildItem tools > $null",
     "Set-Location {scratch} && uv run pytest",
-    "Copy-Item -Path {repo}\\tools\\x.py -Destination {scratch}\\x.py",
-    "Copy-Item {repo}\\tools {scratch}\\tools -Recurse -Force",
+    "Copy-Item -Path {repo}{sep}tools{sep}x.py -Destination {scratch}{sep}x.py",
+    "Copy-Item {repo}{sep}tools {scratch}{sep}tools -Recurse -Force",
     "$x = 'literal'; Get-ChildItem $x",
     "$x = 5",
     "$x='lit'",
