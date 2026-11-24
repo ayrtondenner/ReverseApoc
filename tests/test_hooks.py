@@ -2592,7 +2592,44 @@ REFUSED_BASH = [
     "cat a >> docs/notes.md",
     "rm -rf build/driver/x",
     "cp /tmp/x tools/x.py",
-    "cp tools/x.py /tmp/x.py",  # every word of a writer counts: copy out with cat and >
+    "cp tools/x.py tools/y.py",
+    # todo drive-hook-read-only-verbs: a copy, archive, fetch or find that writes the checkout
+    "cp {scratch}/x {repo}/y",
+    "cp -t {repo} {scratch}/x",
+    "cp --target-directory={repo} {scratch}/x",
+    "cp -l tools/x.py {scratch}/x.py",  # a hard link out lets a later write reach the checkout
+    "cp -s tools/x.py {scratch}/x.py",
+    "tar -xf {scratch}/x.tar -C {repo}",
+    "tar -xf {scratch}/x.tar",  # extracts into the cwd, the checkout
+    "tar -c -C {scratch} a | tar -x",
+    "tar -cf tools/x.tar -C {scratch} a",
+    "tar -tf tools/x.tar",  # any -f under the checkout
+    "tar -xf {scratch}/x.tar --to-command=sh -C {scratch}",
+    "tar -rf {scratch}/x.tar tools",
+    "tar cf {scratch}/x.tar tools",  # old-style options are not read
+    "git pull",
+    "git --no-optional-locks pull --ff-only {scratch}/clone main",
+    "git --no-optional-locks fetch {scratch}/clone",
+    "cd {scratch}/clone && git fetch --upload-pack=x {repo}",
+    "git -C {repo} --no-optional-locks fetch {scratch}/clone",
+    "find {repo} -exec rm {} \\;",
+    "find {repo} -delete",
+    "find . -execdir rm {} +",
+    "find . -exec sh -c 'rm x' {} +",
+    "find . -exec grep -l x {} + -delete",
+    "find . -ok cat {} +",
+    "echo $(uv run reverseapoc x)",
+    "echo `uv run reverseapoc x`",
+    "date -s 10:00",
+    "date --set=10:00",
+    "date -us 10:00",
+    "date 112312002026",
+    "date -dr 112312002026",  # -d takes `r`, so the operand sets the clock
+    "cp {repo}/x",
+    "tar -x -C {scratch} -C {repo}",
+    "tar -xf - x -C {scratch}",  # a member before the first -C lands in the cwd
+    "find . -exec grep x {} \\; -delete",
+    "cd {scratch}/clone && GIT_DIR={repo}/.git git fetch {repo}",
     "sed -i s/a/b/ tools/x.py",
     "cd tools && pytest",
     "true; uv run pytest",
@@ -2604,10 +2641,17 @@ REFUSED_BASH = [
 ]
 
 
+def _placed(name: str, command: str, repo: Path, scratch: Path) -> str:
+    """`command` with {repo} and {scratch} spelled the way each shell spells a path."""
+    form = native if name == "PowerShell" else Path.as_posix
+    return command.replace("{repo}", form(repo)).replace("{scratch}", form(scratch))
+
+
 @pytest.mark.parametrize("command", REFUSED_BASH)
-def test_drive_guard_refuses_bash_writes_and_runs(live_drive, command):
-    decision = guard(shell("Bash", command, live_drive), live_drive)
-    assert decision.deny, command
+def test_drive_guard_refuses_bash_writes_and_runs(live_drive, scratch, command):
+    text = _placed("Bash", command, live_drive, scratch)
+    decision = guard(shell("Bash", text, live_drive), live_drive)
+    assert decision.deny, text
     assert "drive.lock" in decision.reason
 
 
@@ -2622,13 +2666,20 @@ REFUSED_POWERSHELL = [
     "git status",
     "Set-Location tools; pytest",
     "echo x > tools\\x.py",
+    "Copy-Item -Path {scratch}\\x -Destination {repo}\\x",
+    "Copy-Item {scratch}\\x tools\\x",
+    "Copy-Item -Path tools\\x -Destination {scratch}\\x -ToSession $s",
+    "$s = 'tools\\x.py'; Set-Content $s 'y'",
+    "$x = Remove-Item tools",
+    "$x = 'a'; uv run pytest",
 ]
 
 
 @pytest.mark.parametrize("command", REFUSED_POWERSHELL)
-def test_drive_guard_refuses_powershell_writes_and_runs(live_drive, command):
-    decision = guard(shell("PowerShell", command, live_drive), live_drive)
-    assert decision.deny, command
+def test_drive_guard_refuses_powershell_writes_and_runs(live_drive, scratch, command):
+    text = _placed("PowerShell", command, live_drive, scratch)
+    decision = guard(shell("PowerShell", text, live_drive), live_drive)
+    assert decision.deny, text
     assert "drive.lock" in decision.reason
 
 
@@ -2655,12 +2706,36 @@ ALLOWED_BASH = [
     "git -C {scratch}/clone commit -m x",
     "echo x > {scratch}/out.txt",
     "rm -rf {scratch}/old",
+    # todo drive-hook-read-only-verbs: reads of the checkout whose writes land outside it
+    "cd {scratch}/clone && cp {repo}/a/b.txt {scratch}/clone/x/",
+    "cp -r {repo}/tools {scratch}/tools",
+    "cp tools/x.py {scratch}/x.py",
+    "cp -t {scratch} tools/x.py tools/y.py",
+    "tar -cf {scratch}/x.tar -C {repo} tools",
+    "tar -czf {scratch}/x.tgz --exclude=.git tools",
+    "tar -c -C {repo} tools | tar -x -C {scratch}",
+    "tar -cf - tools | tar -xvf - -C {scratch}",
+    "tar -tf {scratch}/x.tar",
+    "cd {scratch}/clone && git --no-optional-locks fetch {repo}",
+    "cd {scratch}/clone && git --no-optional-locks pull --ff-only {repo} main",
+    "git -C {scratch}/clone pull --ff-only {repo} main",
+    "find {repo} -name x -exec grep -l foo {} +",
+    "find tools -name '*.py' -exec grep -l foo {} \\;",
+    "find . -execdir head -1 {} + -exec wc -l {} +",
+    "date",
+    "date +%H:%M",
+    "date -u -d yesterday +%F",
+    "cd {scratch} && echo $(date)",
+    "echo `date`",
+    'test "$(git -C {repo} --no-optional-locks rev-parse HEAD)" = x',
+    "cd {scratch}; cat f",
+    "for f in a b; do cat {repo}/$f; done",
 ]
 
 
 @pytest.mark.parametrize("command", ALLOWED_BASH)
 def test_drive_guard_allows_reads_and_work_outside(live_drive, scratch, command):
-    text = command.replace("{scratch}", scratch.as_posix())
+    text = _placed("Bash", command, live_drive, scratch)
     decision = guard(shell("Bash", text, live_drive), live_drive)
     assert not decision.deny, (text, decision.reason)
 
@@ -2672,12 +2747,18 @@ ALLOWED_POWERSHELL = [
     "ls build 2>&1",
     "Get-ChildItem tools > $null",
     "Set-Location {scratch} && uv run pytest",
+    "Copy-Item -Path {repo}\\tools\\x.py -Destination {scratch}\\x.py",
+    "Copy-Item {repo}\\tools {scratch}\\tools -Recurse -Force",
+    "$x = 'literal'; Get-ChildItem $x",
+    "$x = 5",
+    "$x='lit'",
+    '$s = "{repo}\\tools"; Get-ChildItem $s',
 ]
 
 
 @pytest.mark.parametrize("command", ALLOWED_POWERSHELL)
 def test_drive_guard_allows_powershell_reads(live_drive, scratch, command):
-    text = command.replace("{scratch}", native(scratch))
+    text = _placed("PowerShell", command, live_drive, scratch)
     decision = guard(shell("PowerShell", text, live_drive), live_drive)
     assert not decision.deny, (text, decision.reason)
 
@@ -2890,3 +2971,11 @@ def test_drive_guard_keeps_the_clone_route(live_drive, scratch, command):
 def test_drive_guard_refuses_a_clone_into_the_checkout(live_drive):
     command = f"git clone --no-hardlinks {live_drive.as_posix()} tools/clone"
     assert guard(shell("Bash", command, live_drive), live_drive).deny
+
+
+def test_drive_guard_keeps_a_cd_before_a_semicolon_unknown(live_drive, scratch):
+    """After `cd x;` the cd may have failed, so the next command may run in the checkout: a read
+    passes there anyway, anything else is refused (todo drive-hook-read-only-verbs)."""
+    clone = scratch.as_posix()
+    assert guard(shell("Bash", f"cd {clone}; uv run pytest", live_drive), live_drive).deny
+    assert not guard(shell("Bash", f"cd {clone}; cat f", live_drive), live_drive).deny

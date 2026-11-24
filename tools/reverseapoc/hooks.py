@@ -1475,7 +1475,62 @@ _DRIVE_READS = frozenset({
     "ft", "format-list", "fl", "out-string", "write-output", "write-host", "compare-object",
     "convertfrom-json", "convertto-json", "start-sleep",
 })  # fmt: skip
-_DRIVE_CHECKS = {"find": _find_offender, "sed": _sed_offender}  # reads only in these shapes
+# todo drive-hook-read-only-verbs: find may run a listed read on what it finds, up to `;` or `+`.
+_FIND_RUNS = frozenset({"-exec", "-execdir"})
+_FIND_ENDS = frozenset({";", "+"})
+# date sets the clock with -s/--set or a bare operand; these options take the next word as data.
+_DATE_VALUES = frozenset({"-d", "--date", "-f", "--file", "-r", "--reference"})
+_DATE_VALUE_LETTERS = frozenset("dfr")
+_DATE_INLINE = "I"  # -I[FMT]: the rest of the bundle is its value
+
+
+def _drive_find_offender(args: Sequence[str]) -> str:
+    """find under a drive: no action of _FIND_REFUSED but -exec and -execdir whose program is a
+    listed read, its words up to `;` or `+`. A `\\;` the splitter took for a separator ends the
+    command there, and the words after it are judged as a command of their own."""
+    index = 0
+    while index < len(args):
+        word = args[index]
+        index += 1
+        if word not in _FIND_RUNS:
+            if word in _FIND_REFUSED:
+                return word
+            continue
+        if index == len(args) or _command_name(args[index]) not in _DRIVE_READS:
+            return args[index] if index < len(args) else word
+        while index < len(args) and args[index] not in _FIND_ENDS:
+            index += 1
+        index += 1
+    return ""
+
+
+def _date_offender(args: Sequence[str]) -> str:
+    """date prints, as long as it is not told to set the clock: -s or --set (in any bundle or
+    abbreviation) and a bare operand (MMDDhhmm) are refused; `+FORMAT` and the values of -d, -f
+    and -r are data."""
+    value = False
+    for word in args:
+        if value or word.startswith("+"):
+            value = False
+            continue
+        if word.startswith("--"):
+            if word.startswith("--s"):
+                return word
+            value = word in _DATE_VALUES  # `--date=x` carries its value
+            continue
+        if not word.startswith("-") or word == "-":
+            return word
+        for at, letter in enumerate(word[1:], start=2):
+            if letter == "s":
+                return word
+            if letter in _DATE_VALUE_LETTERS or letter == _DATE_INLINE:
+                value = letter != _DATE_INLINE and at == len(word)
+                break
+    return ""
+
+
+_DRIVE_CHECKS = {"find": _drive_find_offender, "sed": _sed_offender,
+                 "date": _date_offender}  # reads only in these shapes  # fmt: skip
 # Commands that remove, create or change the files they name, beside _WRITERS: listed only when
 # none of their operands may lie under the checkout.
 _REMOVERS = frozenset({
@@ -1527,6 +1582,30 @@ _GIT_GLOBALS = frozenset({_GIT_NO_LOCKS, "--no-pager", "-P"})  # with -C, all a 
 _GIT_CLONE_OPTIONS = frozenset({"--no-hardlinks", "--local", "-l", "--no-checkout", "-n",
                                 "--quiet", "-q"})  # fmt: skip
 _CLONE_OPERANDS = 2
+# todo drive-hook-read-only-verbs: a copy, archive or fetch reads the checkout when only what it
+# writes is judged. GNU cp's value-free letters (no -l or -s links, no -b backups), its target
+# directory option, and PowerShell's Copy-Item parameters as written in full:
+_CP_LETTERS = frozenset("rRpvfnuLT")
+_CP_TARGET_LETTER = "t"
+_CP_TARGET = "--target-directory"
+_CP_LONG = frozenset({"--recursive", "--verbose", "--force", "--no-clobber", "--dereference"})
+_POWERSHELL_COPIES = frozenset({"copy-item", "cpi", "copy", "cp"})
+_COPY_ITEM_SOURCES = frozenset({"-path", "-literalpath"})
+_COPY_ITEM_DESTINATION = "-destination"
+_COPY_ITEM_SWITCHES = frozenset({"-recurse", "-force", "-container"})
+# tar in dash bundles only: one mode, value-free letters, and -f/-C with their values.
+_TAR_MODES = frozenset("ctx")
+_TAR_EXTRACT = "x"
+_TAR_LETTERS = frozenset("vzjJ")
+_TAR_ARCHIVE = "f"
+_TAR_DIRECTORY = "C"
+_TAR_EXCLUDE = "--exclude="
+_STDIO = "-"
+_GIT_FETCHES = frozenset({"fetch", "pull"})
+_GIT_FETCH_OPTIONS = frozenset({"--ff-only", "--no-rebase", "--prune", "--tags", "--no-tags",
+                                "--quiet", "-q", "--verbose", "-v"})  # fmt: skip
+# PowerShell `$name = <literal>`: a quoted string with no expansion, or a number.
+_POWERSHELL_LITERAL = re.compile(r"""\$\w+\s*=\s*(?:'[^']*'|"[^"`$]*"|\d+(?:\.\d+)?)""")
 _AND = "&&"  # the one separator after which a cd has surely moved the next command
 
 
@@ -1702,6 +1781,9 @@ def _drive_segment(
     found = _first(written, lambda word: _guarded(word, here, live))
     if found:
         return here, None, found
+    raw = " ".join(text for text, op in segment if not op)
+    if tool == "PowerShell" and _POWERSHELL_LITERAL.fullmatch(raw):
+        return here, _Run(words[0], here, (), True), ""  # data; a later $name is unplaceable
     values, words = _assigned(tool, words)
     words = _past_keywords(tool, words)
     if not words:
@@ -1725,14 +1807,21 @@ def _drive_segment(
 
 
 def _read_shape(tool: str, words: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
-    """Whether a command (its program word first) has a listed read shape: a listed read, find
-    or sed in their reading shapes, a writer none of whose operands may lie under the checkout,
-    the uv script shape, or a PowerShell variable read or assignment of a read."""
+    """Whether a command (its program word first) has a listed read shape: a listed read, find,
+    sed or date in their reading shapes, a copy or tar whose writes land outside every live
+    checkout, a writer none of whose operands may lie under the checkout, the uv script shape,
+    or a PowerShell variable read or assignment of a read."""
     name, rest = _command_name(words[0]), words[1:]
     if name in _DRIVE_READS:
         return True
     if name in _DRIVE_CHECKS:
         return not _DRIVE_CHECKS[name](rest)
+    if name == "tar":
+        return _tar_read(rest, here, live)
+    copy = (_copy_item_targets(rest) if tool == "PowerShell" and name in _POWERSHELL_COPIES
+            else _cp_targets(rest) if tool == "Bash" and name == "cp" else None)  # fmt: skip
+    if copy and not any(_guarded(word, here, live) for word in copy):
+        return True
     if name in _WRITERS or name in _REMOVERS:
         return not any(_guarded(word, here, live) for word in _operands(rest) if word)
     if name == "uv":
@@ -1741,6 +1830,97 @@ def _read_shape(tool: str, words: Sequence[str], here: str | None, live: tuple[s
         value = rest[1:] if rest[:1] == ["="] else ()
         return not value or _read_shape(tool, value, here, live)
     return False
+
+
+def _cp_targets(rest: Sequence[str]) -> list[str] | None:
+    """What a GNU cp writes: every -t directory, else its last operand (after at least one
+    source); None when it passes an option beside the listed ones."""
+    targets, operands, words = [], [], iter(rest)
+    for word in words:
+        if word == "--":
+            operands.extend(words)
+        elif word.startswith(_CP_TARGET + "="):
+            targets.append(word.split("=", 1)[1])
+        elif word == _CP_TARGET:
+            targets.append(next(words, ""))
+        elif word in _CP_LONG:
+            continue
+        elif word.startswith("--"):
+            return None
+        elif word.startswith("-") and word != _STDIO:
+            flags, target, value = word[1:].partition(_CP_TARGET_LETTER)
+            if not set(flags) <= _CP_LETTERS:
+                return None
+            if target:
+                targets.append(value or next(words, ""))
+        else:
+            operands.append(word)
+    if targets:
+        return targets if operands else None
+    return operands[-1:] if len(operands) > 1 else None
+
+
+def _copy_item_targets(rest: Sequence[str]) -> list[str] | None:
+    """What Copy-Item writes: its -Destination, by name or by position (after -Path, by name or
+    first); None for any other parameter, or a call without a destination."""
+    named, positional, words = [], [], iter(rest)
+    slots = ["path", "destination"]
+    for word in words:
+        key = word.casefold()
+        if key == _COPY_ITEM_DESTINATION:
+            named.append(next(words, ""))
+            slots = [slot for slot in slots if slot != "destination"]
+        elif key in _COPY_ITEM_SOURCES:
+            next(words, None)
+            slots = [slot for slot in slots if slot != "path"]
+        elif key in _COPY_ITEM_SWITCHES:
+            continue
+        elif word.startswith("-"):
+            return None
+        else:
+            positional.append(word)
+    if len(positional) > len(slots):
+        return None
+    bound = zip(slots, positional, strict=False)  # fewer positionals than slots leave some free
+    targets = [*named, *(word for slot, word in bound if slot == "destination")]
+    return targets or None
+
+
+def _tar_read(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
+    """tar in dash bundles of one mode (create, list or extract), v, z, j, J, -f and -C, and
+    --exclude=PATTERN: no archive (-f, read or written) under a live checkout, and an extract
+    lands outside it: every -C, each relative to the last, and the cwd when no -C comes before
+    the first member it names."""
+    modes, archives, dirs, member_first = set(), [], [], False
+    words = iter(rest)
+    for word in words:
+        if word.startswith(_TAR_EXCLUDE):
+            continue
+        if not word.startswith("-") or word == _STDIO:
+            member_first = member_first or not dirs
+            continue
+        if word.startswith("--"):
+            return False
+        for at, letter in enumerate(word[1:], start=2):
+            if letter in (_TAR_ARCHIVE, _TAR_DIRECTORY):
+                value = word[at:] or next(words, "")
+                (archives if letter == _TAR_ARCHIVE else dirs).append(value)
+                break
+            if letter in _TAR_MODES:
+                modes.add(letter)
+            elif letter not in _TAR_LETTERS:
+                return False
+    if len(modes) != 1 or any(_guarded(path, here, live) for path in archives if path != _STDIO):
+        return False
+    if _TAR_EXTRACT not in modes:
+        return True
+    if (member_first or not dirs) and _guarded_dir(here, live):
+        return False
+    for directory in dirs:
+        here = _moved([directory], here)
+        if _guarded_dir(here, live):
+            return False
+    return True
 
 
 def _operands(rest: Sequence[str]) -> Iterator[str]:
@@ -1788,8 +1968,19 @@ def _git_run(word: str, rest: Sequence[str], here: str | None, values: tuple[str
             return None, option
     command = rest[index:]
     read = bool(command) and (not _git_read_offender(command, no_locks)
-                              or _git_clone_out(command, here, live))  # fmt: skip
+                              or _git_clone_out(command, here, live)
+                              or (not values and _git_fetch_in(command, here, live)))  # fmt: skip
     return _Run(word, here, (*values, *_operands(command)), read), ""
+
+
+def _git_fetch_in(command: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
+    """`git fetch` or `git pull` with listed value-free options only, run in a repository outside
+    every live checkout: it writes there and only reads the remote it names, the checkout
+    included (todo drive-hook-read-only-verbs). The caller refuses it after a NAME=value word,
+    which could point GIT_DIR into the checkout."""
+    options = {word for word in command[1:] if word.startswith("-")}
+    return (command[0] in _GIT_FETCHES and options <= _GIT_FETCH_OPTIONS
+            and not _guarded_dir(here, live))  # fmt: skip
 
 
 def _git_clone_out(command: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
