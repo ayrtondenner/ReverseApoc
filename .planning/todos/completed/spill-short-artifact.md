@@ -31,3 +31,9 @@ U12 (batch 2026-11-18) found that pr_spill_short and pr_spill_short_rev differ o
   skip and the "cannot reach" line run for such frames (a behaviour change of the search, with
   its own test-first change of tests/test_search.py
   `test_declaration_axis_falls_back_beside_a_plain_small_local`).
+
+## Owner ruling (2026-11-24)
+
+Asked: keep `search._readable`'s refusal of a frame with a plain local under 4 bytes that is not
+in `memory`, or lift it test-first. Options: keep / lift test-first. Chosen: **keep**. The
+refusal stays as the safe side; no code change.
