@@ -72,3 +72,12 @@ Still open: the Claude per-arm figures (Fable, Opus, Sonnet, Haiku) need a singl
 with no agents working, both bars read right before and right after, well away from the Friday
 reset. Terra by size (0.41% of the week at 256 B and up) is not split out either: the Codex
 figure is one mixed-arm average.
+
+## Reading of 2026-11-24
+
+- Codex (S, owner paste at 11:16): 5-hour window 96% used (resets in 4 h 20 min), week 94% used,
+  so 6% left (resets in 4 d 12 h). Against 69% left at ~13:45 on 2026-11-23 that is 63 points.
+  Sessions since then, from the records (T): 24 of run 20261123-codex after 13:33, 21 of
+  20261124-codex, and 41 of 20261124-codex2 by 11:15. That is 86, or about 0.73 points a session
+  (derived, mixed arms, interactive use inside). It agrees with the 0.67 set on 2026-11-23, so
+  quota.toml stays as it is.
