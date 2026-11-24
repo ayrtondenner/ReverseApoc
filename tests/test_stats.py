@@ -1855,3 +1855,50 @@ def test_held_v1_is_the_recorded_sample(tmp_path):
     listed = [line for line in HELD_V1.read_text(encoding="utf-8").splitlines()
               if line and not line.startswith("#")]  # fmt: skip
     assert listed == [f"{exe} 0x{start:08X}" for exe, start in _held_v1_sample(tmp_path)]
+
+
+# ---- todos held-benchmark-statistics, held-context-ablations (owner ruling 2026-11-24) ----
+# held-v1b: held-v1 without the picks matched since its freeze, frozen at _HELD_V1B_BASE.
+
+HELD_V1B = REPO_ROOT / "config" / "benchmarks" / "held-v1b.txt"
+_HELD_V1B_BASE = "9b98ecc7"  # the commit whose status.csv decided which picks were dropped
+_HELD_V1B_DROPPED = ("ufo2p 0x0008A0C0", "tacp 0x000A3790", "ufo2p 0x00060BD0",
+                     "tacp 0x00097370")  # fmt: skip
+
+
+def _listed(path: Path) -> list[str]:
+    return [line for line in path.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")]  # fmt: skip
+
+
+def test_held_v1b_is_held_v1_without_the_dropped_picks():
+    """Same order as held-v1, the dropped picks left out; the header names the date, the
+    source set, the base commit and every dropped pick."""
+    from reverseapoc import driver
+
+    kept = [line for line in _listed(HELD_V1) if line not in _HELD_V1B_DROPPED]
+    assert _listed(HELD_V1B) == kept
+    assert len(driver.read_picks(HELD_V1B)) == 3 * _HELD_V1_PER_STRATUM - len(_HELD_V1B_DROPPED)
+    header = HELD_V1B.read_text(encoding="utf-8")
+    assert "2026-11-24" in header and "held-v1.txt" in header and _HELD_V1B_BASE in header
+    assert all(pick in header for pick in _HELD_V1B_DROPPED)
+
+
+def test_held_v1b_dropped_exactly_the_matched_picks(tmp_path):
+    """At the base commit every dropped pick is matched and every kept one is not; a clone
+    without that commit (a shallow CI checkout) skips."""
+    import subprocess
+
+    from reverseapoc.status import read_status
+
+    if reverseapoc.stats.is_shallow(REPO_ROOT):
+        pytest.skip("shallow clone: the base commit may be missing")
+    matched = set()
+    for exe in ("ufo2p", "tacp"):
+        shown = subprocess.run(
+            ["git", "-c", "safe.directory=*", "show", f"{_HELD_V1B_BASE}:config/{exe}/status.csv"],
+            cwd=REPO_ROOT, capture_output=True, check=True).stdout  # fmt: skip
+        (tmp_path / f"{exe}.csv").write_bytes(shown)
+        matched |= {f"{exe} 0x{row.start:08X}" for row in read_status(tmp_path / f"{exe}.csv")
+                    if row.status == "matched"}  # fmt: skip
+    assert {line for line in _listed(HELD_V1) if line in matched} == set(_HELD_V1B_DROPPED)
