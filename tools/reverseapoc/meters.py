@@ -65,6 +65,9 @@ class Reading:
     window: str | None = None
     resets_at: str | None = None
     as_of: str | None = None
+    # A cached figure read before the window's last reset (todo claude-meter-stale): it is
+    # withheld, used and remaining None.
+    stale: bool = False
     error: str | None = None
 
     def to_json(self) -> dict:
@@ -278,15 +281,22 @@ def _agy(seams: Seams, base: dict) -> list[Reading]:
 # ---- Claude Code ----
 
 
-def _claude_limit(limit: Mapping, as_of: str, base: dict) -> Reading:
+def _claude_limit(limit: Mapping, as_of: str, base: dict, now: datetime) -> Reading:
+    """One bar of the cache. A bar whose reset is already past was read before that reset (the
+    cache refreshes only when the usage panel fetches), so its figure is last window's: it is
+    withheld and the reading marked stale (owner ruling, todo claude-meter-stale)."""
     used = _number(limit, "percent", "cachedUsageUtilization limit")
     model = ((limit.get("scope") or {}).get("model") or {}).get("display_name")
     meter = f"{limit.get('kind')} {model}" if model else str(limit.get("kind"))
     group = limit.get("group")
-    resets_at = _iso(_utc(limit["resets_at"])) if limit.get("resets_at") else None
-    return Reading(**base, meter=meter, used=used, limit=_PERCENT, remaining=_PERCENT - used,
-                   unit="percent", window=_CLAUDE_WINDOWS.get(group, group),
-                   resets_at=resets_at, as_of=as_of)  # fmt: skip
+    reset = _utc(limit["resets_at"]) if limit.get("resets_at") else None
+    stale = reset is not None and reset <= now
+    figures = {"used": None, "remaining": None} if stale else {
+        "used": used, "remaining": _PERCENT - used}  # fmt: skip
+    return Reading(**base, meter=meter, **figures, limit=_PERCENT, unit="percent",
+                   window=_CLAUDE_WINDOWS.get(group, group),
+                   resets_at=_iso(reset) if reset else None, as_of=as_of,
+                   stale=stale)  # fmt: skip
 
 
 def _claude_code(seams: Seams, base: dict) -> list[Reading]:
@@ -301,7 +311,9 @@ def _claude_code(seams: Seams, base: dict) -> list[Reading]:
         raise MeterError(f"unavailable: no cachedUsageUtilization limits in {path} (the usage "
                          "panel has not been opened since the CLI started caching it)")  # fmt: skip
     as_of = _iso(datetime.fromtimestamp(_number(cache, "fetchedAtMs", str(path)) / 1000, UTC))
-    return [_claude_limit(limit, as_of, base) for limit in limits if isinstance(limit, dict)]
+    now = seams.now().astimezone(UTC)
+    return [_claude_limit(limit, as_of, base, now) for limit in limits
+            if isinstance(limit, dict)]  # fmt: skip
 
 
 _READERS: dict[str, tuple[Callable[[Seams, dict], list[Reading]], Callable[[Seams], str]]] = {
@@ -396,6 +408,9 @@ def _line(r: Reading, now: datetime) -> str:
     if r.error:
         return f"{head} {r.error}"
     parts = [r.window or "-"]
+    if r.stale:
+        parts.append(f"stale (read {r.as_of}, reset {r.resets_at})")
+        return f"{head} {', '.join(parts)}  [{r.how}]"
     if r.used is not None:
         of = f" of {_figure(r.limit, r.unit)}" if r.limit is not None else ""
         parts.append(f"{_figure(r.used, r.unit)} used{of}")
@@ -411,5 +426,5 @@ def _line(r: Reading, now: datetime) -> str:
 
 def format_readings(readings: Sequence[Reading], now: datetime) -> str:
     """One line per reading; a window whose reset is already past is marked `reset since`
-    (its figure predates the reset)."""
+    (its figure predates the reset), and a stale reading shows no figure at all."""
     return "\n".join(_line(r, now) for r in readings)

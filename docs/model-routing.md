@@ -1222,8 +1222,8 @@ on these nights; size OpenRouter budgets from (A).
 `reverseapoc meters` (text, or `--json`; `--source NAME` repeatable) reads each meter from the
 tool itself, so this table can be re-measured without screenshots. Each reading names its
 source, meter, used, limit or remaining, unit, window, `resets_at` when known, `read_at` (this
-read, UTC), `as_of` (when the source took the figure) and how it was read; a source that cannot
-be read gives a reading with an `error` instead. A drive sized to a budget calls
+read, UTC), `as_of` (when the source took the figure), `stale` and how it was read; a source
+that cannot be read gives a reading with an `error` instead. A drive sized to a budget calls
 `meters.budget_meter`. Sources as found on 2026-11-13:
 
 | Source | Read from | Notes |
@@ -1235,7 +1235,13 @@ be read gives a reading with an `error` instead. A drive sized to a budget calls
 | Claude Code (Ultra) | `~/.claude.json` `cachedUsageUtilization.limits` | the usage panel's cache: the weekly bar (`weekly_all`) and each scoped bar (`weekly_scoped Fable`) in percent, with `fetchedAtMs` as `as_of`. It refreshes only when the CLI fetches the panel; no Anthropic endpoint is called. |
 
 A window whose `resets_at` is before the read is marked `reset since` in the text report: its
-figure predates the reset.
+figure predates the reset. A Claude Code bar in that state is withheld instead (owner ruling,
+2026-11-23): the cache refreshes only when the usage panel fetches, and on 2026-11-21 it still
+read last week's 53% while the panel read 6%. Such a bar has `used` and `remaining` null and
+`stale` true, and the text reads `stale (read <as_of>, reset <resets_at>)`; opening the usage
+panel refreshes it. Budget sizing does not read these bars, so nothing changes there:
+`refuse_budgets` sizes from quota.toml's `week_percent`, and the mid-night `budget_meter` sums the
+arm's recorded `cost_usd` over `usd_per_week_point`.
 
 ### Budget-sized drives
 

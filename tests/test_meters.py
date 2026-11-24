@@ -71,7 +71,7 @@ def test_reading_json_holds_every_field():
     assert reading.to_json() == {
         "source": "codex", "meter": "primary", "read_at": _READ_AT, "how": "x", "used": 1.0,
         "limit": 100.0, "remaining": 99.0, "unit": "percent", "window": "5h",
-        "resets_at": None, "as_of": None, "error": None}  # fmt: skip
+        "resets_at": None, "as_of": None, "stale": False, "error": None}  # fmt: skip
 
 
 def test_unknown_source_is_refused():
@@ -301,6 +301,46 @@ def test_claude_code_reads_the_cached_usage_panel(tmp_path):
     assert weekly.how == str(tmp_path / ".claude.json")
     assert _one(readings, "weekly_scoped Fable").used == 9
     assert _one(readings, "session").window == "5h"
+
+
+def _claude_bar(tmp_path: Path, resets_at: str) -> meters.Reading:
+    """The weekly_all bar of a cache fetched 2026-11-13T09:00Z whose bar resets at `resets_at`,
+    read at _NOW (2026-11-13T12:00Z)."""
+    doc = json.loads((_FIXTURES / "claude.json").read_text(encoding="utf-8"))
+    doc["cachedUsageUtilization"]["utilization"]["limits"][0]["resets_at"] = resets_at
+    (tmp_path / ".claude.json").write_text(json.dumps(doc), encoding="utf-8")
+    return _one(meters.read("claude-code", _seams(tmp_path)), "weekly_all")
+
+
+def test_claude_code_withholds_a_bar_that_reset_since_the_cache(tmp_path):
+    """todo claude-meter-stale (owner ruling: withhold): a bar whose reset is already past was
+    read before that reset, so its figure is last window's and is not reported."""
+    bar = _claude_bar(tmp_path, "2026-11-13T10:00:00+00:00")
+    assert bar.stale is True and bar.error is None
+    assert (bar.used, bar.remaining) == (None, None)
+    assert (bar.as_of, bar.resets_at) == ("2026-11-13T09:00:00Z", "2026-11-13T10:00:00Z")
+    doc = bar.to_json()
+    assert doc["used"] is None and doc["remaining"] is None and doc["stale"] is True
+    line = meters.format_readings([bar], _NOW)
+    assert "stale (read 2026-11-13T09:00:00Z, reset 2026-11-13T10:00:00Z)" in line
+    assert "used" not in line and "left" not in line
+
+
+def test_claude_code_keeps_a_bar_whose_reset_is_ahead(tmp_path):
+    bar = _claude_bar(tmp_path, "2026-11-16T19:00:00+00:00")
+    assert bar.stale is False and (bar.used, bar.remaining) == (61, 39)
+    line = meters.format_readings([bar], _NOW)
+    assert "61% used of 100%" in line and "stale" not in line
+
+
+def test_the_verb_prints_a_withheld_bar_as_json_null(tmp_path, monkeypatch, capsys):
+    _claude_bar(tmp_path, "2026-11-13T10:00:00+00:00")
+    monkeypatch.setattr(meters, "default_seams", lambda: _seams(tmp_path))
+    assert cli.main(["meters", "--json", "--source", "claude-code"]) == 0
+    bar = next(r for r in json.loads(capsys.readouterr().out) if r["meter"] == "weekly_all")
+    assert (bar["used"], bar["remaining"], bar["stale"]) == (None, None, True)
+    assert cli.main(["meters", "--source", "claude-code"]) == 0
+    assert "stale (read" in capsys.readouterr().out
 
 
 def test_claude_code_without_the_cache_is_unavailable(tmp_path):
