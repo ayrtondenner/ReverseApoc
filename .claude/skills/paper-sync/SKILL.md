@@ -13,8 +13,11 @@ the only writes to Overleaf are one additive `sync_directory` and one compile.
 
 ## Before you start
 
-- Each run you add must have ended (its STOPPED record is in `progress/attempts.jsonl`) and its
-  records must be committed. A run that is still going gets no figures yet, because its numbers
+- Each run you add must have ended and its records must be committed. A run has ended when
+  `progress/attempts.jsonl` holds its ENDED or STOPPED record, or when it was killed and no
+  drive process is left for it. A killed run has no totals line, so its figures come from its
+  own attempt records: count and sum them, and mark the result derived. A run that is still
+  going (a STARTED record only, and its process alive) gets no figures yet, because its numbers
   still move. A different drive running now does not block the pass: everything below reads the
   checkout or writes under the scratchpad.
 - Load the overleaf-web tools with ToolSearch, then call `auth_status`. If it fails or returns

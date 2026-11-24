@@ -47,3 +47,10 @@ def test_a_pass_compiles_once_and_judges_by_built_cleanly():
 def test_docs_tools_lists_the_skill():
     tools = (REPO_ROOT / "docs" / "tools.md").read_text(encoding="utf-8")
     assert "paper-sync" in tools
+
+
+def test_the_precondition_takes_ended_stopped_and_killed_runs():
+    section = _text().split("## Before you start", 1)[1].split("## The pass", 1)[0]
+    before = " ".join(section.split())
+    for phrase in ("ENDED", "STOPPED", "killed", "attempt records", "still going"):
+        assert phrase in before
