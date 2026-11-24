@@ -1529,8 +1529,49 @@ def _date_offender(args: Sequence[str]) -> str:
     return ""
 
 
-_DRIVE_CHECKS = {"find": _drive_find_offender, "sed": _sed_offender,
-                 "date": _date_offender}  # reads only in these shapes  # fmt: skip
+def _sort_offender(args: Sequence[str]) -> str:
+    """sort prints, as long as it has no -o, -T or --compress-program (in a bundle or any long
+    abbreviation): the value letters -k, -t and -S end a bundle. An unread value word is judged
+    as an option, which can only refuse more."""
+    for word in args:
+        if word.startswith("--"):
+            if word.startswith(_SORT_LONG_WRITES):
+                return word
+            continue
+        if not word.startswith("-"):
+            continue
+        for letter in word[1:]:
+            if letter in _SORT_WRITES:
+                return word
+            if letter in _SORT_VALUES:
+                break
+    return ""
+
+
+def _uniq_outputs(args: Sequence[str]) -> list[str]:
+    """What uniq writes: every operand after its input (the second is its output file). -f, -s
+    and -w take a number, the rest of the bundle or the next word; a long option's separate
+    value counts as an operand, which can only refuse more."""
+    operands, words = [], iter(args)
+    for word in words:
+        if word == "--":
+            operands.extend(words)
+            break
+        if word.startswith("--") or not word.startswith("-") or word == _STDIO:
+            if not word.startswith("--"):
+                operands.append(word)
+            continue
+        for at, letter in enumerate(word[1:], start=2):
+            if letter in _UNIQ_VALUES:
+                if at == len(word):
+                    next(words, None)
+                break
+    return operands[1:]
+
+
+_DRIVE_CHECKS = {"find": _drive_find_offender, "sed": _sed_offender, "date": _date_offender,
+                 "sort": _sort_offender}  # reads only in these shapes  # fmt: skip
+_UNIQ = "uniq"  # reads when it writes nothing under the checkout (_uniq_outputs)
 # Commands that remove, create or change the files they name, beside _WRITERS: listed only when
 # none of their operands may lie under the checkout.
 _REMOVERS = frozenset({
@@ -1638,7 +1679,9 @@ _IMAGE_LOAD = "load"
 # directly, through cmd /c or a nested shell, or handed to one of these launchers.
 _POWERSHELLS = frozenset({"powershell", "pwsh"})
 _LAUNCHERS = frozenset({"start-process", "saps", "start", "timeout", "env", "xargs", "nohup",
-                        "exec", "nice"})  # fmt: skip
+                        "exec", "nice", "time", "command", "builtin", "winpty", "find", "call",
+                        "sudo", "setsid", "stdbuf"})  # fmt: skip
+_LAUNCHED_SPLIT = re.compile(r"""[\s,'"]+""")  # a launcher's argument may hold a command line
 # The repo's own helpers stand in for the operator's scripts: `uv run reverseapoc <helper> RUN`,
 # then at most the helper's one option and its value.
 _DRIVE_HELPERS = {"drive-stop": "--wait-minutes", "drive-status": "--log"}
@@ -1646,6 +1689,33 @@ _HELPER_COUNT = "--wait-minutes"  # its value is a whole number of minutes
 _HELPER_WORDS = 3  # reverseapoc, the helper, RUN
 _HELPER_OPTION_WORDS = 2  # the option and its value
 _RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# todo drive-hook-read-verbs-2: `timeout [options] DURATION <command>` is judged as <command>.
+_TIMEOUT = "timeout"
+_TIMEOUT_VALUES = frozenset({"-k", "--kill-after", "-s", "--signal"})
+_TIMEOUT_FLAGS = frozenset({"--preserve-status", "--foreground", "-v", "--verbose"})
+_DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]?")
+_TIMED_WORDS = 2  # the duration and the program
+# sort writes with -o (its output) and -T (temporary files), and runs --compress-program; the
+# long forms in every abbreviation GNU sort accepts. -k, -t and -S take the rest of the bundle.
+_SORT_WRITES = frozenset("oT")
+_SORT_VALUES = frozenset("ktS")
+_SORT_LONG_WRITES = ("--o", "--t", "--co")
+_UNIQ_VALUES = frozenset("fsw")  # uniq's -f, -s and -w take a number; a second operand is written
+# PowerShell member uses that only read the value before them: a property, and a method call
+# whose arguments are numbers, values or quoted text with no path separator (so the call cannot
+# spell a path), from a value, a `)` or a `]`. `@(...)` is a plain subexpression.
+_PURE_ARG = r"""(?:-?\d+|\$\w+(?:\.\w+)*|'[^'\\/]*'|"[^"`$\\/]*")"""
+_POWERSHELL_PURE_CALL = re.compile(
+    rf"(?<=[\w)\]])\.(?:substring|trim|tostring)\(\s*(?:{_PURE_ARG}(?:\s*,\s*{_PURE_ARG})*)?\s*\)",
+    re.IGNORECASE,
+)
+_POWERSHELL_PURE_PROPERTY = re.compile(r"(?<=[\w)\]])\.(?:count|length)\b(?!\s*\()", re.IGNORECASE)
+_POWERSHELL_ARRAY = "@("
+_POWERSHELL_OPERATORS = frozenset({"-replace"})  # `(...) -replace 'a','b'` after a value
+# Bash expands $(...) and backticks in the body of a here-document whose delimiter is unquoted.
+_OPEN_HEREDOC = re.compile(r"<<-?[ \t]*([A-Za-z_]\w*)[^\n]*\n(.*?)^[ \t]*\1[ \t]*$",
+                           re.MULTILINE | re.DOTALL)  # fmt: skip
+_EXIT_STATUS = "$?"  # a number, never a path
 
 
 def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
@@ -1810,9 +1880,13 @@ def _drive_offender(tool: str, command: str, here: str | None, live: tuple[str, 
     runs in or names the checkout (any command of it, a substitution's included), any command
     without a listed read shape, or a PowerShell method call. `here` is the directory the shell
     starts in (None: unknown, judged as inside); each cd moves it for the commands after it."""
-    text = command.translate(_POWERSHELL_QUOTES) if tool == "PowerShell" else command
+    if tool == "PowerShell":
+        text = _pure_members(command.translate(_POWERSHELL_QUOTES))
+        bodies: list[str] = []
+    else:
+        text, bodies = command, _heredoc_substitutions(command)
     runs: list[_Run] = []
-    for part in (text, *_substitutions(tool, text)):
+    for part in (text, *_substitutions(tool, text), *bodies):
         found = _collect_runs(tool, part, here, live, runs)
         if found:
             return found
@@ -1822,6 +1896,27 @@ def _drive_offender(tool: str, command: str, here: str | None, live: tuple[str, 
     if call is not None:
         return call.group()
     return next((run.word for run in runs if not run.read), "")
+
+
+def _pure_members(text: str) -> str:
+    """PowerShell text without the read-only member uses of _POWERSHELL_PURE_CALL and
+    _POWERSHELL_PURE_PROPERTY, and with `@(` as `(`, so the value they read from is judged as a
+    read (todo drive-hook-read-verbs-2). Any other method call stays for _POWERSHELL_CALL."""
+    while True:
+        bare = _POWERSHELL_PURE_PROPERTY.sub("", _POWERSHELL_PURE_CALL.sub("", text))
+        bare = bare.replace(_POWERSHELL_ARRAY, "(")
+        if bare == text:
+            return text
+        text = bare
+
+
+def _heredoc_substitutions(command: str) -> list[str]:
+    """The substitutions Bash expands in the bodies of here-documents with an unquoted delimiter
+    (the splitter drops every body); an apostrophe there is text, so it opens no quote."""
+    found = []
+    for heredoc in _OPEN_HEREDOC.finditer(command):
+        found.extend(_substitutions("Bash", heredoc.group(2).replace("'", " ")))
+    return found
 
 
 def _collect_runs(tool: str, part: str, here: str | None, live: tuple[str, ...],
@@ -1917,9 +2012,16 @@ def _drive_segment(
         return here, (_Run("", here, values, True) if values else None), ""
     head, rest = words[0], words[1:]
     name = _command_name(head)
-    if name in _POWERSHELLS or (name in _LAUNCHERS
-                                and any(_command_name(word) in _POWERSHELLS for word in rest)):
+    if name in _POWERSHELLS or (name in _LAUNCHERS and _launches_powershell(rest)):
         raise _ScriptRun(" ".join(words))
+    if name in _LAUNCHERS:
+        _launched_image_build(rest)
+    while name == _TIMEOUT:
+        timed = _untimed(rest)
+        if timed is None or _command_name(timed[0]) in _MOVES | _RETURNS:  # a timed cd: no move
+            return here, _Run(head, here, (*values, *_operands(rest), *_glued(rest)), False), ""
+        words, head, rest = timed, timed[0], timed[1:]
+        name = _command_name(head)
     if name in _DOCKERS and _image_build(name, rest):
         raise _ImageBuild(" ".join(words))
     if name in _MOVES:
@@ -1936,14 +2038,54 @@ def _drive_segment(
     loop = tool == "Bash" and name in _BASH_LOOPS  # `for f in <words>`: data, not a program
     # a NAME=value before uv (UV_PROJECT_ENVIRONMENT, PYTHONPATH) steers what it runs or writes
     read = loop or (_read_shape(tool, words, here, live) and not (values and name == "uv"))
-    return here, _Run(head, here, (*values, *(rest if loop else _operands(rest))), read), ""
+    named = (*values, *(rest if loop else _operands(rest)), *_glued(rest))
+    return here, _Run(head, here, named, read), ""
+
+
+def _launches_powershell(rest: Sequence[str]) -> bool:
+    """Whether a launcher's words name PowerShell anywhere, a word's own command line (`bash -c
+    "pwsh -File x"`, `env -S "..."`, Start-Process's arguments) included."""
+    return any(_command_name(part) in _POWERSHELLS
+               for word in rest for part in _LAUNCHED_SPLIT.split(word))  # fmt: skip
+
+
+def _launched_image_build(rest: Sequence[str]) -> None:
+    """Raise _ImageBuild when a launcher (`nohup`, `env`, `time` ...) runs docker or
+    docker-compose to build or retag an image."""
+    for index, word in enumerate(rest):
+        name = _command_name(word)
+        if name in _DOCKERS and _image_build(name, rest[index + 1 :]):
+            raise _ImageBuild(" ".join(rest[index:]))
+
+
+def _untimed(rest: Sequence[str]) -> Sequence[str] | None:
+    """The command `timeout [options] DURATION` runs, or None when its options or duration are
+    not the listed ones (todo drive-hook-read-verbs-2)."""
+    words = _past_options(rest, _TIMEOUT_VALUES, _TIMEOUT_FLAGS)
+    if words is None or len(words) < _TIMED_WORDS or not _DURATION.fullmatch(words[0]):
+        return None
+    return words[1:]
+
+
+def _glued(rest: Sequence[str]) -> Iterator[str]:
+    """The values glued to short options that may name a path: the tail of `-o<path>`,
+    `-t<dir>` or `-C<dir>`, and PowerShell's `-Name:<value>`, when it holds a separator or an
+    expansion (so `-rf` or `-n5` yields nothing). Judged like operands, so such a write from a
+    clone into the checkout is seen."""
+    for word in rest:
+        if not word.startswith("-") or word.startswith("--"):
+            continue
+        for tail in (word[2:], word.partition(":")[2]):
+            if any(sep in tail for sep in "/\\") or _UNPLACED.search(tail):
+                yield tail
 
 
 def _read_shape(tool: str, words: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
     """Whether a command (its program word first) has a listed read shape: a listed read, find,
-    sed or date in their reading shapes, a copy or tar whose writes land outside every live
-    checkout, a writer none of whose operands may lie under the checkout, the uv script shape,
-    or a PowerShell variable read or assignment of a read."""
+    sed, date, sort or uniq in their reading shapes, a copy or tar whose writes land outside
+    every live checkout, a writer none of whose operands (glued values included) may lie under
+    the checkout, the uv script or helper shape, PowerShell's -replace, or a PowerShell variable
+    read or assignment of a read."""
     name, rest = _command_name(words[0]), words[1:]
     if name in _DRIVE_READS:
         return True
@@ -1951,12 +2093,18 @@ def _read_shape(tool: str, words: Sequence[str], here: str | None, live: tuple[s
         return not _DRIVE_CHECKS[name](rest)
     if name == "tar":
         return _tar_read(rest, here, live)
+    if name == _UNIQ:
+        return not any(_guarded(word, here, live) for word in _uniq_outputs(rest))
     copy = (_copy_item_targets(rest) if tool == "PowerShell" and name in _POWERSHELL_COPIES
             else _cp_targets(rest) if tool == "Bash" and name == "cp" else None)  # fmt: skip
-    if copy and not any(_guarded(word, here, live) for word in copy):
-        return True
+    if copy:
+        return not any(_guarded(word, here, live) for word in copy)
     if name in _WRITERS or name in _REMOVERS:
-        return not any(_guarded(word, here, live) for word in _operands(rest) if word)
+        # with no operand its target comes unseen, from a pipe or a `(...)` the splitter cut off
+        named = [word for word in (*_operands(rest), *_glued(rest)) if word]
+        return bool(named) and not any(_guarded(word, here, live) for word in named)
+    if tool == "PowerShell" and name in _POWERSHELL_OPERATORS:
+        return True  # its operands are judged as the run's words
     if name == "uv":
         return _uv_read(rest, here, live)
     if tool == "PowerShell" and _POWERSHELL_VALUE.fullmatch(name):
@@ -2057,8 +2205,13 @@ def _tar_read(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> b
 
 
 def _operands(rest: Sequence[str]) -> Iterator[str]:
-    """A command's operands: every word but an option, and the value of an `--opt=value`."""
-    for word in rest:
+    """A command's operands: every word but an option, the value of an `--opt=value`, and every
+    word after `--`."""
+    words = iter(rest)
+    for word in words:
+        if word == "--":
+            yield from words
+            return
         if not word.startswith("-"):
             yield word
         elif "=" in word:
@@ -2238,7 +2391,7 @@ def _guarded(word: str, here: str | None, live: tuple[str, ...]) -> bool:
     a null device never does, a path the hook cannot place always may."""
     if word.casefold() in _NULL_DEVICES:
         return False
-    if _UNPLACED.search(word):
+    if _UNPLACED.search(word.replace(_EXIT_STATUS, "")):
         return True
     try:
         paths = candidates(word, here or "")

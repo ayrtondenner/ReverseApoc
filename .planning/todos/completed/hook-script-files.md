@@ -53,6 +53,11 @@ among them) refused from a clone and from the checkout (42) and allowed with a s
 `test_drive_guard_keeps_other_helper_shapes_refused` (11). docs/workflow.md, "From a Claude Code session" step 3,
 says so.
 
+Review follow-up (same day): `_LAUNCHERS` gained `time`, `command`, `builtin`, `winpty`, `find`, `call`, `sudo`,
+`setsid` and `stdbuf`, and a launcher's words are split on spaces, commas and quotes, so `nohup bash -c "pwsh ..."`,
+`env -S "pwsh ..."` and `Start-Process cmd '/c pwsh ...'` are refused too (SCRIPT_RUNS now 29). A launcher running
+docker is put through the image check as well.
+
 Left open (not in the ruling, unchanged): a script run without PowerShell still passes from a clone when nothing
 in its command line names the checkout: a `.ps1` run directly by the PowerShell tool (`& <scratch>\x.ps1`),
 `bash x.sh`, `cmd /c x.bat`, `python x.py`.

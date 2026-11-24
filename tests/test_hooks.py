@@ -3118,6 +3118,15 @@ SCRIPT_RUNS = [
     ("PowerShell", "cmd /c 'pwsh -File x.ps1'"),
     ("PowerShell", "Start-Process powershell -ArgumentList '-File','x.ps1' -Wait"),
     ("PowerShell", "Start-Process -FilePath pwsh.exe -ArgumentList '-c','Get-Date'"),
+    # review: a launcher or shell around PowerShell, a word deeper
+    ("Bash", "nohup bash -c \"pwsh -File {scratch}/x.ps1\""),
+    ("Bash", "env -S \"pwsh -File x.ps1\""),
+    ("Bash", "time pwsh -File x.ps1"),
+    ("Bash", "command pwsh -File x.ps1"),
+    ("Bash", "winpty pwsh -File x.ps1"),
+    ("Bash", "find . -maxdepth 0 -exec pwsh -File x.ps1 \;"),
+    ("Bash", "cmd /c \"call pwsh -File x.ps1\""),
+    ("PowerShell", "Start-Process cmd '/c pwsh -File x.ps1'"),
 ]
 
 
@@ -3196,6 +3205,9 @@ HIDDEN_RETAGS = [
     ("Bash", "docker compose up --pull=missing"),
     ("Bash", "docker compose create --pull always"),
     ("Bash", "docker-compose pull"),
+    ("Bash", "cd {scratch} && nohup docker compose build"),
+    ("Bash", "env docker build ."),
+    ("Bash", "time docker tag x reverseapoc-build:local"),
 ]
 
 
@@ -3217,3 +3229,102 @@ def test_drive_guard_allows_hidden_retags_without_a_live_drive(state, name, comm
     repo = request.getfixturevalue(state)
     text = _placed(name, command, repo, scratch)
     assert not guard(shell(name, text, scratch), repo).deny, text
+
+
+# todo drive-hook-read-verbs-2: more reads, each refused before, and the write forms beside them.
+READS_2_ALLOWED = [
+    ("Bash", "grep -rn drive tools | sort | uniq -c"),
+    ("Bash", "sort -u tools/x.txt"),
+    ("Bash", "sort -t, -k2 -n tools/x.txt"),
+    ("Bash", "uniq -c tools/x.txt"),
+    ("Bash", "uniq -f 1 tools/x.txt"),
+    ("Bash", "uniq tools/x.txt {scratch}/out.txt"),
+    ("Bash", "timeout 5 cat tools/x.py"),
+    ("Bash", "timeout -k 2 10s grep -n x tools/x.py"),
+    ("Bash", "timeout 30 git --no-optional-locks log -1"),
+    ("Bash", "cd {scratch} && cat > notes.txt <<'EOF'\nline one\nEOF"),
+    ("Bash", "cd {scratch} && cat <<'EOF' > notes.txt\nline one\nEOF"),
+    ("Bash", "cd {scratch} && cat > notes.txt"),
+    ("Bash", "cd {scratch} && echo x > out.txt"),
+    ("Bash", "cd {scratch}/clone && uv run pytest -q; echo \"exit=$?\""),
+    ("Bash", "uv run --no-project python -I {scratch}/x.py; echo \"exit=$?\""),
+    ("PowerShell",
+     "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine.Substring(0, 140) }"),
+    ("PowerShell", "@(Get-CimInstance Win32_Process).Count"),
+    ("PowerShell", "(Get-Content tools{sep}x.py).Length"),
+    ("PowerShell", "(Get-Date).ToString('HH:mm')"),
+    ("PowerShell", "(Get-Date).ToString()"),
+    ("PowerShell", "$x = Get-Content tools{sep}x.py; $x.Trim()"),
+    ("PowerShell", "(Get-Content tools{sep}x.py) -replace 'a','b'"),
+    ("PowerShell", "Get-ChildItem tools | ForEach-Object { $_.Name.ToString().Length }"),
+    ("Bash", "cd {scratch} && cat > notes.txt <<EOF\nvalue $HOME, it's\nEOF"),
+    ("Bash", "cd {scratch} && cat > notes.txt <<'EOF'\nuse $(rm -rf {repo}/tools) as text\nEOF"),
+    ("Bash", "rm -rf {scratch}/old"),
+]
+
+
+@pytest.mark.parametrize("name,command", READS_2_ALLOWED)
+def test_drive_guard_allows_more_reads(live_drive, scratch, name, command):
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, live_drive), live_drive)
+    assert not decision.deny, (text, decision.reason)
+
+
+READS_2_REFUSED = [
+    # from the checkout
+    ("Bash", "sort -o tools/x.txt tools/y.txt", "live_drive"),
+    ("Bash", "sort -uo tools/x.txt tools/y.txt", "live_drive"),
+    ("Bash", "sort --output=tools/x.txt tools/y.txt", "live_drive"),
+    ("Bash", "sort -o {scratch}/x.txt tools/y.txt", "live_drive"),  # no -o while touching
+    ("Bash", "sort -T tools tools/y.txt", "live_drive"),  # temporary files in the checkout
+    ("Bash", "sort --compress-program=sh tools/y.txt", "live_drive"),
+    ("Bash", "uniq tools/a.txt tools/b.txt", "live_drive"),
+    ("Bash", "uniq -c {scratch}/a.txt tools/b.txt", "live_drive"),
+    ("Bash", "timeout 5 rm tools/x.py", "live_drive"),
+    ("Bash", "timeout 600 uv run pytest", "live_drive"),
+    ("Bash", "timeout --weird 5 cat tools/x.py", "live_drive"),
+    ("Bash", "timeout 5 cd {scratch} && rm x", "live_drive"),  # the timed cd moves nothing
+    ("Bash", "cd {scratch} && cat > {repo}/x.txt <<'EOF'\nx\nEOF", "live_drive"),
+    ("Bash", "cat > notes.txt <<'EOF'\nx\nEOF", "live_drive"),
+    ("Bash", "echo \"exit=$?\" > tools/x.txt", "live_drive"),
+    ("PowerShell", "(Get-Item tools{sep}x.py).Delete()", "live_drive"),
+    ("PowerShell", "[IO.File]::WriteAllLines('{repo}{sep}x', 'y')", "live_drive"),
+    ("PowerShell", "$f = Get-Item tools{sep}x.py; $f.Name.Trim(); $f.Delete()", "live_drive"),
+    ("PowerShell", "(Get-Content tools{sep}x.py).Substring(0, 3) | Set-Content tools{sep}y",
+     "live_drive"),
+    ("PowerShell", "(Get-Item tools).Substring(0, (Remove-Item tools))", "live_drive"),
+    ("PowerShell", "$_.CommandLine.Substring(0, 140) > tools{sep}x.txt", "live_drive"),
+    ("PowerShell", "(Get-Date).ToString('{repo}{sep}x') | Set-Content -Path tools{sep}x",
+     "live_drive"),
+    # from a clone: a write into the checkout spelled through an option's value
+    ("Bash", "sort -o{repo}/x.txt {scratch}/y.txt", "scratch"),
+    ("Bash", "sort -o {repo}/x.txt {scratch}/y.txt", "scratch"),
+    ("Bash", "uniq {scratch}/a.txt {repo}/b.txt", "scratch"),
+    ("Bash", "timeout 5 rm {repo}/x.py", "scratch"),
+    # review: a writer handed its operand by a subexpression or a pipe, and uniq after `--`
+    ("PowerShell", "Remove-Item @(Resolve-Path CLAUDE.md)", "live_drive"),
+    ("PowerShell", "Remove-Item (Resolve-Path CLAUDE.md)", "live_drive"),
+    ("PowerShell", "Get-ChildItem tools | Remove-Item", "live_drive"),
+    ("PowerShell", "Remove-Item @(Get-Item {repo}{sep}CLAUDE.md)", "scratch"),
+    ("Bash", "uniq -- README.md -x", "live_drive"),
+    ("Bash", "mkdir -- -x", "live_drive"),
+    ("Bash", "touch -- -x", "live_drive"),
+    ("Bash", "rm -rf -- -/../tools", "live_drive"),
+    # from a clone: pre-existing holes the probe found (a value glued to its option, a heredoc body)
+    ("Bash", "cp -t{repo} {scratch}/x", "scratch"),
+    ("Bash", "mv -t{repo} {scratch}/x", "scratch"),
+    ("Bash", "tar -xf {scratch}/x.tar -C{repo}", "scratch"),
+    ("PowerShell", "Set-Content -Path:{repo}{sep}x y", "scratch"),
+    ("Bash", "cat > {scratch}/x <<EOF\n$(rm -rf {repo}/tools)\nEOF", "scratch"),
+    ("Bash", "cat > {scratch}/x <<EOF\nit's `rm -rf {repo}/tools`\nEOF", "scratch"),
+]
+
+
+@pytest.mark.parametrize("name,command,where", READS_2_REFUSED)
+def test_drive_guard_keeps_writes_beside_the_new_reads_refused(live_drive, scratch, name,
+                                                               command, where):  # fmt: skip
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert decision.deny, text
+    assert "drive.lock" in decision.reason

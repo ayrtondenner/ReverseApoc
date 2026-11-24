@@ -43,8 +43,8 @@ checkout (`test_drive_guard_refuses_other_retags_from_any_cwd`, 26), allowed wit
 Security review follow-up (2026-11-24, asked by the orchestrator): a target behind shell expansion never showed
 `reverseapoc-build`, so it passed. Now a tag, commit, import or pull argument, or the docker subcommand itself,
 that holds `$`, a backtick, `%` or a leading `~` fails closed; and `docker compose pull` (also `docker-compose
-pull`) and `run`/`up`/`create` with `--pull` (any value) join the compose build rule. `HIDDEN_RETAGS` (13) is
-refused from both cwds (26) and passes with a stale drive and with none (26).
+pull`) and `run`/`up`/`create` with `--pull` (any value) join the compose build rule. `HIDDEN_RETAGS` (16, `nohup`/`env`/`time` docker among them) is
+refused from both cwds (32) and passes with a stale drive and with none (32).
 
 Not covered (no ruling): `docker rmi`/`docker image rm reverseapoc-build:local`, which
 would remove the tag rather than move it.
