@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_00076240);
 INCLUDE_ASM(func_00076370);
-INCLUDE_ASM(func_00076430);
 INCLUDE_ASM(func_000764C0);
 INCLUDE_ASM(func_000768D0);
 INCLUDE_ASM(func_00076EF0);
@@ -46,6 +45,36 @@ s16 func_000763E0(struct unk_010C *a)
         }
     }
     return r;
+}
+
+extern char *D_00182DEC;
+
+/* Clears alternate bytes of a w x h rectangle at (x, y) in the 640-wide buffer D_00182DEC. */
+void func_00076430(short x, short y, short w, short h)
+{
+    char *p;
+    short i;
+    short j;
+
+    p = x + (y * 640 + D_00182DEC);
+    if (w & 1) {
+        w--;
+    }
+    if (w > 1) {
+        for (i = 0; i < h; i += 2) {
+            for (j = 0; j < w;) {
+                j += 2;
+                *p = 0;
+                p += 2;
+            }
+            p += 640 - w;
+            for (j = 0; j < w; j += 2) {
+                p[1] = 0;
+                p += 2;
+            }
+            p += 640 - w;
+        }
+    }
 }
 
 extern char D_000F3DC8[];
