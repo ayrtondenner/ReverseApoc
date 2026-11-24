@@ -243,3 +243,42 @@ does not compare a candidate's prototype with a spliced definition, so the compi
 names the mismatch here. **Owner question (tooling):** should `_merge`/`rebuild` take a function's
 latest hit instead of its first (or the first one consistent with the committed C)? Or should
 F-0013 go to a hand proposal built on the 20261119 C? Either way, regate it again afterwards.
+
+## Update (2026-11-24, later): owner rulings on the three questions, and results
+
+Rulings: F-0013 is tooling (take each function's first hit whose declarations agree with the
+committed C, else its latest). F-0029 goes by Q1-A (a hand proposal from the clean set). F-0018
+is a hand merge (D_002A18EC as the committed C declares it).
+
+- **Tooling (flags.py, TDD):** `_taken` picks, per function, the first hit whose definition
+  splices into the committed `src/<exe>/<unit>.c` without a SpliceConflict
+  (`_declares_as_committed`; a prototype is compared with a committed definition's head), else
+  the latest. `_built` makes the candidate from the taken hits only, with the first function's
+  file copied and every hit kept as evidence in order. `flags rebuild` uses `_built`, and so does
+  `_merge` when a later hit arrives for a held function whose queued C disagrees.
+  Tests: `test_merge_takes_the_first_hit_that_agrees_with_the_committed_c` (3 cases) and
+  `test_rebuild_takes_the_agreeing_hit_and_keeps_the_evidence_order`.
+- **F-0013: rebuilt and re-gated, exit 1, failed.** The candidate now takes func_00079FE0 from
+  20261119-claude-claude-opus-5-5 a1, with `void func_0007A000(void)`. It compiles.
+  func_00079FE0, 7A000, 7A010, 7A040, 7A060, 7A070, 7A090 and 7A0D0 are at 100%, reloc ok, bytes ok.
+  **func_0007A0A0 is at 86.67%, reloc failed, 5 bytes differ.** Its taken hit is the first
+  agreeing one (20261107-030004 a1 `checks/0004.c`, `char *func_0007A0A0`). The later hit
+  (20261119 a1 `checks/0001.c`, `int func_0007A0A0`, other C) also agrees and was not measured
+  in this unit. Next: try that C for 7A0A0 (a hand candidate), or reduce F-0013 to the
+  functions at 100%.
+- **F-0029: hand candidate, re-gated, exit 0, regated.** The committed unit with DB20 from
+  20261107-030004 a1 `checks/0003.c`, DB80 from 20261118-flags a1 `checks/0002.c` and E500 from
+  nearmiss4-copilot-haiku-5-5 a2 `checks/0005.c`, each spliced by `contextpack.splice_definition`
+  with no conflict. Under `-4r -oneatx`, func_0005DB20, DB80, E500, E550 and E5B0 are all at
+  100%, reloc ok, bytes ok. func_0005DB20, at 82.67% before, is at 100% too.
+- **F-0018: hand candidate, re-gated, exit 0, regated.** The committed unit (`extern char
+  D_002A18EC[]`) with func_000A5BC0 from 20261119-claude-claude-opus-5-5 a1 `checks/0001.c`.
+  Under `-4r -oneatx`, func_000A5BA0 and A5BC0 are at 100%, reloc ok, bytes ok.
+
+The tooling has no hand-proposal path (only `sweep` and `batch` sources; `--from-batch` takes
+tool authors only). So both hand candidates were written to the proposal's own
+`build/flags/<id>/` file, and the queue record was set by hand through
+`flags.read_queue`/`write_queue`: `proposed`, rule `-4r -oneatx`, re-gate void, new sha256, and
+for F-0029 the two clean C files added as evidence (for the co-author lookup). Then
+`flags regate` ran. **F-0029 and F-0018 now wait on `flags approve` (owner).** F-0013 waits on a
+fix for func_0007A0A0.

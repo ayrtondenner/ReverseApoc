@@ -635,10 +635,60 @@ def _failed(p: Proposal, reason: str) -> Proposal:
     return dataclasses.replace(p, status=FAILED, rule="", alternatives=(), reason=reason)
 
 
+def _committed(repo: Path, exe: str, unit: str) -> str | None:
+    """The committed unit file's text, or None when there is none."""
+    path = repo / unit_rule_path(exe, unit)
+    return path.read_bytes().decode("utf-8") if path.is_file() else None
+
+
+def _declares_as_committed(committed: str | None, function: str, text: str) -> bool:
+    """Whether `function`'s definition in `text` declares what it uses as the committed unit
+    does: it splices into that unit with no SpliceConflict. A prototype of a function the unit
+    defines is compared with that definition's head (F-0013's E1062). No committed unit,
+    nothing to disagree with."""
+    if committed is None:
+        return True
+    try:
+        _spliced(committed, function, text)
+    except contextpack.SpliceConflict:
+        return False
+    return True
+
+
+def _taken(repo: Path, hits: Sequence[Hit]) -> list[Hit]:
+    """One hit per function, in the order each function first hit (owner ruling 2026-11-24,
+    F-0013): its first hit whose C agrees with the committed unit (_declares_as_committed),
+    else its latest."""
+    groups: dict[str, list[Hit]] = {}
+    for hit in hits:
+        groups.setdefault(hit.function, []).append(hit)
+    committed = _committed(repo, hits[0].exe, hits[0].unit)
+
+    def agrees(name: str, hit: Hit) -> bool:
+        return _declares_as_committed(committed, name, hit.snapshot.read_bytes().decode("utf-8"))
+
+    return [next((h for h in group if agrees(name, h)), group[-1])
+            for name, group in groups.items()]  # fmt: skip
+
+
+def _built(repo: Path, ctx: _Context, pid: str, hits: Sequence[Hit]) -> Proposal:
+    """The proposal `pid` made from `hits` (in evidence order): the taken hit of the first
+    function copied (its whole file), each other function's taken hit merged, every hit kept
+    as evidence in its order."""
+    first, *later = _taken(repo, hits)
+    built = _new_proposal(repo, ctx, pid, first)
+    for hit in later:
+        built = _merge(repo, ctx, built, hit)
+    return dataclasses.replace(built, evidence=tuple(hit.evidence for hit in hits))
+
+
 def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
     """A later hit of a unit with an open proposal. Its evidence is recorded and any re-gate
-    result is void. Another hit of a function the proposal holds changes nothing else (the
-    candidate is that function's C that hit first). A new function narrows the rules to those
+    result is void. Another hit of a function the proposal holds changes nothing else while
+    the candidate's C of that function agrees with the committed unit
+    (_declares_as_committed); otherwise a sweep proposal is built again from all its hits
+    (_built: each function's first agreeing hit, else its latest; owner ruling 2026-11-24).
+    A new function narrows the rules to those
     every function hit under (its order stays the DEC-03 ranking); none left is FAILED with a
     reason naming the functions. Its definition from the C that hit is spliced into the
     candidate with the file-scope declarations it uses there (contextpack.splice_definition);
@@ -649,8 +699,15 @@ def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
         reason="", variant_sha256="", reverted=(),
     )  # fmt: skip
     if hit.function in existing.functions:
-        return merged if existing.rule else dataclasses.replace(merged, status=FAILED,
-                                                                reason=existing.reason)
+        if not existing.rule:
+            return dataclasses.replace(merged, status=FAILED, reason=existing.reason)
+        current = (repo / existing.candidate).read_bytes().decode("utf-8")
+        committed = _committed(repo, hit.exe, hit.unit)
+        if (existing.source not in (SWEEP, SWEEP2)
+                or _declares_as_committed(committed, hit.function, current)):
+            return merged
+        return _built(repo, ctx, existing.id,
+                      [_evidence_hit(ctx, merged, path) for path in merged.evidence])
     functions = (*existing.functions, hit.function)
     merged = dataclasses.replace(merged, functions=functions,
                                  keeps=ctx.keeps(hit.exe, hit.unit),
@@ -743,8 +800,9 @@ def _evidence_hit(ctx: _Context, p: Proposal, path: str) -> Hit:
 
 def rebuild(ids: Sequence[str], *, repo: Path, queue: Path | None = None) -> tuple[Proposal, ...]:
     """Make each named open sweep proposal again from its evidence, in order, as `propose` made
-    it: the first hit's C copied, each later hit merged (`_merge`, which now carries the
-    hitting file's declarations; todo flags-merge-keeps-declarations). The candidate and its
+    it (`_built`: each function's first hit that agrees with the committed unit, else its
+    latest; the first function's file copied, the others merged with the declarations they
+    use, todo flags-merge-keeps-declarations). The candidate and its
     sha256 are rewritten and any re-gate is void, so `flags regate` measures the rebuilt C.
     Every evidence path is read before anything is written."""
     repo = Path(repo)
@@ -764,10 +822,8 @@ def rebuild(ids: Sequence[str], *, repo: Path, queue: Path | None = None) -> tup
                              f"({', '.join(OPEN_STATUSES)}) sweep proposal is rebuilt")  # fmt: skip
         plans.append((p, [_evidence_hit(ctx, p, path) for path in p.evidence]))
     done = []
-    for p, (first, *later) in plans:
-        new = _new_proposal(repo, ctx, p.id, first)
-        for hit in later:
-            new = _merge(repo, ctx, new, hit)
+    for p, hits in plans:
+        new = _built(repo, ctx, p.id, hits)
         proposals[proposals.index(p)] = new
         write_queue(queue, proposals)
         done.append(new)

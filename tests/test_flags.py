@@ -653,6 +653,76 @@ def test_rebuild_refusals(tmp_path, change, message):
     assert queue_of(repo).read_bytes() == before
 
 
+# Owner ruling 2026-11-24 (F-0013): a function's C is taken from its first hit whose
+# declarations agree with the committed unit's, else from its latest hit. F30 calls FA0, which
+# the committed unit defines as void(void); an old hit prototypes FA0 another way (E1062).
+FA0_DEF = f"void {FA0}(void)\n{{\n    return;\n}}\n"
+COMMITTED_FA0 = f'/* committed */\n#include "apoc.h"\n\nINCLUDE_ASM({F30});\n\n{FA0_DEF}'
+
+
+def _calls_fa0(prototype: str, tag: str) -> str:
+    return (f'/* {tag} */\n#include "apoc.h"\n\n{prototype}\n\nint {F30}(int a)\n{{\n'
+            f"    {FA0}();\n    return a + {len(tag)};\n}}\n\n"
+            f"INCLUDE_ASM({F50});\nINCLUDE_ASM({FA0});\n")
+
+
+STALE = _calls_fa0(f"int {FA0}(int a);", "stale")
+AGREES = _calls_fa0(f"void {FA0}(void);", "agrees")
+OTHER_STALE = _calls_fa0(f"short {FA0}(short a);", "other stale")
+
+
+def _f30_hits(repo: Path, *texts: str) -> None:
+    """The committed unit, then one F30 attempt per text, in order, each hitting under cell 5."""
+    (repo / "src" / "ufo2p").mkdir(parents=True, exist_ok=True)
+    _commit_src(repo, COMMITTED_FA0)
+    for n, text in enumerate(texts, start=1):
+        make_attempt(repo, F30, attempt=n, checks=[(1, True, sweep_doc(F30, hits={5}), text)])
+
+
+@pytest.mark.parametrize(("texts", "taken"), [
+    ((STALE, AGREES), AGREES),  # the first hit that agrees, though it came later
+    ((AGREES, STALE), AGREES),  # an agreeing first hit stays
+    ((STALE, OTHER_STALE), OTHER_STALE),  # none agrees: the latest
+])  # fmt: skip
+def test_merge_takes_the_first_hit_that_agrees_with_the_committed_c(tmp_path, texts, taken):
+    """The candidate is built from the hit taken for each function: its whole file when that
+    function is the first, so no other hit's prototype is left in it; every hit stays evidence."""
+    repo = make_repo(tmp_path)
+    _f30_hits(repo, *texts)
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.functions, len(p.evidence)) == ("proposed", (F30,), 2)
+    candidate = (repo / p.candidate).read_text(encoding="utf-8")
+    assert candidate == taken and p.candidate_sha256 == lf_sha256(taken)
+    (rebuilt,) = flags.rebuild(["F-0001"], repo=repo)
+    assert rebuilt == p and (repo / p.candidate).read_text(encoding="utf-8") == taken
+
+
+def test_rebuild_takes_the_agreeing_hit_and_keeps_the_evidence_order(tmp_path):
+    """F-0013's shape: the stale hit of F30 comes first, a second function hits in between and
+    the agreeing hit of F30 comes last; the rebuilt candidate holds the agreeing F30 and F50."""
+    repo = make_repo(tmp_path)
+    _f30_hits(repo, STALE)
+    make_attempt(repo, F50, checks=[(1, True, sweep_doc(F50, hits={5}),
+                                     c_text(F50, marked=(F30,), tag="B"))])  # fmt: skip
+    make_attempt(repo, F30, attempt=2, checks=[(1, True, sweep_doc(F30, hits={5}), AGREES)])
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    stale, agrees = (f"build/driver/{RUN}/ufo2p/{F30}/attempt-{n}/checks/0001.json"
+                     for n in (1, 2))  # fmt: skip
+    flags.write_queue(queue_of(repo), [dataclasses.replace(
+        p, evidence=(stale, f"build/driver/{RUN}/ufo2p/{F50}/attempt-1/checks/0001.json",
+                     agrees))])  # fmt: skip
+    (q,) = flags.rebuild(["F-0001"], repo=repo)
+    assert q.status == "proposed", q.reason
+    assert q.evidence[0] == stale and q.evidence[2] == agrees
+    text = (repo / q.candidate).read_text(encoding="utf-8")
+    assert f"int {FA0}(int a);" not in text and "/* agrees */" in text
+    defs = contextpack.definitions(text)
+    assert defs[F30].source == contextpack.definitions(AGREES)[F30].source
+    assert F50 in defs and q.candidate_sha256 == lf_sha256(text)
+
+
 # ---- Task 3: flags regate ----
 
 KEEP, OTHER = "func_00060C50", "func_0008A0E0"
