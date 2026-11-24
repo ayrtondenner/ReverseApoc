@@ -13,8 +13,48 @@ INCLUDE_ASM(func_000B48D0);
 INCLUDE_ASM(func_000B4990);
 INCLUDE_ASM(func_000B4A50);
 INCLUDE_ASM(func_000B4B20);
-INCLUDE_ASM(func_000B4B80);
 INCLUDE_ASM(func_000B4BE0);
+
+extern signed char D_000E0B88;
+extern signed char D_000E0B89;
+extern signed char D_000E0B8A;
+extern signed char D_000E0B8B;
+extern signed char D_000E0B8C;
+
+int func_000B4B80(int x)
+{
+    int ret;
+
+    ret = 1;
+    switch (x) {
+    case 0x2C:
+        if (D_000E0B88 == 0) {
+            ret = 0;
+        }
+        break;
+    case 0x2D:
+        if (D_000E0B89 == 0) {
+            ret = 0;
+        }
+        break;
+    case 0x2E:
+        if (D_000E0B8A == 0) {
+            ret = 0;
+        }
+        break;
+    case 0x2F:
+        if (D_000E0B8B == 0) {
+            ret = 0;
+        }
+        break;
+    case 0x30:
+        if (D_000E0B8C == 0) {
+            ret = 0;
+        }
+        break;
+    }
+    return ret;
+}
 
 struct unk_009E {
     /* 0x00 */ u8 pad_00;
