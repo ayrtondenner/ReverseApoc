@@ -338,8 +338,8 @@ def test_real_split_pairs():
 #   L    +0x260  jmp H+4 as its first instruction, then xor and ret (no stub: merge H..L, which
 #                shares H with G..H, so one fix merges G..L)
 #   RT   +0x280  a runtime row: xor, ret
-#   K    +0x2A0  xor, jne E+3 (`add esp, 8; pop; pop; ret`: no epilogue, merge K..E), jne E+9
-#                (`pop; xor; ret`: the pops end in no ret, merge), ret
+#   K    +0x2A0  xor, jne E+3 (`add esp, 8; pop; pop; ret`: a shared epilogue, owner ruling
+#                2026-11-24), jne E+9 (`pop; xor; ret`: the pops end in no ret, merge K..E), ret
 #   E    +0x2C0  xor, ret, add esp 8, pop ebx, pop ecx, ret, pop ebx, xor, ret
 #   F    +0x2E0  push ebx, push ecx, je E+6 (`pop ebx; pop ecx; ret`: E's shared epilogue) and
 #                jne E+2 (E's bare ret): suspects that propose no fix, then xor and ret
@@ -421,7 +421,7 @@ def test_interior_branch_suspects():
         (_S, 0, "jmp", _Q, _STUB_TO, False, "split"),
         (_G, _X2, "jcc", _H, 4, False, "merge"),
         (_L, 0, "jmp", _H, 4, True, "merge"),
-        (_K, _X2, "jcc", _E, _E_FRAME, True, "merge"),
+        (_K, _X2, "jcc", _E, _E_FRAME, True, "shared-epilogue"),
         (_K, _X2 + _JCC, "jcc", _E, _E_NO_RET, True, "merge"),
         (_F, _F_JE, "jcc", _E, _E_POPS, True, "shared-epilogue"),
         (_F, _F_JE + _JCC, "jcc", _E, _E_RET, True, "shared-epilogue"),

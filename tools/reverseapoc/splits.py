@@ -207,6 +207,11 @@ def _content(row: FunctionRow, dec: _Decoded) -> tuple[str, ...]:
     return tuple(tag for tag in CONTENT_TAGS if tag in tags)
 
 
+def _frees_frame(insn: Insn) -> bool:
+    """`add esp, N`: an epilogue's first instruction when the frame has locals."""
+    return insn.mnemonic == ADD and insn.op_str.startswith(f"{STACK_POINTER},")
+
+
 def _is_prologue(insn: Insn) -> bool:
     if insn.mnemonic == PUSH:
         return True
@@ -376,11 +381,12 @@ def splits_json(pairs: Sequence[SplitPair], exes: Sequence[str]) -> dict[str, An
 #   the target row and every row between them are one function. Merge spans that share a row
 #   are one merge.
 #
-# A jump that would propose `merge` but lands on a shared epilogue (a run of pops that ends in
-# `ret`, or a bare `ret`) is a `shared-epilogue` suspect and proposes no fix: Watcom lets one
-# function jump to another's matching `pop ...; ret` or `ret` (the 2026-11-19 merge review
-# ruled 16 of 22 merges SKIP, most of them this shape). An `add esp, N` before the pops is no
-# such epilogue: case bodies cut out of a switch jump to their own function's frame exit.
+# A jump that would propose `merge` but lands on a shared epilogue (an optional `add esp, N`,
+# then a run of pops that ends in `ret`, or a bare `ret`) is a `shared-epilogue` suspect and
+# proposes no fix: Watcom lets one function jump to another's matching `pop ...; ret` or `ret`
+# (the 2026-11-19 merge review ruled 16 of 22 merges SKIP, most of them this shape) or to its
+# frame exit `add esp, N; pop ...; ret` (owner ruling 2026-11-24: ufo2p 0x0002FE10 into
+# 0x0002E100's `add esp, 4; pop ...; ret`, and 0x0006F9B0 into 0x0006F3C0's).
 #
 # A fix that would cut or join a status.csv `matched` row is `review` instead: a matched row's
 # boundaries are proven by the gate, so the branch crosses two real functions (a shared tail,
@@ -397,7 +403,7 @@ CALL, JMP, JCC = BRANCHES
 ACTIONS = ("split", "merge", "review")
 SPLIT, MERGE, REVIEW = ACTIONS
 SHARED_EPILOGUE = "shared-epilogue"  # a suspect's fix word that proposes no fix
-POP, RET = "pop", "ret"
+POP, RET, ADD = "pop", "ret", "add"
 _SKIPPED = "skipped"
 
 
@@ -534,9 +540,12 @@ class _Facts:
         return self.data(row.start) or self.data(target.start) or not self.lands(target.start, va)
 
     def epilogue(self, start: int, va: int) -> bool:
-        """The decoded row at `start` holds, from `va` on, zero or more pops and then a ret."""
+        """The decoded row at `start` holds, from `va` on, an optional `add esp, N`, zero or more
+        pops and then a ret."""
         for item in self.decoded[start][1].items:
             if item.va < va:
+                continue
+            if item.va == va and isinstance(item, Insn) and _frees_frame(item):
                 continue
             if not isinstance(item, Insn) or item.mnemonic != POP:
                 return isinstance(item, Insn) and item.mnemonic == RET
