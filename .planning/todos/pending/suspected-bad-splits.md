@@ -62,3 +62,39 @@ Status (batch 261119-bhi, quick 261119-bhq): the supported fix input landed: `co
 - Open: ufo2p 0x0002E100 went back to drive picking in d1bf4cb0, but tests/test_splits.py still pins a
   live interior suspect into it (0x2FAF0 jumps 0x171 bytes in); review it before the next splits
   batch. The 0x2E280 split's ruling is recorded only in the commit messages of 108c1ffe and a896abaa.
+
+## Review (2026-11-24): the 0x0002E100 suspect pinned in tests/test_splits.py
+
+Read-only, at a86b0278: `mechanics interior --exe ufo2p`, `asm UFO2P.EXE` listings and a byte scan
+of the code object for fixups and rel8/rel32 call, jmp and jcc targets. No boundary-fixes.csv row
+changed.
+
+- The suspect: `ufo2p 0x0002FAF0+0x44C jcc -> 0x0002E100+0x171 ... fix=merge`, and its fix is
+  `review` of 33 rows (0x0002E100 to 0x0002FAF0). That merge is wrong.
+- The target, 0x0002E271, is the epilogue of 0x0002E100: `add esp, 4; pop edi; pop esi; pop edx;
+  pop ecx; pop ebx; ret` (0x2E271 to 0x2E279), the inverse of its prologue `push ebx; push ecx;
+  push edx; push esi; push edi; sub esp, 4`.
+- The source is not in the function at 0x0002FAF0. That function ends at `ret` 0x2FE02 (its frame
+  is `push ebx..ebp; sub esp, 0x4C`), then Watcom filler `lea eax, [eax]; lea edx, [edx]; nop`
+  (0x2FE03 to 0x2FE0F), then a 16-aligned prologue at 0x0002FE10 with the same frame as 0x2E100:
+  `push ebx; push ecx; push edx; push esi; push edi; sub esp, 4`. The `jne` at 0x2FF3C belongs to
+  that second function (0x2FE10 to 0x2FFC0, which loops by `jmp 0x2FF23` and also calls
+  0x0002FAF0 at 0x2FF4C).
+- Finding, for 0x0002E100: a false positive. The jne is a shared epilogue across functions (the
+  tail merge probe/README.md notes for `-4r -s`), so 0x0002E100 needs no split or merge. The
+  epilogue filter misses it because the run opens with `add esp, 4` before the pops
+  (splits._Facts.epilogue accepts only pops then a ret).
+- Finding, for 0x0002FAF0: a real bad split. The row holds two functions; the missed start is
+  0x0002FE10. Nothing reaches it: no LE fixup targets 0x2FE10 and no rel call, jmp or jcc in the
+  code object does (0x2FAF0 and 0x2E100 have no fixups either; both are reached by rel calls), so
+  the capstone pass and Ghidra had no evidence for it. Its row's status is partial (49.07), which
+  fits one function's C judged against two.
+- Side note: a tail merge into 0x2E100's epilogue means 0x2E100 and 0x2FE10 were most likely
+  compiled in one object, while units.csv puts them in u_0002da30 and u_0002faf0.
+- Owner rulings needed (none taken here):
+  1. land `split,0x0002FAF0,0x0002FE10` (evidence: ret 0x2FE02 + filler + aligned push
+     ebx..edi; sub esp 4; no reference) in the next splits batch, or leave the row as it is;
+  2. whether `_Facts.epilogue` should also take an `add esp, N` before the pops (it would turn
+     this suspect into `shared-epilogue` and change the pin in tests/test_splits.py REAL_INTERIOR
+     from `merge`), a test-first tooling change;
+  3. whether the u_0002da30/u_0002faf0 unit line is to be reviewed.
