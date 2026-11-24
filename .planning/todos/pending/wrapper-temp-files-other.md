@@ -60,3 +60,10 @@ own `attempt asm NAME` argument. Both still stop the night. Options:
    without a stop.
 4. **The wrapper removes its own stale temp files at the start of each context/asm run.** Does
    not cover the usual case (a session killed at its timeout mid-command), so not enough alone.
+
+## Owner ruling (2026-11-24)
+
+Chosen: option 1, keep them strays. A session killed inside `attempt context` or an
+`attempt asm`/`context` cache store stops the night, as now. None has been seen in a run; revisit
+only when one is. Options were: 1 keep strays (chosen), 2 ledger an intent before each write,
+3 quarantine by shape alone, 4 the wrapper removes its own stale temp files at start.
