@@ -434,9 +434,9 @@ def test_the_budget_meter_reads_the_copilot_arms_own_credits(tmp_path):
 
 
 def test_the_budget_meter_reads_a_claude_arms_week_from_its_cost(tmp_path):
-    """A Claude arm's `%week` is its records' cost_usd at $17.73 a point (quota.toml)."""
-    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73),
-                    _attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=8.865),
+    """A Claude arm's `%week` is its records' cost_usd at $9.6 a point (quota.toml)."""
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=9.6),
+                    _attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=4.8),
                     _attempt("claude", "anthropic", "claude-opus-5-5", cost_usd=100.0)])
     reading = meters.budget_meter(tmp_path)("claude-haiku-5-5")
     assert reading.unit == "%week" and reading.used == pytest.approx(1.5)
@@ -463,7 +463,7 @@ def test_the_budget_meter_reads_nothing_where_no_meter_moves(tmp_path):
 def test_the_drives_default_meter_seam_is_the_budget_meter(tmp_path):
     from reverseapoc import driver
 
-    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=17.73)])
+    _log(tmp_path, [_attempt("claude", "anthropic", "claude-haiku-5-5", cost_usd=9.6)])
     seams = driver.default_seams(tmp_path)
     assert seams.meter("claude-haiku-5-5").used == pytest.approx(1.0)
     assert seams.meter("gpt-6.1-terra") is None

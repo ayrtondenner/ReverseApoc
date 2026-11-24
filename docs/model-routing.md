@@ -1196,7 +1196,8 @@ ROADMAP 999.12's last follow-up recalibrates these rows after a few real nights.
 
 Approximate figures for sizing a run to a budget: sessions = target / per session. Read on the
 cascade nights of 2026-11-12 and 2026-11-13 from the owner's meters (S), the OpenRouter credits
-API (A) and `stats --run` (T). They shift with function size and session length, and a reading of
+API (A) and `stats --run` (T), and re-read for the Codex arms and the Claude dollars per point
+on 2026-11-23. They shift with function size and session length, and a reading of
 a few sessions carries about one point of meter error. `reverseapoc meters` ("Reading the
 meters" below) now reads the meters directly; re-measure this table from its readings.
 
@@ -1205,11 +1206,15 @@ meters" below) now reads the meters directly; re-measure this table from its rea
 | Haiku 5.5 (Claude Ultra) | about 1.07M cache read, 24k output, 80k cache creation | at most 0.01% of the weekly bar (S, 2026-11-14: about 160 sessions, 6% to 7%; 0.03% read earlier from 30 sessions) | 3% of the week: about 300 sessions |
 | Opus 5.5 (Claude Ultra) | - | about 0.04% of the weekly bar (S, 2026-11-15: 296 Opus and 415 Sonnet sessions, 8% to 28%; 0.1% read on 2026-11-07) | 3% of the week: about 75 sessions |
 | Sonnet 5.5 (Claude Ultra) | - | about 0.02% of the weekly bar (S, the same reading) | 3% of the week: about 150 sessions |
-| GPT-6.1 Terra (ChatGPT Plus) | about 0.94M input, 0.9M cache read, 3k output | about 1.35% of the 5-hour window and 0.25% of the week (S: 74 sessions filled one window, 2026-11-13; the week 84% to 53% left over 123 sessions, 2026-11-16/17); past the week, about 2.3 Codex credits (S and T, 2026-11-14 to 2026-11-16: 2,120 credits over 910 sessions) | one 5-hour window: about 74 sessions; 500 credits: about 217 |
+| Codex arms: GPT-6.1 Terra and Sol, GPT-6 Luna and Astra (ChatGPT Plus) | Terra: about 0.94M input, 0.9M cache read, 3k output | about 3.6% of the 5-hour window and 0.67% of the week, mixed-arm and not isolated (S and T, 2026-11-20 to 2026-11-23: the week moved 78 points over 117 sessions of the four arms together; one window held about 28 sessions of run 20261123-codex at 8 workers). Terra alone, earlier: 1.35% of the window (74 sessions, 2026-11-13) and 0.25% of the week (123 sessions, 2026-11-16/17); past the week, about 2.3 Codex credits (Terra, S and T, 2026-11-14 to 2026-11-16: 2,120 credits over 910 sessions) | one 5-hour window: about 27 sessions; the week: about 149; 500 Terra credits: about 217 |
 | Gemini 3.8 Flash (Google AI Plus) | about 175k input, 2.8M cache read, 28k output | about 15% of the agy week (S, one session; a canary about 6.6%) | the week: about 6 sessions |
 | DeepSeek V4.1-Flash (OpenRouter) | about 76k input, 620k cache read, 28k output | about $0.30 (A) | $10: about 33 sessions |
 | GLM-5.3 (OpenRouter) | about 215k input, 1.8M cache read, 77k output | about $0.60 (A) | left the rows on 2026-11-13: no match in about 45 sessions |
 | Haiku 5.5 (Copilot Pro) | - | about 2.2 AI credits (the records' `credits`, 2026-11-14: 273.6 over 123 sessions, within 10% of the account meter) | 1,500 credits a month: about 680 sessions |
+
+The Claude rows' per-session figures were not re-read on 2026-11-23: run 20261121-mix ran Fable
+and Opus together with the orchestrator, so it isolates neither. They need a single-arm run with
+no agents, read before and after.
 
 Past the Codex limits, Codex keeps running on the account's credits (about 2.3 credits per
 Terra session, chatgpt.com/settings/usage; [model-comparison.md](model-comparison.md#plan-credits-per-session-codex-and-copilot-2026-11-14-to-2026-11-16)),
@@ -1265,8 +1270,11 @@ session with its source and date, and its measured matches per session. Re-measu
 - The seam is `meters.budget_meter`. Each quota.toml plan names its `meter`:
   - `openrouter`: the credits API, the whole account's usage in `$`;
   - `credits`: the arm's records' Copilot credits;
-  - `cost_usd`: the arm's records' API-equivalent cost at `usd_per_week_point`, $17.73 a point
-    of the Claude week on 2026-11-16.
+  - `cost_usd`: the arm's records' API-equivalent cost at `usd_per_week_point`, $9.6 a point
+    of the Claude week since 2026-11-23 ($17.73 from 2026-11-16). Run 20261121-mix moved the
+    weekly bar 6% to 35%, 29 points, for $277.46 recorded; the orchestrator's own use fell in
+    the same window, so the true figure is higher and $9.6 is a lower bound: the meter stops a
+    budget early, never late.
 
   A plan with `no_meter` instead (Codex runs `--ephemeral`, agy) is held by its session cap
   alone, and the budget line says so. On a resumed `--hold --run`, each budget is sized less

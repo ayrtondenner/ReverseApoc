@@ -33,7 +33,7 @@ uv run reverseapoc drive --dry-run \
   --arm gpt-6.1-terra=5 --arm-budget gpt-6.1-terra=100%5h \
   --arm deepseek-flash=12 --arm-budget 'deepseek-flash=$30' \
   --allow-egress gpt-6.1-terra --allow-egress deepseek-flash \
-  --max-sessions 674
+  --max-sessions 627
 ```
 
 - One `--arm NAME=WORKERS` per arm, workers at most its backends.toml `max_workers`.

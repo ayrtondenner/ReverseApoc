@@ -2781,7 +2781,7 @@ def _haiku_record(run: str, start: int, cost: float, **extra) -> dict:
 def test_a_resumed_hold_run_budgets_only_what_is_left(tmp_path, capsys, monkeypatch):
     """Todo resumed-held-run-budgets: `--hold --run night1` launched again with
     `--arm-budget claude-haiku-5-5=1%week`, whose two earlier sessions under that run cost
-    $8.865 of cost_usd (0.5%week at $17.73 a point): the night's cap is the 50 sessions the
+    $4.80 of cost_usd (0.5%week at $9.6 a point): the night's cap is the 50 sessions the
     other 0.5%week buys, the meter holds it to 0.5%week, and the budget line names the earlier
     spend. Another arm's record and another run's record count nothing; a fresh run is sized
     as before."""
@@ -2795,7 +2795,7 @@ def test_a_resumed_hold_run_budgets_only_what_is_left(tmp_path, capsys, monkeypa
     rig = Rig(tmp_path)
     log = rig.repo / driver.ATTEMPT_LOG
     log.parent.mkdir(parents=True, exist_ok=True)
-    records = [_haiku_record(RUN, 0x10010, 4.4325), _haiku_record(RUN, 0x10020, 4.4325),
+    records = [_haiku_record(RUN, 0x10010, 2.4), _haiku_record(RUN, 0x10020, 2.4),
                _haiku_record("night0", 0x10030, 100.0),
                _haiku_record(RUN, 0x10040, 100.0, model_requested="claude-sonnet-5-5")]
     log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")

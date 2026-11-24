@@ -95,8 +95,8 @@ def test_the_committed_table_loads_with_its_plans_named_in_config():
     assert table[HAIKU].per_session == {quota.WEEK: Decimal("0.01")}
     assert (table[HAIKU].matched, table[HAIKU].sessions) == (22, 312)
     assert table["claude-opus-5-5"].per_session == {quota.WEEK: Decimal("0.04")}
-    assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("1.35"),
-                                        quota.WEEK: Decimal("0.25"),
+    assert table[TERRA].per_session == {quota.FIVE_HOUR: Decimal("3.6"),
+                                        quota.WEEK: Decimal("0.67"),
                                         quota.CREDITS: Decimal("2.3")}  # fmt: skip
     assert (table[TERRA].matched, table[TERRA].sessions) == (18, 978)
     assert table[GEMINI].per_session == {quota.WEEK: Decimal("15.0")}
@@ -208,9 +208,11 @@ def test_max_sessions_bounds_the_budget_and_says_so():
 
 
 def test_terra_takes_either_window():
+    """The mixed-arm Codex figures of 2026-11-23: 3.6% of the 5-hour window and 0.67% of the
+    week a session."""
     table = load_quota()
-    assert size(TERRA, parse_budget("100%5h"), table, max_sessions=None).sessions == 74
-    assert size(TERRA, parse_budget("10%week"), table, max_sessions=None).sessions == 40
+    assert size(TERRA, parse_budget("100%5h"), table, max_sessions=None).sessions == 27
+    assert size(TERRA, parse_budget("10%week"), table, max_sessions=None).sessions == 14
     # past the week: Codex credits, 2.3 a session (2,120 over 910 sessions, 2026-11-14 to 16)
     assert size(TERRA, parse_budget("500credits"), table, max_sessions=None).sessions == 217
 
@@ -253,7 +255,7 @@ def test_the_doc_carries_every_figure():
                    "expected_matches": "35.3", "rate": [22, 312],
                    "rate_source": load_quota()[HAIKU].rate_source,
                    "meter": "between launches the meter reads the arm's records' cost_usd at "
-                            "$17.73 a point of the week",
+                            "$9.6 a point of the week",
                    "spent": None}  # fmt: skip
 
 
@@ -267,14 +269,15 @@ def test_the_path_is_committed():
 
 def test_every_committed_plan_names_its_meter_or_why_none_reads_live():
     """The plans map to a live meter (OpenRouter's credits API, a Copilot session's credits,
-    a Claude session's cost_usd at the calibrated $17.73 a point of the week, 2026-11-16) or
+    a Claude session's cost_usd at the calibrated $9.6 a point of the week, 2026-11-23) or
     say why none moves during a night (Codex drive sessions run --ephemeral; agy prints no
     machine-readable usage)."""
     table = load_quota()
     plans = {entry.plan.id: entry.plan for entry in table.values()}
     claude = plans["claude-ultra"]
-    assert (claude.meter, claude.usd_per_week_point) == ("cost_usd", Decimal("17.73"))
-    assert "$354.59" in claude.point_source and "20 points" in claude.point_source
+    assert (claude.meter, claude.usd_per_week_point) == ("cost_usd", Decimal("9.6"))
+    assert "$277.46" in claude.point_source and "29 points" in claude.point_source
+    assert "lower bound" in claude.point_source
     assert plans["copilot-pro"].meter == "credits"
     assert plans["openrouter"].meter == "openrouter"
     assert plans["chatgpt-plus"].meter is None and "--ephemeral" in plans["chatgpt-plus"].no_meter
@@ -289,7 +292,7 @@ def test_the_budget_line_names_the_meter_or_the_cap_alone():
     holds it."""
     table = load_quota()
     haiku = size(HAIKU, parse_budget("5%week"), table, max_sessions=None).line()
-    assert "cost_usd at $17.73 a point" in haiku and "cap alone" not in haiku
+    assert "cost_usd at $9.6 a point" in haiku and "cap alone" not in haiku
     terra = size(TERRA, parse_budget("100%5h"), table, max_sessions=None).line()
     assert "no live meter" in terra and "--ephemeral" in terra and "cap alone" in terra
     dollars = size(COPILOT, parse_budget("$1"), table, max_sessions=None).line()
@@ -306,7 +309,7 @@ def _rec(cost: float = 0.0, **extra) -> dict:
 
 def test_spent_reads_each_records_figure_in_the_budgets_unit():
     """Credits from a Copilot record's own `credits` (null: the per-session figure), dollars
-    through the plan's credit_usd, the Claude week from cost_usd at $17.73 a point, and a unit
+    through the plan's credit_usd, the Claude week from cost_usd at $9.6 a point, and a unit
     no record measures (Codex %5h) at the per-session figure."""
     table = load_quota()
     copilot = [_rec(credits=3.0), _rec(credits=2.0), _rec(credits=None)]
@@ -314,10 +317,10 @@ def test_spent_reads_each_records_figure_in_the_budgets_unit():
     assert (spent.run, spent.sessions, spent.amount) == ("r1", 3, Decimal("7.2"))
     assert "2 by their credits" in spent.how and "1 at 2.2credits per session" in spent.how
     assert quota.spent(table[COPILOT], quota.USD, copilot, "r1").amount == Decimal("0.072")
-    week = quota.spent(table[HAIKU], quota.WEEK, [_rec(17.73), _rec(35.46)], "r1")
-    assert week.amount == Decimal("3") and "cost_usd at $17.73 a point" in week.how
+    week = quota.spent(table[HAIKU], quota.WEEK, [_rec(9.6), _rec(19.2)], "r1")
+    assert week.amount == Decimal("3") and "cost_usd at $9.6 a point" in week.how
     terra = quota.spent(table[TERRA], quota.FIVE_HOUR, [_rec(), _rec()], "r1")
-    assert terra.amount == Decimal("2.70") and terra.how == "2 at 1.35%5h per session"
+    assert terra.amount == Decimal("7.2") and terra.how == "2 at 3.6%5h per session"
     assert quota.spent(table[DEEPSEEK], quota.USD, [_rec(0.25)], "r1").amount == Decimal("0.25")
     assert quota.spent(table[COPILOT], quota.CREDITS, [], "r1") is None
 
@@ -351,14 +354,14 @@ def test_a_budget_the_run_already_spent_is_refused():
 
 
 def test_a_week_spend_is_shown_and_left_to_a_ten_thousandth():
-    """$3.10 of Opus cost_usd is 0.17484...%week at $17.73 a point: the line shows 0.1748%week
-    spent and 4.8251%week left (rounded down, so the night never holds more than is left), and
+    """$3.10 of Opus cost_usd is 0.32291...%week at $9.6 a point: the line shows 0.3229%week
+    spent and 4.677%week left (rounded down, so the night never holds more than is left), and
     the night's budget carries no 28-digit figure."""
     table = load_quota()
     spent = quota.spent(table["claude-opus-5-5"], quota.WEEK, [_rec(3.10)], "r1")
     sizing = size("claude-opus-5-5", parse_budget("5%week"), table, max_sessions=None,
                   spent=spent)  # fmt: skip
-    assert sizing.left == Budget(Decimal("4.8251"), quota.WEEK)
-    assert str(sizing.left) == "4.8251%week"
-    assert "0.1748%week spent earlier" in sizing.line() and "4.8251%week left" in sizing.line()
-    assert sizing.sessions == 120
+    assert sizing.left == Budget(Decimal("4.6770"), quota.WEEK)
+    assert str(sizing.left) == "4.677%week"
+    assert "0.3229%week spent earlier" in sizing.line() and "4.677%week left" in sizing.line()
+    assert sizing.sessions == 116
