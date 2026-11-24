@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -81,12 +82,12 @@ def codex_version_reply(rig: Rig, version: str = CODEX_VERSION) -> None:
 
 
 def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
-                extra_env: dict | None = None,
-                spec: Sess | None = None) -> tuple[Rig, Night, dict]:  # fmt: skip
+                extra_env: dict | None = None, spec: Sess | None = None,
+                more: dict | None = None) -> tuple[Rig, Night, dict]:  # fmt: skip
     """`drive` on a Rig whose night (run_drive's own DriveConfig and arm table) runs in
     test_driver's night harness with fakecodex sessions and a fake gate; the base env names
     the fixture and holds no key. `spec`: what the "agent" leaves besides the stream (the
-    night harness's Sess files, written after the session)."""
+    night harness's Sess files, written after the session); `more`: more Deps seams."""
     rig = Rig(tmp_path / "rig")
     codex_version_reply(rig)
     night = Night(tmp_path / "night", gate_exits=[1])
@@ -96,7 +97,8 @@ def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
     def drive(config, deps, *, lock=None):
         moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
                         attempts_per_function=1)  # fmt: skip
-        return real(moved, night.deps(codex_argv=fake_codex_argv, broker_wrapper=fake_wrapper))
+        return real(moved, night.deps(codex_argv=fake_codex_argv, broker_wrapper=fake_wrapper,
+                                      **(more or {})))  # fmt: skip
 
     monkeypatch.setattr(driver, "drive", drive)
     env = _keyed(rig.env, FAKECODEX_SCENARIO=scenario, **(extra_env or {}))
@@ -1472,3 +1474,100 @@ def test_the_codex_canary_fails_without_the_brokers_context(tmp_path, capsys):
     failed = [c["check"] for c in doc["checks"] if not c["ok"]]
     assert (code, doc["canary"], len(failed)) == (1, "FAIL", 1), failed
     assert "attempt context" in failed[0] and "context.md" in failed[0], failed
+
+
+# ---- todo drive-stops-on-week-limit: a dated usage limit is the week ----
+
+WEEK_RESET = "Nov 25th, 2026 10:32 PM"  # tests/fixtures/codex/limit_week.jsonl
+
+
+def test_a_dated_usage_limit_more_than_five_hours_away_is_the_week():
+    """Codex names the reset as a time ("try again at 10:32 AM") or, when it falls on another
+    day, as a date ("try again at Nov 25th, 2026 10:32 PM"): both are LIMIT; only a reset more
+    than the 5-hour window away is the week, and its text is kept."""
+    events = _events("limit_week")
+    assert codexjson.classify(events, 0, False) is Disposition.LIMIT
+    assert codexjson.week_reset(events, datetime(2026, 11, 24, 11, 16)) == WEEK_RESET
+
+
+def test_a_timed_usage_limit_is_the_five_hour_window():
+    events = _events("limit_window")
+    assert codexjson.classify(events, 0, False) is Disposition.LIMIT
+    assert codexjson.week_reset(events, datetime(2026, 11, 24, 6, 0)) is None
+
+
+def test_a_dated_reset_inside_five_hours_is_the_window_past_midnight():
+    """Run 20261120-codex2: at 22:29 on Nov 20 the 5-hour window said "try again at Nov 21st,
+    2026 2:46 AM", a date only because the reset fell after midnight."""
+    events = _events("limit_window_dated")
+    assert codexjson.classify(events, 0, False) is Disposition.LIMIT
+    assert codexjson.week_reset(events, datetime(2026, 11, 20, 22, 29)) is None
+
+
+@pytest.mark.parametrize("name", ["luna_success", "turn_failed", "top_error"])
+def test_no_week_reset_without_a_usage_limit(name):
+    assert codexjson.week_reset(_events(name), datetime(2026, 11, 24, 11, 16)) is None
+
+
+def _probes_capped(night: Night, cap: int = 4) -> None:
+    """The night's sleep seam fails after `cap` backoffs, so a night that would probe a limit
+    for days ends STOPPED `error` instead of spinning."""
+    real = night._sleep
+
+    def sleep(seconds: float) -> None:
+        if len(night.sleeps) >= cap:
+            raise RuntimeError(f"still probing after {cap} backoffs")
+        real(seconds)
+
+    night._sleep = sleep
+
+
+def test_a_night_whose_every_arm_is_out_for_the_week_stops_quota_exhausted(
+        tmp_path, capsys, monkeypatch):  # fmt: skip
+    """The one Codex arm's session ends with a dated limit a day and a half away: no backoff,
+    no probe; the night stops `quota-exhausted`, naming the arm and its reset, after the
+    end-of-run checks an ENDED night runs."""
+    ran: list[bool] = []
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="limit_week",
+                                  more={"end_of_run": lambda: ran.append(True) or ()})
+    _probes_capped(night)
+    write_pass(rig.repo)
+    code, _, err = rig.drive(capsys, seams={"base_env": env}, night_model=LUNA,
+                             allow_egress=(LUNA,), workers=1)  # fmt: skip
+    assert code == 1, err
+    last = night.kinds("run")[-1]
+    driver.validate_record(last)
+    assert (last["event"], last["reason"]) == ("STOPPED", driver.QUOTA_EXHAUSTED), last["detail"]
+    assert LUNA in last["detail"] and WEEK_RESET in last["detail"], last["detail"]
+    assert len(night.launched) == 1 and night.sleeps == []
+    assert ran == [True] and last["checks_failed"] == []
+
+
+def test_an_arm_out_for_the_week_stops_while_the_others_run(tmp_path, capsys, monkeypatch):
+    """Two arms: the Codex arm's dated limit stops that arm (one launch, no probe); the Claude
+    arm runs its attempt and the night ends as usual, its record naming the stopped arm."""
+    from test_drive import HAIKU
+
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="limit_week")
+    _probes_capped(night)
+    write_pass(rig.repo)
+    code, _, err = rig.drive(capsys, seams={"base_env": env}, arms=((LUNA, 1), (HAIKU, 1)),
+                             allow_egress=(LUNA,))  # fmt: skip
+    last = night.kinds("run")[-1]
+    assert (last["event"], last["reason"]) == ("ENDED", driver.QUEUE_EXHAUSTED), last
+    assert LUNA in last["detail"] and WEEK_RESET in last["detail"], last["detail"]
+    runs = [r["run"] for r in night.kinds("attempt")]
+    assert runs == [f"{RUN}-{HAIKU}"] and len(night.launched) == 2 and night.sleeps == []
+    assert code == 0, err
+
+
+def test_a_timed_codex_limit_still_backs_off_and_probes(tmp_path, capsys, monkeypatch):
+    """No week in the text: today's D-07 backoff, 60 then 120 s and on, each probe a launch."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="limit_window")
+    _probes_capped(night, cap=2)
+    write_pass(rig.repo)
+    rig.drive(capsys, seams={"base_env": env}, night_model=LUNA, allow_egress=(LUNA,),
+              workers=1)  # fmt: skip
+    last = night.kinds("run")[-1]
+    assert (last["event"], last["reason"]) == ("STOPPED", driver.ERROR), last
+    assert night.sleeps == [60, 120] and len(night.launched) == 3

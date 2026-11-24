@@ -356,6 +356,9 @@ START = "start"
 NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED = (
     "nothing to do", "max sessions", "target matched", "queue exhausted")  # fmt: skip
 ARMS_CAPPED = "arms capped"  # quick 261112-fdr (WR-03): every cascade arm launched its cap
+# Todo drive-stops-on-week-limit: every arm's usage limit lasts past its 5-hour window. A STOPPED
+# reason that ends as an ENDED night does (the end-of-run checks, the status tables committed).
+QUOTA_EXHAUSTED = "quota-exhausted"
 GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL = "guardrail", "stop signal", "init", "error", "tool"
 INTERRUPTED = "interrupted"  # KeyboardInterrupt/SystemExit: recorded, then re-raised
 LINT, TIMEOUT = "lint", "timeout"  # an attempt record's abort_reason
@@ -569,6 +572,8 @@ class Deps:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     today: Callable[[], str] = _today
+    # todo drive-stops-on-week-limit: the local wall clock a Codex limit's reset is written in
+    local_now: Callable[[], datetime] = datetime.now
     # Fix round 4 L1: the end-of-run checks (06-25 wires ninja verify and gate --all); each
     # failed check is one string. Called after the last session, before the ENDED record.
     end_of_run: Callable[[], Sequence[str]] = tuple
@@ -789,7 +794,7 @@ RECORD_FIELDS: dict[str, dict[str, Callable[[object], bool]]] = {
 }
 RUN_REASONS = {
     STARTED: (START,),
-    STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL, INTERRUPTED),
+    STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL, INTERRUPTED, QUOTA_EXHAUSTED),
     ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED, ARMS_CAPPED),
 }
 
@@ -3155,6 +3160,11 @@ class _SessionEnded(_Halt):
     denied ended GAVE_UP guardrail; its arm goes on, so the pass ends quietly, inline too."""
 
 
+class _ArmClosed(_Halt):
+    """The worker's arm launches nothing more (`_Night._arm_closed`); the pass ends quietly,
+    inline too, and the other arms go on (todo drive-stops-on-week-limit)."""
+
+
 class _PackOver(Exception):
     """Quick 261113: the attempt's context pack is over the cap (`over`, PackOverCap). `_launch`
     raises it before any session, with the attempt directory and its view removed; the unwind
@@ -3320,6 +3330,7 @@ class _Lane:
     live_cap: int | None = None  # quick 261112-fds: a cascade arm's sessions at once
     resume: dict[Key, int] = field(default_factory=dict)  # 261112-fds: ARM_WAITING's attempt
     budget_spent: bool = False  # the meter read the arm's --arm-budget spent (_read_meters)
+    week_reset: str | None = None  # todo drive-stops-on-week-limit: out until then (_week_out)
     near_miss: bool = False  # todo near-miss-lane: its queue is Deps.near_miss's
 
     def drop(self, key: Key) -> None:
@@ -3401,7 +3412,7 @@ class _Worker:
         self._bind()
         try:
             self.outcome = self.night._function(self.pick, self.difficult)
-        except _SessionEnded as ended:
+        except (_SessionEnded, _ArmClosed) as ended:
             self.night._note(ended.note)
         finally:
             self.coordinator.release(self)
@@ -3907,7 +3918,7 @@ class _Night:
         ruling 2026-11-10) a denied write stopped it, or (todo budget-runs-and-contributors) the
         meter read its budget spent; under the night's condition."""
         capped = lane.max_sessions is not None and lane.sessions + lane.spent >= lane.max_sessions
-        return capped or lane.stopped or lane.budget_spent
+        return capped or lane.stopped or lane.budget_spent or lane.week_reset is not None
 
     def _read_meters(self, arms: Container[str] | None = None) -> None:
         """Todo budget-runs-and-contributors: between launches, ask the meter seam (Deps.meter)
@@ -4153,6 +4164,8 @@ class _Night:
         try:
             event, reason, detail = ENDED, self._loop(), None
             failed = [_detail(str(check)) for check in self.deps.end_of_run()]  # L1
+            if reason == QUOTA_EXHAUSTED:  # todo drive-stops-on-week-limit: ends as ENDED does
+                event = STOPPED
         except _Stop as stop:
             event, reason, detail = STOPPED, stop.reason, stop.detail
         except Exception as exc:
@@ -4174,13 +4187,14 @@ class _Night:
         if found:  # fix round 1: never commit a driver-owned file holding bytes it did not write
             event, reason = STOPPED, GUARDRAIL
             detail = _detail("; ".join([*([detail] if detail else []), *found]))
-        uncommitted = self._uncommitted_rows() if event == STOPPED else []
+        cut_short = event == STOPPED and reason != QUOTA_EXHAUSTED  # that one ends as ENDED
+        uncommitted = self._uncommitted_rows() if cut_short else []
         self._record_run(event, reason, detail, checks_failed=failed, uncommitted=uncommitted)
         try:
             if (
                 not self.breached
             ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
-                self._commit_log(stopped=event == STOPPED)
+                self._commit_log(stopped=cut_short)
         except Exception as exc:  # the owner hears of it too, then it propagates as before
             self._notify(event, reason, _detail("; ".join([*([detail] if detail else []),
                          f"the log commit failed: {type(exc).__name__}: {exc}"])))  # fmt: skip
@@ -4288,6 +4302,9 @@ class _Night:
                 return TARGET_MATCHED
             if self.sessions + self.spent >= self.config.max_sessions:
                 return MAX_SESSIONS
+            arms = list(self.arm_lanes.values()) or self.lanes  # todo drive-stops-on-week-limit
+            if all(lane.week_reset is not None for lane in arms):
+                return QUOTA_EXHAUSTED
             lanes = self.arm_lanes.values()
             if lanes and all(self._lane_end(lane) for lane in lanes):
                 return ARMS_CAPPED
@@ -4677,11 +4694,7 @@ class _Night:
         transient = 0
         cascade = bool(self.config.routing)
         while True:
-            self._halt_if_stopping()
-            with self.cond:  # owner ruling 2026-11-10: a stopped arm relaunches nothing
-                stopped = self.arm_lane.stopped
-            if stopped:
-                raise _Halt()
+            self._halt_if_closed()
             # D-07: no launch while the pause holds (07.2-16: this worker's arm's pause, D-22;
             # 261112-fds: a cascade attempt took its slot, and maybe the probe, without waiting)
             if cascade:
@@ -4690,6 +4703,10 @@ class _Night:
                 held = self.deps.clock()
                 probe = self.arm_lane.pause.wait_to_launch()
                 self.local.waited += self.deps.clock() - held  # a pause held it (or not at all)
+                if self._arm_closed():  # todo drive-stops-on-week-limit: out while it waited
+                    if probe:
+                        self.arm_lane.pause.hand_back()
+                    raise _ArmClosed()
             claim = self._claim(pick, n)
             try:
                 session = self._launch(claim)
@@ -4704,10 +4721,12 @@ class _Night:
             if disposition is Disposition.LIMIT:
                 self._after_session(session)
                 matched = self._salvage(session)
+                week = self._week_out(session)
                 if cascade:
                     self._cascade_limited(probe, counted=matched)
                     return MATCHED if matched else ARM_WAITING
-                self._limited(pick, n, probe)
+                if not week:  # out for the week: no backoff and no probe (_halt_if_closed)
+                    self._limited(pick, n, probe)
                 if matched:
                     return MATCHED
                 continue
@@ -4724,6 +4743,39 @@ class _Night:
                 continue
             self._after_session(session)
             return self._counted(session)
+
+    def _arm_closed(self) -> bool:
+        """This worker's arm launches nothing more: a denied write stopped it (owner ruling
+        2026-11-10) or its usage limit lasts past the window (`_week_out`)."""
+        with self.cond:
+            return self.arm_lane.stopped or self.arm_lane.week_reset is not None
+
+    def _halt_if_closed(self) -> None:
+        """Before a launch: leave quietly once the night is stopping or the arm is closed."""
+        self._halt_if_stopping()
+        if self._arm_closed():
+            raise _ArmClosed()
+
+    def _week_out(self, session: _Session) -> bool:
+        """Todo drive-stops-on-week-limit: a LIMIT session whose limit lasts past its 5-hour
+        window (a Codex session, codexjson.week_reset; any other harness names no such reset,
+        so it pauses and probes as before) closes its arm: the arm launches nothing more, its
+        sessions in flight finish, the other arms go on, and the console and the run record
+        name it with its reset, once. When every arm is out, `_end` ends the night
+        QUOTA_EXHAUSTED. True when the arm is out (now or already)."""
+        lane = self.arm_lane
+        reset = (codexjson.week_reset(session.events, self.deps.local_now())
+                 if session.claim.codex else None)  # fmt: skip
+        with self.cond:
+            if reset is None or lane.week_reset is not None:
+                return lane.week_reset is not None
+            lane.week_reset = reset
+            line = (f"{self._label(session.claim.pick, session.claim.n)}: arm {lane.arm} is out "
+                    f"of quota until {reset} (past its 5-hour window); it launches nothing more")
+            self.arm_stops.append(line)
+            self.cond.notify_all()
+        self.deps.say(line)
+        return True
 
     def _retry_slot(self) -> bool:
         """A transient retry's new slot: `_reserve`'s, or on a cascade night `_cascade_slot`'s,

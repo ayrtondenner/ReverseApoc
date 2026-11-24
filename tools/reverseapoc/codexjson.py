@@ -28,6 +28,12 @@ the requested model and a null `model`, and runs no init check.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is LIMIT when its text says a usage limit was hit, else STOP (unknown fails closed);
   a session with a completed turn is counted; one with none is TRANSIENT.
+- `week_reset` (todo drive-stops-on-week-limit): a usage limit names its reset as a time ("try
+  again at 10:32 AM") or, when the reset falls on another day, as a date ("try again at Nov
+  25th, 2026 10:32 PM"). The text of a dated reset more than the 5-hour window after `now` (the
+  local clock, which the CLI writes the reset in) is the week's; anything else is None: a
+  timed reset, a dated one past midnight but inside the window (run 20261120-codex2), a date
+  that does not parse, or no limit at all.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import re
 import shlex
 import stat
 from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from . import streamjson
@@ -58,6 +65,11 @@ KNOWN_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", _COMMAND, _F
 # retry or the WebSocket-to-HTTPS fallback. Any other error event or item is read as before.
 _RECONNECT = re.compile(r"Reconnecting\.\.\. [0-9]+/[0-9]+ \(")
 _FALLBACK = "Falling back from WebSockets to HTTPS transport. "
+# Todo drive-stops-on-week-limit: a reset on another day, "try again at Nov 25th, 2026 10:32 PM"
+_DATED_RESET = re.compile(r"try again at ((?P<month>[A-Z][a-z]{2}) (?P<day>[0-9]{1,2})"
+                          r"(?:st|nd|rd|th), (?P<rest>[0-9]{4} [0-9]{1,2}:[0-9]{2} [AP]M))")
+_RESET_FORMAT = "%b %d %Y %I:%M %p"  # the groups above, the day's suffix and comma taken off
+_WINDOW = timedelta(hours=5)  # the Plus usage window; a reset further away is the week's
 _NOTICE_EVENT_KEYS = frozenset({"type", "message"})
 _NOTICE_ITEM_KEYS = frozenset({"id", "type", "message"})
 _MS_PER_S = 1000
@@ -290,3 +302,19 @@ def classify(events: Sequence[dict], exit_code: int | None, timed_out: bool) -> 
     if text is not None:
         return Disposition.LIMIT if streamjson._LIMIT_TEXT.search(text) else Disposition.STOP
     return Disposition.ATTEMPT_DONE if turns(events) else Disposition.TRANSIENT
+
+
+def week_reset(events: Sequence[dict], now: datetime) -> str | None:
+    """The reset text of a usage limit that lasts past the 5-hour window (see the module
+    docstring), else None."""
+    text = failure(events)
+    if text is None or not streamjson._LIMIT_TEXT.search(text):
+        return None
+    found = _DATED_RESET.search(text)
+    if found is None:
+        return None
+    try:
+        at = datetime.strptime(f"{found['month']} {found['day']} {found['rest']}", _RESET_FORMAT)
+    except ValueError:  # a date the CLI never writes (Feb 30th): read as the window, as today
+        return None
+    return found[1] if at - now > _WINDOW else None

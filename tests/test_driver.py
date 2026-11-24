@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -381,7 +382,8 @@ class Night:
                       lint_paths=self._lint_paths, gate=self._gate,
                       partial_gate=self._partial, remove_containers=self.removed.append,
                       git=self._recorded_git, clock=lambda: self.now, sleep=self._sleep,
-                      today=lambda: "2026-10-25")  # fmt: skip
+                      today=lambda: "2026-10-25",
+                      local_now=lambda: datetime(2026, 11, 24, 11, 16))  # fmt: skip
         fields.update(over)
         return Deps(**fields)
 
