@@ -17,5 +17,15 @@ int func_000A5BA0(int r_eax)
     return (*(unsigned char *)((D_002A186C + r_eax))) & 255;
 }
 
-INCLUDE_ASM(func_000A5BC0);
+int func_000A5BC0(int r_eax)
+{
+    int v;
+    signed char z;
+
+    v = 0;
+    z = 0;
+    v = *(unsigned char *)(D_002A18EC + r_eax);
+    *(signed char *)(D_002A18EC + r_eax) = z;
+    return v;
+}
 INCLUDE_ASM(func_000A5BE0);
