@@ -3178,3 +3178,42 @@ def test_drive_guard_allows_the_drive_helpers_from_any_cwd(live_drive, scratch, 
 def test_drive_guard_keeps_other_helper_shapes_refused(live_drive, command):
     decision = guard(shell("Bash", command, live_drive), live_drive)
     assert decision.deny, command
+
+
+# Security review (2026-11-24): a target behind an expansion cannot be checked, so it fails closed;
+# compose pulls the service images, the shared one included.
+HIDDEN_RETAGS = [
+    ("Bash", "docker tag abc123 $IMAGE"),
+    ("Bash", "docker commit abc123 \"${IMAGE}:local\""),
+    ("Bash", "docker pull $(cat {scratch}/name)"),
+    ("Bash", "docker image import {scratch}/x.tar `cat {scratch}/name`"),
+    ("Bash", "docker import {scratch}/x.tar ~/name"),
+    ("PowerShell", "docker tag abc123 $env:IMAGE"),
+    ("PowerShell", "cmd /c docker pull %IMAGE%"),
+    ("Bash", "docker compose pull"),
+    ("Bash", "docker compose -f {scratch}/docker-compose.yml pull build"),
+    ("Bash", "docker compose run --pull always --rm test"),
+    ("Bash", "docker compose up --pull=missing"),
+    ("Bash", "docker compose create --pull always"),
+    ("Bash", "docker-compose pull"),
+]
+
+
+@pytest.mark.parametrize("where", ["scratch", "live_drive"])
+@pytest.mark.parametrize("name,command", HIDDEN_RETAGS)
+def test_drive_guard_refuses_hidden_retags_and_compose_pulls(live_drive, scratch, where, name,
+                                                             command):  # fmt: skip
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert decision.deny, text
+    assert "reverseapoc-build:local" in decision.reason
+
+
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+@pytest.mark.parametrize("name,command", HIDDEN_RETAGS)
+def test_drive_guard_allows_hidden_retags_without_a_live_drive(state, name, command, scratch,
+                                                               request):  # fmt: skip
+    repo = request.getfixturevalue(state)
+    text = _placed(name, command, repo, scratch)
+    assert not guard(shell(name, text, scratch), repo).deny, text

@@ -1624,9 +1624,9 @@ _COMPOSE_FLAGS = frozenset({"--dry-run", "--compatibility", "--all-resources", "
 _DOCKER_IMAGE = "image"  # `docker image <sub>`: the same subcommands under a group
 _IMAGE_BUILDERS = frozenset({"build", "buildx", "builder"})
 _DOCKER_TAG = "tag"
-_COMPOSE_BUILDS = frozenset({"build", "watch"})
-_COMPOSE_RUNS = frozenset({"run", "up", "create"})  # these build when given --build
-_COMPOSE_BUILD_FLAG = "--build"
+_COMPOSE_BUILDS = frozenset({"build", "watch", "pull"})  # pull: every service image, ours too
+_COMPOSE_RUNS = frozenset({"run", "up", "create"})  # these build or pull given --build, --pull
+_COMPOSE_BUILD_FLAGS = frozenset({"--build", "--pull"})
 _SHARED_IMAGE = "reverseapoc-build"  # reverseapoc-build:local, the tag a retag would move
 # todo image-guard-other-retags (owner ruling 2026-11-24): these move a tag when they name the
 # shared image; `load` takes its tags from the tarball, so every load counts.
@@ -1762,8 +1762,9 @@ def _past_options(words: Sequence[str], values: frozenset[str],
 def _image_build(name: str, rest: Sequence[str]) -> bool:
     """Whether a docker or docker-compose call builds or re-tags an image: build, buildx,
     builder or `image build`, any load, a tag, commit, import or pull naming reverseapoc-build
-    (each also under `image` or `container`), or a compose build (_compose_build); an unlisted
-    option before the subcommand counts as one."""
+    (each also under `image` or `container`), or a compose build or pull (_compose_build). An
+    unlisted option before the subcommand, and a subcommand or retag argument the hook cannot
+    read statically (a variable, a substitution, `%VAR%`, a leading ~), count as one."""
     if name == _DOCKER_COMPOSE:
         return _compose_build(rest)
     words = _past_options(rest, _DOCKER_VALUES, _DOCKER_FLAGS)
@@ -1774,20 +1775,22 @@ def _image_build(name: str, rest: Sequence[str]) -> bool:
         return _compose_build(args)
     if sub in _DOCKER_GROUPS:
         sub, args = (args[0], args[1:]) if args else ("", ())
-    if sub in _IMAGE_BUILDERS or sub == _IMAGE_LOAD:
+    if sub in _IMAGE_BUILDERS or sub == _IMAGE_LOAD or _UNPLACED.search(sub):
         return True
-    return sub in _IMAGE_RETAGS and any(_SHARED_IMAGE in word.casefold() for word in args)
+    return sub in _IMAGE_RETAGS and any(_SHARED_IMAGE in word.casefold() or _UNPLACED.search(word)
+                                        for word in args)  # fmt: skip
 
 
 def _compose_build(rest: Sequence[str]) -> bool:
-    """`compose build` or `watch`, or `run`, `up` or `create` with --build anywhere after it."""
+    """`compose build`, `watch` or `pull`, or `run`, `up` or `create` with --build or --pull
+    (any value) anywhere after it."""
     words = _past_options(rest, _COMPOSE_VALUES, _COMPOSE_FLAGS)
     if words is None:
         return True
     if not words:
         return False
     sub, args = words[0], words[1:]
-    built = any(word.split("=", 1)[0] == _COMPOSE_BUILD_FLAG for word in args)
+    built = any(word.split("=", 1)[0] in _COMPOSE_BUILD_FLAGS for word in args)
     return sub in _COMPOSE_BUILDS or (sub in _COMPOSE_RUNS and built)
 
 
