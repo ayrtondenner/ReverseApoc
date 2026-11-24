@@ -141,6 +141,7 @@ each session starts in a fresh directory.
 from __future__ import annotations
 
 import csv
+import ctypes
 import functools
 import hashlib
 import io
@@ -9086,6 +9087,15 @@ def detached_env(environ: Mapping[str, str],
         if value:
             env[key] = value
     return env
+
+
+def take_console_ctrl_c() -> None:
+    """Run 20261124-codex: a drive started from a process that ignores Ctrl-C (the agent's Bash
+    tool; SetConsoleCtrlHandler(NULL, TRUE) is inherited by child processes) ignored the console
+    Ctrl-C, the only documented stop. Turn Ctrl-C processing back on for this process and the
+    ones it starts. No-op off Windows."""
+    if sys.platform == "win32":
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
 
 
 def spawn_detached(argv: Sequence[str], *, cwd: Path, env: Mapping[str, str], log: Path) -> int:

@@ -448,6 +448,50 @@ def _lines_of(log: Path) -> set[str]:
     return {line.strip() for line in log.read_text(encoding="utf-8").splitlines()}
 
 
+# Run 20261124-codex (2026-11-24): a drive started from the agent's Bash tool inherited Windows'
+# ignore-Ctrl-C flag (SetConsoleCtrlHandler(NULL, TRUE) is inherited by child processes), so the
+# documented console Ctrl-C reached its console and did nothing. Each child below runs in its own
+# new console, sets that flag as the Bash tool's processes have it, optionally calls the driver's
+# helper, then raises CTRL_C_EVENT on its own console and reports whether Python saw it.
+_CTRL_C_CHILD = """
+import ctypes, sys, time
+kernel32 = ctypes.windll.kernel32
+kernel32.SetConsoleCtrlHandler(None, True)
+if sys.argv[1] == "helper":
+    from reverseapoc import driver
+    driver.take_console_ctrl_c()
+try:
+    kernel32.GenerateConsoleCtrlEvent(0, 0)
+    for _ in range(50):
+        time.sleep(0.1)
+    print("ignored")
+except KeyboardInterrupt:
+    print("interrupted")
+"""
+
+
+def _ctrl_c_child(tmp_path: Path, mode: str) -> str:
+    script = tmp_path / "child.py"
+    script.write_text(_CTRL_C_CHILD, encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script), mode], capture_output=True, text=True,
+                          creationflags=subprocess.CREATE_NEW_CONSOLE, timeout=60)  # fmt: skip
+    return done.stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="console Ctrl-C is Windows only")
+def test_a_drive_takes_the_console_ctrl_c_back_from_an_ignoring_parent(tmp_path):
+    assert _ctrl_c_child(tmp_path, "control") == "ignored"
+    assert _ctrl_c_child(tmp_path, "helper") == "interrupted"
+
+
+def test_the_drive_verb_takes_the_console_ctrl_c_before_anything_else(monkeypatch):
+    calls = []
+    monkeypatch.setattr(driver, "take_console_ctrl_c", lambda: calls.append("ctrl-c"))
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: calls.append("run") or 0)
+    assert cli.main(["drive", "--dry-run", "--run", "n1"]) == 0
+    assert calls == ["ctrl-c", "run"]
+
+
 # ---- Task 2: the preflight (D-34, D-36, D-13) and the canary (Pitfalls 2-3) ----
 
 HOST_CLI = ["uv", "run", "--frozen", "reverseapoc"]

@@ -80,3 +80,31 @@ No record is written on their behalf. An ENDED run counts as ended too.
 
 Not done here: a real night started with `--detach` from a session that then ends. The first
 such night is the end-to-end proof.
+
+## Follow-up from the first real night (run 20261124-codex, 2026-11-24)
+
+The first `--detach` night was launched through the scratchpad PowerShell launcher from the Bash
+tool, as the docs then said. Two things went wrong:
+
+- **Job.** Windows PowerShell's `Start-Process -Wait` kept the drive in the launcher's job,
+  nested in the session's: all four drive processes reported `IsProcessInJob` true, and the
+  launcher never returned until the drive's tree died. The same breakaway spawn from the bare
+  shell gave a child in no job (`uv` and `python` both `inJob=False`).
+- **Ctrl-C.** Processes started from the Bash tool inherit Windows' ignore-Ctrl-C flag. Two
+  console Ctrl-Cs (one during preflight, one with 8 sessions in flight) did nothing, and the
+  owner approved a `taskkill /T /F` of the tree during its 5-hour pause. A repro gave the same
+  chain started from the PowerShell tool catching the Ctrl-C ("KeyboardInterrupt caught"), and
+  from the Bash tool ignoring it.
+
+Fixes:
+- `driver.take_console_ctrl_c` turns Ctrl-C processing back on (`SetConsoleCtrlHandler(NULL,
+  FALSE)`, no-op off Windows), first thing in `_cmd_drive`, so a `--detach` parent clears the
+  flag before the child inherits it.
+- Tests: `test_a_drive_takes_the_console_ctrl_c_back_from_an_ignoring_parent` (Windows: a child
+  in its own console sets the flag, raises CTRL_C_EVENT; ignored without the helper, interrupted
+  with it), `test_the_drive_verb_takes_the_console_ctrl_c_before_anything_else`.
+- docs/model-routing.md and docs/workflow.md: launch a night as `uv run reverseapoc drive
+  --detach --log ...` straight from the PowerShell tool, not through the launcher.
+
+Its STARTED record was the first real `unended` use: it named 20261101-132005, 20261114-lanesC2,
+20261116-week and 20261121-codex.

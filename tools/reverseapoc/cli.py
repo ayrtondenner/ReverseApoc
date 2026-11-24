@@ -1908,7 +1908,10 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     session; once the canary's session ran, any error is a canary FAIL, exit 1). `--model`
     without `--canary` is refused (exit 2): a night takes each pass's model from D-09.
     `--fable-trial` (quick 261101-b5f) is for a matching night: with `--canary` or
-    `--session readability` it is refused (exit 2) before any preflight."""
+    `--session readability` it is refused (exit 2) before any preflight. On Windows the
+    console Ctrl-C is taken back first (driver.take_console_ctrl_c), so it stops a drive
+    whichever shell started it, a detached one included (the flag is inherited)."""
+    driver.take_console_ctrl_c()
     if args.detach or args.log is not None:
         return _detach_drive(args)
     harness = _harness_conflict(args)  # 07.2-06: before --model's own rule names it

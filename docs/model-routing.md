@@ -85,8 +85,12 @@ A drive started from a Claude Code session with `Start-Process uv run reverseapo
 -Wait` dies when that session ends: run 20261121-codex was killed with its session at about
 05:10 on 2026-11-22, in a 5-hour pause. The spike (todo drive-outlives-session) found the
 session's shells in a job and that drive sharing their console. Launch a night from a session
-with `reverseapoc drive --detach --log PATH <the night's flags>` instead, still through the
-launcher of docs/workflow.md:
+with `uv run reverseapoc drive --detach --log PATH <the night's flags>` instead, run straight
+from the session's shell (the PowerShell tool), not through the launcher of docs/workflow.md.
+Run 20261124-codex (2026-11-24) went through that launcher: its `Start-Process ... -Wait` kept
+the drive in the launcher's job, nested in the session's (the launcher never returned, and a
+repro of the chain from the bare shell gave a child in no job), so it could still die with the
+session. `--detach` builds the launcher's env itself, so the launcher adds nothing:
 
 - `--detach` (Windows only, always with `--log`) starts the same drive, without `--detach` and
   `--log`, as `uv run reverseapoc drive ...` in the repo root. It runs in its own hidden console,
@@ -98,7 +102,11 @@ launcher of docs/workflow.md:
   prints the drive's pid, its run id (fixed at launch when `--run` is absent) and the log path,
   then exits 0.
 - The console Ctrl-C stop still works: the helper attaches to the drive's own console, as the
-  spike showed with a sleeper that caught the KeyboardInterrupt.
+  spike showed with a sleeper that caught the KeyboardInterrupt. Every `drive` first turns
+  Ctrl-C processing back on (`driver.take_console_ctrl_c`): run 20261124-codex, started from the
+  Bash tool, had inherited Windows' ignore-Ctrl-C flag and ignored two Ctrl-Cs, and the owner
+  approved a `taskkill` of its tree instead. A repro showed the same chain started from the
+  PowerShell tool catching the Ctrl-C.
 
 If a drive is killed anyway, its drive.lock is no obstacle: the lock is an OS byte lock on the
 file, so the kill frees it, and the file left in `build/driver/` is harmless. A killed drive
