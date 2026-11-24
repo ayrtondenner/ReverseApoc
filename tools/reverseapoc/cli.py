@@ -1652,7 +1652,8 @@ def _one_line(exc: BaseException) -> str:
 
 
 def _cmd_context(args: argparse.Namespace) -> int:
-    roots = attempt.ROOTS
+    # the other EXE's look-alikes (todo cross-exe-lookalikes-in-pack) load from --orig too
+    roots = dataclasses.replace(attempt.ROOTS, orig=args.orig, manifest=args.manifest)
     data = attempt.exe_inputs(args.exe, orig=args.orig, manifest=args.manifest, config=args.config)
     row = attempt.resolve_row(data, args.function)
     out = args.out

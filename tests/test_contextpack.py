@@ -4,6 +4,7 @@ draft and LE byte below is made up, and every pack is written under pytest's tmp
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import sys
 from pathlib import Path
 
@@ -835,3 +836,66 @@ def test_gather_outlines_only_large_rows(tmp_path: Path, monkeypatch):
     outline = _gather(1, tmp_path, {})["outline"]
     assert outline.splitlines()[0].startswith("16 bytes: 1 block, 0 branches")
     assert "B0  0x00010010..0x00010020  4 insns, 1 call: ret" in outline
+
+
+# ---- todo cross-exe-lookalikes-in-pack: look-alikes matched in the other EXE ----
+
+# sha256 of the pack below as the code built it before the todo (a86b0278): a pack with no
+# cross-EXE look-alike stays byte for byte what it was
+SAME_EXE_PACK_SHA256 = "49ce130929114f9d9b443ecb1b159cc628819106aa4248a6429f1bdecc4b0807"
+
+
+def _same_exe_pack(tmp_path: Path, **overrides) -> str:
+    inputs = _gather(2, tmp_path, {FUNC_A: "matched"}, lookalike_floor=0.5, **overrides)
+    return build_pack(**inputs).text
+
+
+def test_a_pack_with_no_cross_exe_lookalike_is_unchanged(tmp_path: Path):
+    text = _same_exe_pack(tmp_path)
+    assert "### func_00010000 (0x00010000, similarity 0.500)\n" in text
+    assert hashlib.sha256(text.encode("utf-8")).hexdigest() == SAME_EXE_PACK_SHA256
+
+
+def _tacp_candidates(status):
+    """The synthetic LE's matched rows with their C, standing in for the other EXE's."""
+    rows, flat, fixups, symbols = _le_inputs()
+    return contextpack.lookalike_candidates(rows, flat=flat, fixups=fixups, symbols=symbols,
+                                            status=status, unit_texts={UNIT_AB: UNIT_AB_TEXT})
+
+
+def test_no_cross_exe_lookalike_leaves_the_pack_as_it_was(tmp_path: Path):
+    today = _same_exe_pack(tmp_path)
+    assert _same_exe_pack(tmp_path, others={}) == today
+    assert _same_exe_pack(tmp_path, others={"tacp": ()}) == today
+    assert _same_exe_pack(tmp_path, others={"tacp": _tacp_candidates({})}) == today  # none
+
+
+def test_lookalike_candidates_are_the_matched_rows_with_c():
+    (only,) = _tacp_candidates({FUNC_A: "matched", FUNC_B: "partial", FUNC_C: "matched"})
+    assert (only.name, only.start) == ("func_00010000", FUNC_A)  # FUNC_C's unit has no text
+    assert only.sequence[:3] == ("call", "mov", "ret")
+    assert only.source.startswith("int func_00010000(void)\n{")
+
+
+def test_a_lookalike_matched_only_in_the_other_exe_is_labelled_with_it(tmp_path: Path):
+    others = {"tacp": _tacp_candidates({FUNC_A: "matched"})}
+    inputs = _gather(2, tmp_path, {}, lookalike_floor=0.5, others=others)
+    (only,) = inputs["lookalikes"]
+    assert (only.name, only.start, only.ratio, only.exe) == ("func_00010000", FUNC_A, 0.5, "tacp")
+    assert only.source.startswith("int func_00010000(void)\n{")
+    body = {s.title: s.body for s in build_pack(**inputs).sections}["Look-alikes"]
+    assert body.startswith("### func_00010000 (tacp, 0x00010000, similarity 0.500)\n\n```c\n")
+
+
+def test_an_equal_cross_exe_lookalike_ranks_after_the_own_exe_one(tmp_path: Path):
+    others = {"tacp": _tacp_candidates({FUNC_A: "matched"})}
+    inputs = _gather(2, tmp_path, {FUNC_A: "matched"}, lookalike_floor=0.5, others=others)
+    assert [(item.exe, item.start) for item in inputs["lookalikes"]] == [("", FUNC_A),
+                                                                         ("tacp", FUNC_A)]
+
+
+def test_a_cut_cross_exe_lookalike_names_its_exe():
+    looks = (Lookalike("func_00011000", 0x11000, 0.9, "/*" + "x" * 2000 + "*/", "tacp"),)
+    pad = PACK_CAP - _size(**_big_inputs(lookalikes=looks)) + 2  # one byte over
+    pack = build_pack(**_big_inputs(pad, lookalikes=looks))
+    assert pack.truncated == ("look-alike func_00011000 (tacp)",)

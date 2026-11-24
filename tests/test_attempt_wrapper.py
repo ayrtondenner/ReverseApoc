@@ -3577,3 +3577,88 @@ def test_the_pack_code_holds_every_module_contextpack_imports():
     for line in re.findall(r"^from \. import (.+)$", text, re.MULTILINE):
         names.update(name.strip() for name in line.split(","))
     assert names and {f"{name}.py" for name in names} <= {path.name for path in attempt.PACK_CODE}
+
+
+# ---- todo cross-exe-lookalikes-in-pack: the other EXE's matched rows in the pack ----
+
+TWIN_LOOKALIKE = "### func_00010010 (tacp, 0x00010010, similarity 1.000)\n"
+
+
+def _tacp_twin(roots: attempt.Roots, src: Path, *, matched: bool = True) -> None:
+    """A made-up TACP.EXE of UFO2P.EXE's bytes and rows, its units' C under `src`. `matched`:
+    its func_00010010 (the claimed row's twin) is matched and the EXE is in orig/; else
+    nothing is matched there and orig/ has no TACP.EXE (a load would fail)."""
+    data = _image()
+    write_manifest(roots.manifest, {"UFO2P.EXE": data, "TACP.EXE": data})
+    config = roots.config / "tacp"
+    config.mkdir(parents=True, exist_ok=True)
+    write_functions_csv(config / "functions.csv", [
+        FunctionRow(FUNC_A, FUNC_B, "func_00010000", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "call"),
+    ], "TACP.EXE")  # fmt: skip
+    write_units_csv(config / "units.csv", [UnitRow(UNIT_AB, FUNC_A, FUNC_C, "first"),
+                    UnitRow(UNIT_C, FUNC_C, END, "first")], "TACP.EXE")  # fmt: skip
+    _write(src / "tacp" / f"{UNIT_AB}.c", UNIT_AB_TEXT)
+    if matched:
+        (roots.orig / "TACP.EXE").write_bytes(data)
+        write_status(status_path(roots.config, "tacp"), [StatusRow(
+            FUNC_B, "func_00010010", UNIT_AB, "matched", 100.0, 0, lf_sha256(UNIT_AB_TEXT),
+            "2026-11-24")])  # fmt: skip
+
+
+def _context_pack(roots: attempt.Roots, capsys) -> str:
+    out = roots.repo / "build" / "driver" / "r" / "ufo2p" / "func_00010010"
+    assert _run(_context_argv(roots, "--out", str(out))) == 0, capsys.readouterr().err
+    return (out / "context.md").read_text(encoding="utf-8")
+
+
+def test_context_packs_a_lookalike_matched_in_the_other_exe(tree: attempt.Roots, capsys):
+    assert "\n## Look-alikes\n\nnone\n" in _context_pack(tree, capsys)  # none in UFO2P.EXE
+    _tacp_twin(tree, tree.src)
+    text = _context_pack(tree, capsys)
+    section = text[text.index("\n## Look-alikes\n"):]
+    assert TWIN_LOOKALIKE in section
+    assert "int func_00010010(void)\n{\n    return D_00020100;\n}" in section
+
+
+def test_an_other_exe_with_nothing_matched_is_not_loaded(tree: attempt.Roots, capsys, loads):
+    before = _context_pack(tree, capsys)
+    _tacp_twin(tree, tree.src, matched=False)
+    assert _context_pack(tree, capsys) == before  # and no TACP.EXE in orig/ to load
+    assert len(loads) == 2
+
+
+def _tacp_unmatched(attempt_dir: Path, monkeypatch) -> Path:
+    path = status_path(attempt.ROOTS.config, "tacp")
+    write_status(path, [])
+    return path
+
+
+def _view_tacp_unit(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_view(attempt_dir, "src", "tacp", f"{UNIT_AB}.c"), "/* edited */\n")
+
+
+OTHER_EXE_CHANGES = [  # (change, the EXE loads its miss costs, the twin still in the pack)
+    (_tacp_unmatched, 1, False),  # nothing matched in TACP.EXE: only UFO2P.EXE is loaded
+    (_view_tacp_unit, 2, True),
+]
+
+
+@pytest.mark.parametrize(("change", "reloads", "twin"), OTHER_EXE_CHANGES,
+                         ids=lambda case: _ids(case) if callable(case) else "")  # fmt: skip
+def test_view_context_cache_misses_on_the_other_exes_inputs(tree: attempt.Roots, monkeypatch,
+                                                            capsys, loads, change, reloads,
+                                                            twin):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _tacp_twin(tree, _view(attempt_dir, "src"))
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert TWIN_LOOKALIKE in first[1] and len(loads) == 2  # both EXEs
+    assert _attempt(capsys, "context") == first and len(loads) == 2
+    change(attempt_dir, monkeypatch)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2 + reloads  # a miss: the pack is built again
+    assert (TWIN_LOOKALIKE in after[1]) is twin
+    _entry(attempt_dir, "context.json").unlink()
+    assert _attempt(capsys, "context") == after  # the new pack, not the stored one

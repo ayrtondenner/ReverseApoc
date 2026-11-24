@@ -9,7 +9,8 @@ signature (its C prototype, else the whole-program signature table's), the `D_` 
 function touches, the struct shapes it touches (structs.py, todo struct-shapes-across-functions),
 include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md idioms, the
 earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike functions with
-their C. The struct shapes are a required section, bounded by structs.section itself.
+their C, of this EXE or (labelled with its stem) the other one. The struct shapes are a required
+section, bounded by structs.section itself.
 
 Listings and drafts are game-derived, so a pack is written only under the gitignored
 build/driver/ (D-14, docs/legal.md "Generated files stay local") and never committed. Every
@@ -130,11 +131,29 @@ def one_line(text: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Lookalike:
-    """A matched function whose mnemonic sequence resembles the target's, with its C."""
+    """A matched function whose mnemonic sequence resembles the target's, with its C. `exe` is
+    the stem of the other EXE it is matched in (todo cross-exe-lookalikes-in-pack), "" for the
+    pack's own EXE."""
 
     name: str
     start: int
     ratio: float
+    source: str
+    exe: str = ""
+
+    def label(self) -> str:
+        """The name, with the other EXE's stem after it when the row is that EXE's."""
+        return f"{self.name} ({self.exe})" if self.exe else self.name
+
+
+@dataclass(frozen=True, slots=True)
+class Candidate:
+    """A matched row whose C its unit file holds, with its mnemonic sequence: what a target is
+    ranked against (lookalike_candidates)."""
+
+    name: str
+    start: int
+    sequence: tuple[str, ...]
     source: str
 
 
@@ -226,7 +245,9 @@ def _neighbours(neighbours: Sequence[Neighbour]) -> str:
 
 
 def _lookalike(lookalike: Lookalike) -> str:
-    head = f"### {lookalike.name} (0x{lookalike.start:08X}, similarity {lookalike.ratio:.3f})"
+    exe = f"{lookalike.exe}, " if lookalike.exe else ""
+    head = (f"### {lookalike.name} ({exe}0x{lookalike.start:08X}, similarity "
+            f"{lookalike.ratio:.3f})")  # fmt: skip
     return f"{head}\n\n{_fenced(lookalike.source, 'c')}"
 
 
@@ -360,7 +381,7 @@ class _Optional:
         """Cut the next item and name it; None when nothing is left to cut."""
         if self.lookalikes_kept:
             self.lookalikes_kept -= 1
-            return f"look-alike {self.lookalikes[self.lookalikes_kept].name}"
+            return f"look-alike {self.lookalikes[self.lookalikes_kept].label()}"
         if self.best_c_kept:
             self.best_c_kept = False
             return "earlier best C"
@@ -971,6 +992,48 @@ def lookalikes[K](
     return [(key, -negative) for negative, key in ranked]
 
 
+def _candidates(
+    rows: Sequence[FunctionRow],
+    *,
+    flat: bytes | bytearray,
+    index: asm.FixupIndex,
+    symbols: SymbolTable,
+    status: Mapping[int, str],
+    prototypes: _Prototypes,
+    skip: int | None = None,
+) -> Iterator[Candidate]:
+    """The matched game/thunk rows (other than the one at `skip`) whose C is in their unit
+    file, in row order."""
+    for other in rows:
+        if other.start == skip or other.kind not in _WALKED_KINDS:
+            continue
+        if status.get(other.start) != STATUS_MATCHED:
+            continue
+        name = symbols.c_name(other.start)
+        found = prototypes.definition(other, name)
+        if found is not None:
+            sequence = mnemonics(other, flat, index.overlapping(other.start, other.end))
+            yield Candidate(name, other.start, sequence, found.source)
+
+
+def lookalike_candidates(
+    rows: Sequence[FunctionRow],
+    *,
+    flat: bytes | bytearray,
+    fixups: Sequence[Fixup],
+    symbols: SymbolTable,
+    status: Mapping[int, str],
+    unit_texts: Mapping[str, str],
+) -> tuple[Candidate, ...]:
+    """Todo cross-exe-lookalikes-in-pack: one EXE's look-alike candidates (its matched game and
+    thunk rows whose C `unit_texts` hold), for gather's `others` when the pack is another
+    EXE's. `status` and `unit_texts` are as gather takes them (ContextPackError for a status
+    outside STATUSES)."""
+    _check_statuses(status)
+    return tuple(_candidates(rows, flat=flat, index=asm.FixupIndex(fixups), symbols=symbols,
+                             status=status, prototypes=_Prototypes(unit_texts)))  # fmt: skip
+
+
 def _lookalike_inputs(
     row: FunctionRow,
     *,
@@ -980,26 +1043,23 @@ def _lookalike_inputs(
     symbols: SymbolTable,
     status: Mapping[int, str],
     prototypes: _Prototypes,
+    others: Mapping[str, Sequence[Candidate]],
     floor: float,
 ) -> tuple[Lookalike, ...]:
-    """The matched game/thunk rows (other than `row`) whose C is in their unit file, ranked."""
-    sources = {}
-    for other in rows:
-        if other.start == row.start or other.kind not in _WALKED_KINDS:
-            continue
-        if status.get(other.start) != STATUS_MATCHED:
-            continue
-        found = prototypes.definition(other, symbols.c_name(other.start))
-        if found is not None:
-            sources[other.start] = (other, found.source)
-
-    def sequence(of: FunctionRow) -> tuple[str, ...]:
-        return mnemonics(of, flat, index.overlapping(of.start, of.end))
-
-    matched = {start: sequence(other) for start, (other, _) in sources.items()}
-    ranked = lookalikes(sequence(row), matched, floor=floor)
-    return tuple(Lookalike(symbols.c_name(start), start, ratio, sources[start][1])
-                 for start, ratio in ranked)  # fmt: skip
+    """The matched game/thunk rows (other than `row`) whose C is in their unit file, and the
+    other EXEs' candidates in `others` (by EXE stem), ranked together. A key is (EXE, start)
+    with "" for the pack's own EXE, so an equal ratio puts the own EXE's row first and a pack
+    with no other EXE's candidate ranks as it did by start alone."""
+    own = _candidates(rows, flat=flat, index=index, symbols=symbols, status=status,
+                      prototypes=prototypes, skip=row.start)  # fmt: skip
+    pool = {("", found.start): found for found in own}
+    pool.update(((exe, found.start), found) for exe, found_rows in others.items()
+                for found in found_rows)  # fmt: skip
+    target = mnemonics(row, flat, index.overlapping(row.start, row.end))
+    ranked = lookalikes(target, {key: found.sequence for key, found in pool.items()},
+                        floor=floor)  # fmt: skip
+    return tuple(Lookalike(pool[key].name, key[1], ratio, pool[key].source, key[0])
+                 for key, ratio in ranked)  # fmt: skip
 
 
 def _read(path: Path) -> str | None:
@@ -1135,12 +1195,15 @@ def gather(
     hint: str | None = None,
     signatures: Table | None = None,
     shapes: structs.Shapes | structs.StructsError | None = None,
+    others: Mapping[str, Sequence[Candidate]] | None = None,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
     missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
-    ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
+    ranked by `lookalikes` with `lookalike_floor`, together with `others` (todo
+    cross-exe-lookalikes-in-pack: each other EXE's lookalike_candidates by its stem), whose
+    look-alikes the pack labels with that stem. Pass `calls` to reuse one CallIndex across
     functions. `hint` is the owner's hint for the row (read_hints), shown verbatim; with
     `signatures` (the whole-program table, signatures.load) each callee gets a signature line;
     a row of structure.MIN_SIZE bytes and up gets its control-flow outline. `shapes` are the
@@ -1154,7 +1217,7 @@ def gather(
     prototypes = _Prototypes(unit_texts)
     similar = _lookalike_inputs(row, rows=rows, flat=flat, index=asm.FixupIndex(fixups),
                                 symbols=symbols, status=status, prototypes=prototypes,
-                                floor=lookalike_floor)  # fmt: skip
+                                others=others or {}, floor=lookalike_floor)  # fmt: skip
     return {
         "function": symbols.c_name(row.start),
         "listing": _read(Path(listing_dir) / asm.file_name(symbols, row)),

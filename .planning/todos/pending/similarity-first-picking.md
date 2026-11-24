@@ -19,3 +19,5 @@ source: literature mining of 2026-11-18 (docs/research/notes-ideas-tooling-repro
 ## Status (2026-11-18)
 
 Status (batch 2026-11-18, U4): `drive --order similarity` is built (cross-EXE ratios; pass order D-08 still dominates). Left: the held comparison run, and cross-EXE look-alikes inside the pack (todo cross-exe-lookalikes-in-pack). Owner question: apply similarity across passes (D-08)?
+
+Status (2026-11-24): cross-EXE look-alikes inside the pack are built (todo cross-exe-lookalikes-in-pack, completed). Left: the held comparison run and the owner question above.

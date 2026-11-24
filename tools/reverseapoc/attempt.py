@@ -2053,6 +2053,40 @@ def _struct_shapes(repo: Path, stem: str) -> structs.Shapes | structs.StructsErr
         return exc
 
 
+def _other_stems(manifest: Path, config: Path, own: str) -> list[str]:
+    """Todo cross-exe-lookalikes-in-pack: the manifest's other EXEs with units (a
+    config/<exe>/units.csv, as twins.plan_twins takes them), in manifest order."""
+    stems = dict.fromkeys(check.exe_stem(target.name) for target in load_manifest(manifest))
+    return [stem for stem in stems
+            if stem != own and (Path(config) / stem / UNITS_CSV).is_file()]  # fmt: skip
+
+
+def _other_unit_paths(src: Path, config: Path, stem: str) -> list[Path]:
+    """The unit files of another EXE that its pack candidates read (_unit_paths' files, from
+    config/<exe>/functions.csv without loading the EXE): what the context cache digests."""
+    rows = read_functions_csv(Path(config) / stem / FUNCTIONS_CSV)
+    return [Path(src) / stem / f"{unit}.c" for unit in sorted({row.unit for row in rows
+                                                                if row.unit})]  # fmt: skip
+
+
+def _other_candidates(data: check.ExeInputs, *, src: Path, config: Path,
+                      roots: Roots) -> dict[str, tuple[contextpack.Candidate, ...]]:  # fmt: skip
+    """Todo cross-exe-lookalikes-in-pack: the look-alike candidates of every other EXE with
+    units, by stem: its matched rows whose C is in its unit files under `src`, its status from
+    `config`. An EXE with no matched row is not loaded (none of its rows can rank), so a pack
+    of an EXE whose twin has nothing matched needs no other EXE in orig/."""
+    others = {}
+    for stem in _other_stems(roots.manifest, config, data.stem):
+        status = {entry.start: entry.status for entry in read_status(status_path(config, stem))}
+        if contextpack.STATUS_MATCHED not in status.values():
+            continue
+        other = exe_inputs(stem, orig=roots.orig, manifest=roots.manifest, config=config)
+        others[stem] = contextpack.lookalike_candidates(
+            other.rows, flat=other.flat, fixups=other.fixups, symbols=other.symbols,
+            status=status, unit_texts=_unit_texts(src, other, ""))  # fmt: skip
+    return others
+
+
 def make_pack(
     data: check.ExeInputs,
     row: FunctionRow,
@@ -2067,8 +2101,9 @@ def make_pack(
     the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
     idioms and earlier notes, the owner's hint from config/hints/<exe>.toml, the signature
     table from build/signatures/<exe>.json (U10) and the struct shapes `reverseapoc structs`
-    left under the repo's build/structs/<exe>/. Pass `calls` to reuse one CallIndex across
-    functions."""
+    left under the repo's build/structs/<exe>/, with the other EXEs' matched rows as look-alike
+    candidates (_other_candidates: roots.orig and roots.manifest, `src` and `config`). Pass
+    `calls` to reuse one CallIndex across functions."""
     status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
     starts = {other.start for other in data.rows if other.kind in CLAIMABLE_KINDS}
     hints = contextpack.read_hints(contextpack.hints_path(config, data.stem), starts)
@@ -2082,6 +2117,7 @@ def make_pack(
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
         hint=hints.get(row.start), signatures=table,
         shapes=_struct_shapes(roots.repo, data.stem),
+        others=_other_candidates(data, src=src, config=config, roots=roots),
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 
@@ -2158,6 +2194,7 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
     if form == "context":
         facts["notes"] = _notes_digest(claim)
         paths += _context_paths(ROOTS, claim.exe)
+        paths += [*_other_exe_paths(claim.exe)]
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
 
 
@@ -2199,6 +2236,21 @@ def pack_key(data: check.ExeInputs, row: FunctionRow, *, src: Path, roots: Roots
     facts = {"exe": data.stem, "start": row.start, "end": row.end, "cap": contextpack.PACK_CAP,
              "code": _digests(PACK_CODE), "inputs": _digests(paths)}  # fmt: skip
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _other_exe_paths(own: str) -> Iterator[Path]:
+    """Todo cross-exe-lookalikes-in-pack: each other manifest EXE's image and config tables
+    and its status.csv, the files _other_candidates reads (its unit files are derived:
+    _rebuild_pack). Every other EXE is in the key, units or not, so one that gains a units.csv
+    is a miss."""
+    targets = {check.exe_stem(target.name): target for target in load_manifest(ROOTS.manifest)}
+    for stem, target in targets.items():
+        if stem == own:
+            continue
+        config = Path(ROOTS.config) / stem
+        yield Path(ROOTS.orig) / target.name
+        yield from (config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))
+        yield status_path(ROOTS.config, stem)
 
 
 def _notes_digest(claim: Claim) -> str:
@@ -2316,6 +2368,8 @@ def _rebuild_pack(claim: Claim) -> tuple[str, Path, dict[str, str | None]]:
     listing = listing_path(data, row, ROOTS.asm)
     read = [listing, listing.parent / ghidra.DRAFTS_DIR / ghidra.draft_name(row.start),
             *_unit_paths(src, data).values()]  # fmt: skip
+    for stem in _other_stems(ROOTS.manifest, ROOTS.config, data.stem):
+        read += _other_unit_paths(src, ROOTS.config, stem)
     derived = _digests(read)
     pack = make_pack(data, row, src=src, config=ROOTS.config, asm_root=ROOTS.asm, roots=ROOTS)
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
