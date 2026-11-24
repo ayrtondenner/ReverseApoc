@@ -344,7 +344,8 @@ ARM_CAP_LINE = ("{label}: every arm of its row has launched its cap tonight ({ca
 ARM_WAIT_LINE = ("{label}: usage limit; arm {arm} pauses for {seconds} s; the function goes "
                  "back to the queue at attempt {n}")  # fmt: skip
 # 261112-fdt: the attempt ran on a later arm of its row than its rung; `skipped` lists each arm
-# passed over as "<arm> (capped)" or "<arm> (paused)".
+# passed over as "<arm> (capped)", "<arm> (paused)" or (todo cascade-over-cap-per-arm, a kept
+# over-cap verdict for the row on that arm) "<arm> (over cap)".
 ARM_SKIP_LINE = "{label}: skipped {skipped}"
 # 261112-fdt: a usage limit mid-attempt on `arm` hands the same attempt to the row's arm `to`
 # (the one line of that LIMIT; ARM_WAIT_LINE is the line when no arm can take it).
@@ -2593,7 +2594,8 @@ OverCaps = dict[tuple[str, int, str], dict[str, str | int]]
 
 def load_over_caps(path: Path) -> OverCaps:
     """build/driver/over-cap.json: each row whose pack was over the cap on an arm, with the pack
-    key it was built under. A missing file holds none; any other shape is a DriverError."""
+    key it was built under. A missing file holds none; a file that cannot be read or has any
+    other shape is a DriverError (owner ruling 2026-11-24: the night warns and starts empty)."""
     if not path.is_file():
         return {}
     try:
@@ -2609,7 +2611,7 @@ def load_over_caps(path: Path) -> OverCaps:
                                 "int cap and size")  # fmt: skip
             verdicts[exe, int(start, 16), arm] = {"inputs": inputs, "cap": cap, "size": size}
         return verdicts
-    except (ValueError, KeyError, TypeError) as exc:
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         raise DriverError(f"{path} is not an over-cap list: {exc}") from exc
 
 
@@ -3838,11 +3840,16 @@ class _Night:
         coordinator dispatches exactly the picks the routing will place: RESERVED at the first
         arm that can launch, ARM_WAITING at the first busy one (`_busy`); a capped or paused arm
         passes to the next; when the row runs out, ARM_CAPPED if every arm was capped, else
-        ARM_WAITING. The coordinator offers no ARM_WAITING pick."""
+        ARM_WAITING. The coordinator offers no ARM_WAITING pick. Todo cascade-over-cap-per-arm:
+        an arm with a kept over-cap verdict for the row passes to the next as a capped one does,
+        its key unread (a stale verdict only makes the pick wait for the row's other arms); a
+        row of such arms and capped ones is ARM_CAPPED, dispatched so the routing reads keys."""
         with self.cond:
             n = self.lane.resume.get((pick.exe, pick.start), 1)
             capped = True
             for lane in self._route_order(pick, n):
+                if (pick.exe, pick.start, lane.arm) in self.over_cap_verdicts:
+                    continue
                 state = self._lane_state(lane)
                 if state == RESERVED:
                     return RESERVED
@@ -3897,12 +3904,24 @@ class _Night:
         paused lane is skipped. When the row runs out, arm_lane goes back to the rung lane and
         the answer is ARM_CAPPED if every lane was capped, else ARM_WAITING. Only the lane that
         reserves can take a probe (`try_launch` runs last in `_cascade_slot`). Also returns the
-        skipped arms as "<arm> (capped)" or "<arm> (paused)"."""
+        skipped arms as "<arm> (capped)" or "<arm> (paused)". Todo cascade-over-cap-per-arm
+        (owner ruling 2026-11-24): an arm in `local.over_cap_arms` (`_over_cap_arms`) is
+        skipped as "<arm> (over cap)" before any slot is asked of it, and a row of nothing but
+        such arms ends KNOWN_OVER_CAP, counted as `_known_over_cap` counts a skip."""
         order = self._route_order(pick, n)
+        known = getattr(self.local, "over_cap_arms", frozenset())
         skipped: list[str] = []
         capped = True
         with self.cond:
+            if all(lane.arm in known for lane in order):
+                self.local.arm_lane = order[0]
+                self.known_skips += 1
+                self.over_caps.add((pick.exe, pick.start))
+                return KNOWN_OVER_CAP, skipped
             for lane in order:
+                if lane.arm in known:
+                    skipped.append(f"{lane.arm} (over cap)")
+                    continue
                 self.local.arm_lane = lane
                 state = self._cascade_slot()
                 if state in (None, RESERVED) or self._busy(lane, state):
@@ -4143,11 +4162,10 @@ class _Night:
             unended = unended_runs(self.log)  # written into STARTED only, nothing on their behalf
         except DriverError as exc:
             return DriveReport(REFUSED, "log", 0, 0, _detail(f"refusing to start: {exc}"))
-        try:
+        try:  # owner ruling 2026-11-24: a damaged cache is read as empty, with one warning
             self.over_cap_verdicts = load_over_caps(self.repo / OVER_CAPS)
         except DriverError as exc:
-            return DriveReport(REFUSED, "over-cap list", 0, 0,
-                               _detail(f"refusing to start: {exc}"))  # fmt: skip
+            self.deps.say(f"warning: {exc}; starting with no over-cap verdicts")
         if self.config.hold:  # 07.2-06 (D-17): the run directory says it is a hold run
             for run in dict.fromkeys([self.config.run_id, *(lane.run for lane in self.lanes)]):
                 run_dir = self.repo.joinpath(DRIVER_DIR, run)  # 07.2-16: each arm's run too
@@ -4377,7 +4395,10 @@ class _Night:
         A row with every arm capped ends the pass ARM_CAPPED (one console line; the function
         waits for a later night, with no difficult-list entry); a busy arm, or a row with no arm
         that can launch, ends it ARM_WAITING, and the pass resumes at that attempt number
-        (`_Lane.resume`) once the coordinator sees an arm of its row can launch."""
+        (`_Lane.resume`) once the coordinator sees an arm of its row can launch. Todo
+        cascade-over-cap-per-arm: an arm with a current over-cap verdict for the row passes the
+        attempt on as a capped one does, with no pack built; a row of nothing but such arms ends
+        the pass KNOWN_OVER_CAP, as a lone over-cap row's does."""
         readability = self.config.session == READABILITY
         key = (pick.exe, pick.start)
         cascade = bool(self.config.routing)
@@ -4394,6 +4415,7 @@ class _Night:
                 self._read_meters(backends.route_for(self.config.routing, pick.size).arms
                                   if cascade else (self.lane.arm,))  # fmt: skip
                 if cascade:  # 261112-fds/fdt: the row's first arm that can launch, never waiting
+                    self.local.over_cap_arms = self._over_cap_arms(pick)
                     slot = self._cascade_route(pick, n)
                     if slot != RESERVED:
                         return self._cascade_end(pick, n, slot)
@@ -4420,6 +4442,7 @@ class _Night:
                     return self._park(key, self._label(pick, n), spec)
         finally:
             self.local.arm_lane = None  # nothing outside the pass sees an attempt's arm
+            self.local.over_cap_arms = frozenset()
         callees = tuple(self.deps.matched_callees(pick))
         with self.cond:  # the list and the pass counts are shared by every worker
             difficult[key] = callees
@@ -4545,7 +4568,7 @@ class _Night:
         """Todo over-cap-rows-open-every-night (owner ruling 2026-11-24): the attempt's arm has
         a kept over-cap verdict for its row whose pack key is the pick's key now; then it is
         counted as skipped and as over the cap tonight. Never on a cascade night: its pass is
-        the whole row of arms, and a skip would end it for the arms with no verdict too."""
+        the whole row of arms, so the routing passes each such arm on (`_over_cap_arms`)."""
         if self.config.routing:
             return False
         with self.cond:
@@ -4556,6 +4579,21 @@ class _Night:
             self.known_skips += 1
             self.over_caps.add((pick.exe, pick.start))
         return True
+
+    def _over_cap_arms(self, pick: Pick) -> frozenset[str]:
+        """Todo cascade-over-cap-per-arm (owner ruling 2026-11-24): the arms of `pick`'s routing
+        row with a kept over-cap verdict for it whose pack key is the pick's key now, read before
+        each cascade attempt is routed (`_route_slot` passes them on). The key is only computed
+        when such a verdict exists, outside the night's condition (`_pack_key` takes the gate
+        lock)."""
+        row = backends.route_for(self.config.routing, pick.size).arms
+        with self.cond:
+            kept = {arm: verdict for arm in row
+                    if (verdict := self.over_cap_verdicts.get((pick.exe, pick.start, arm)))}
+        if not kept:
+            return frozenset()
+        key = self._pack_key(pick)
+        return frozenset(arm for arm, verdict in kept.items() if verdict["inputs"] == key)
 
     def _hold_done(self, key: Key, outcome: str) -> str:
         """07.2-06 (D-17): a hold run's function is done after its one counted attempt. Its pass
