@@ -335,7 +335,15 @@ FLOAT_TIES = {
 }
 SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722, array=True))
 SPILL_SMALL = (Marked("m", 2, 0x711), Marked("n", 2, 0x722))
-SAME_CODE = (("pr_spill_decl", "pr_spill_decl_rev"), ("pr_spill_decl", "pr_spill_scoped"))
+# pr_spill_short was M5's one exception until the todo spill-short-artifact (2026-11-24): its twin
+# differed only by the trailing filler the file's last function carries, so pr_last_guard follows.
+SAME_CODE = (
+    ("pr_spill_decl", "pr_spill_decl_rev"),
+    ("pr_spill_decl", "pr_spill_scoped"),
+    ("pr_spill_short", "pr_spill_short_rev"),
+    ("pr_spill_char", "pr_spill_char_rev"),
+    ("pr_spill_shorts", "pr_spill_shorts_rev"),
+)
 MOVED_CODE = (
     ("pr_spill_decl", "pr_spill_assign"),
     ("pr_spill_decl", "pr_spill_use"),
@@ -548,12 +556,6 @@ def test_a_double_changes_a_tie_of_ints_by_its_use_alone(modules, cell):
     called = _offsets(modules[cell], "pr_double_called", cell, ints)
     assert called != _offsets(modules[cell], "pr_double_stored", cell, ints)
     assert slots.order_is_known((*_declared(ints), slots.Local("d", 8))) is False
-
-
-def test_a_short_beside_a_short_moves_with_its_declaration(modules):
-    """The exception to M5, and why the search leaves plain locals under 4 bytes to its moves."""
-    one, other = "pr_spill_short", "pr_spill_short_rev"
-    assert any(_text(module, one) != _text(module, other) for module in modules.values())
 
 
 @pytest.mark.parametrize("cell", CELLS)

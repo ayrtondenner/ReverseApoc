@@ -1614,7 +1614,8 @@ def test_declaration_axis_falls_back_for_small_locals_beside_spills():
 
 
 def test_declaration_axis_falls_back_beside_a_plain_small_local():
-    """A spilled short can move with its declaration (pr_spill_short), so nothing is skipped."""
+    """A plain local under 4 bytes refuses the skip: the safe side, since no spilled short has
+    moved with its declaration away from the probe's end (todo spill-short-artifact)."""
     text = _body("int b;", "int d;", "short s;", "", "take(&b, &d);", "return s;")
     assert _axis(text, _pairs((0, 4), (4, 0))) == _plan_1_moves(text)
 

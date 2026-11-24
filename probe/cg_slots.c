@@ -2658,9 +2658,10 @@ void pr_spill_small(void)
     pr_put(b, d, f, h);
 }
 
-/* The one case where declaration moves a register candidate: shorts spilled beside a short in
-   memory. Under -oneatx these two differ, and every other pair of this file with declarations
-   alone changed gives the same code. */
+/* Shorts spilled beside a short in memory. These two were once read as M5's one exception: under
+   -oneatx they differed, but only by the trailing filler of the file's last function. Away from
+   the end they give the same code in both cells (todo spill-short-artifact), as do the char and
+   all-short twins below, so pr_last_guard closes the file. */
 void pr_spill_short(void)
 {
     short q;
@@ -2715,4 +2716,123 @@ void pr_spill_short_rev(void)
     pr_put(e, f, g, h);
     pr_put(a, c, e, g);
     pr_put(b, d, f, h);
+}
+
+void pr_spill_char(void)
+{
+    char q;
+    char a;
+    char b;
+    char c;
+    char d;
+    int e;
+    int f;
+    int g;
+    int h;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+void pr_spill_char_rev(void)
+{
+    char q;
+    int h;
+    int g;
+    int f;
+    int e;
+    char d;
+    char c;
+    char b;
+    char a;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+void pr_spill_shorts(void)
+{
+    short q;
+    short a;
+    short b;
+    short c;
+    short d;
+    short e;
+    short f;
+    short g;
+    short h;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+void pr_spill_shorts_rev(void)
+{
+    short q;
+    short h;
+    short g;
+    short f;
+    short e;
+    short d;
+    short c;
+    short b;
+    short a;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+/* Kept last: the last function of an object carries its trailing alignment filler, which a
+   reader taking a function to the next public counts as code. No frame is measured here. */
+void pr_last_guard(void)
+{
+    pr_put(1, 2, 3, 4);
 }

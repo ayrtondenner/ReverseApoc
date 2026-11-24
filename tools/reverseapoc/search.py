@@ -526,8 +526,9 @@ def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -
     stands in a tie, no `&` is ambiguous, no slot lies outside the declarations, as a parameter
     whose address is taken and an initialized aggregate do, no line that opens with a type word
     is one the reader cannot read, because it hides a local (WR-02), and no local outside
-    `memory` is under a slot, because a spilled short can move with its declaration
-    (pr_spill_short) and then scalars are not out of reach of declaration moves."""
+    `memory` is under a slot. That last refusal is the safe side only: it was built on
+    pr_spill_short, which moved by the file's trailing filler alone, and away from the end
+    no spilled short or char has moved with its declaration (todo spill-short-artifact)."""
     code = _code(text).split("\n")
     if any(_unread_declaration(code[n]) for n in range(span[0] + 1, span[1])):
         return False
