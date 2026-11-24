@@ -3131,20 +3131,20 @@ def test_a_window_that_resets_still_counts_against_the_budget(tmp_path):
 
 def test_the_budget_meter_stops_a_claude_arm_on_its_own_records(tmp_path):
     """Todo budget-meter-wiring, through the real seam (meters.budget_meter): each HAIKU session
-    records cost_usd $0.25, 0.0141%week at $17.73 a point, so a 0.02%week budget is read
-    spent before HAIKU's third launch; SONNET goes on."""
+    records cost_usd $0.25, 0.0260%week at $9.6 a point (quota.toml, 2026-11-23), so a
+    0.04%week budget is read spent before HAIKU's third launch; SONNET goes on."""
     from reverseapoc import meters
 
     night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
     lines: list[str] = []
-    budget = driver.quota.parse_budget("0.02%week")
+    budget = driver.quota.parse_budget("0.04%week")
     report = night.run(config={"arms": TWO_ARMS, "hold": True, "budgets": ((HAIKU, budget),)},
                        meter=meters.budget_meter(night.repo), say=lines.append)  # fmt: skip
     assert report.event == "ENDED", report.detail
     assert {r["cost_usd"] for r in night.kinds("attempt")} == {0.25}
     assert _runs_launched(night, _arm_run(HAIKU)) == 2
     assert _runs_launched(night, _arm_run(SONNET)) == 3
-    assert any("budget 0.02%week spent" in line and HAIKU in line for line in lines), lines
+    assert any("budget 0.04%week spent" in line and HAIKU in line for line in lines), lines
 
 
 def test_a_spent_budget_passes_the_cascade_attempt_on(tmp_path):
