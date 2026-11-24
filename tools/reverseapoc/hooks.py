@@ -1633,6 +1633,19 @@ _SHARED_IMAGE = "reverseapoc-build"  # reverseapoc-build:local, the tag a retag 
 _DOCKER_GROUPS = frozenset({_DOCKER_IMAGE, "container"})
 _IMAGE_RETAGS = frozenset({_DOCKER_TAG, "commit", "import", "pull"})
 _IMAGE_LOAD = "load"
+# todo hook-script-files (owner ruling 2026-11-24): the hook judges a command line, not what a
+# script or a -Command text does, so under a live drive PowerShell runs nothing from any cwd:
+# directly, through cmd /c or a nested shell, or handed to one of these launchers.
+_POWERSHELLS = frozenset({"powershell", "pwsh"})
+_LAUNCHERS = frozenset({"start-process", "saps", "start", "timeout", "env", "xargs", "nohup",
+                        "exec", "nice"})  # fmt: skip
+# The repo's own helpers stand in for the operator's scripts: `uv run reverseapoc <helper> RUN`,
+# then at most the helper's one option and its value.
+_DRIVE_HELPERS = {"drive-stop": "--wait-minutes", "drive-status": "--log"}
+_HELPER_COUNT = "--wait-minutes"  # its value is a whole number of minutes
+_HELPER_WORDS = 3  # reverseapoc, the helper, RUN
+_HELPER_OPTION_WORDS = 2  # the option and its value
+_RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
@@ -1693,6 +1706,8 @@ def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
         offender = _drive_offender(tool, command, here[0], live)
     except _ImageBuild as build:
         return _image_denial(live[0], str(build))
+    except _ScriptRun as run:
+        return _powershell_denial(live[0], str(run))
     return _drive_denial(live[0], f"the {tool} command's {offender!r}") if offender else NO_OPINION
 
 
@@ -1700,6 +1715,21 @@ class _ImageBuild(Exception):  # noqa: N818 -- a verdict, not an error: the call
     """A docker image build or retag found anywhere in a call (a nested shell's or
     substitution's text included): refused from every cwd under a live drive, with its own
     reason."""
+
+
+class _ScriptRun(Exception):  # noqa: N818 -- a verdict, not an error: the call is refused
+    """A PowerShell run found anywhere in a call: refused from every cwd under a live drive,
+    with its own reason (todo hook-script-files)."""
+
+
+def _powershell_denial(root: str, run: str) -> Decision:
+    return _deny(f"a reverseapoc drive holds {root}/{DRIVE_LOCK.as_posix()}, so the PowerShell "
+                 f"run {run!r} is refused from any directory, a clone included: the hook judges "
+                 "a command line, not what a -File script or a -Command text does, so such a run "
+                 "could write under the checkout unseen (todo hook-script-files, owner ruling "
+                 "2026-11-24). To stop or watch the drive use `uv run reverseapoc drive-stop RUN "
+                 "[--wait-minutes N]` or `uv run reverseapoc drive-status RUN [--log PATH]`; run "
+                 "other scripts after the drive process exits")  # fmt: skip
 
 
 def _image_denial(root: str, build: str) -> Decision:
@@ -1884,6 +1914,9 @@ def _drive_segment(
         return here, (_Run("", here, values, True) if values else None), ""
     head, rest = words[0], words[1:]
     name = _command_name(head)
+    if name in _POWERSHELLS or (name in _LAUNCHERS
+                                and any(_command_name(word) in _POWERSHELLS for word in rest)):
+        raise _ScriptRun(" ".join(words))
     if name in _DOCKERS and _image_build(name, rest):
         raise _ImageBuild(" ".join(words))
     if name in _MOVES:
@@ -1898,7 +1931,8 @@ def _drive_segment(
         named = values if readable else (*values, *_operands(rest))
         return here, _Run(head, here, tuple(named), readable), found
     loop = tool == "Bash" and name in _BASH_LOOPS  # `for f in <words>`: data, not a program
-    read = loop or _read_shape(tool, words, here, live)
+    # a NAME=value before uv (UV_PROJECT_ENVIRONMENT, PYTHONPATH) steers what it runs or writes
+    read = loop or (_read_shape(tool, words, here, live) and not (values and name == "uv"))
     return here, _Run(head, here, (*values, *(rest if loop else _operands(rest))), read), ""
 
 
@@ -2030,9 +2064,12 @@ def _operands(rest: Sequence[str]) -> Iterator[str]:
 
 def _uv_read(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> bool:
     """`uv run --no-project [-q] python [<flags>] <script> ...` with the script outside every
-    live checkout: the scratchpad script the coordinator may run during a drive."""
+    live checkout: the scratchpad script the coordinator may run during a drive; or one of the
+    repo's drive helpers (_drive_helper)."""
     if rest[:1] != ["run"]:
         return False
+    if _drive_helper(rest[1:]):
+        return True
     options = list(itertools.takewhile(lambda word: word.startswith("-"), rest[1:]))
     if _UV_NO_PROJECT not in options or not set(options) <= _UV_READ_OPTIONS:
         return False
@@ -2043,6 +2080,23 @@ def _uv_read(rest: Sequence[str], here: str | None, live: tuple[str, ...]) -> bo
     script = program[1 + len(flags) :][:1]
     return (set(flags) <= _PYTHON_READ_FLAGS and bool(script)
             and not _guarded(script[0], here, live))  # fmt: skip
+
+
+def _drive_helper(words: Sequence[str]) -> bool:
+    """`reverseapoc drive-stop RUN [--wait-minutes N]` or `reverseapoc drive-status RUN [--log
+    PATH]` after `uv run` with no uv option: the repo's helpers that stop or watch a drive
+    (todo hook-script-files, owner ruling 2026-11-24)."""
+    if len(words) < _HELPER_WORDS:
+        return False
+    program, helper, run, *extra = words
+    if program != "reverseapoc" or helper not in _DRIVE_HELPERS or not _RUN_NAME.fullmatch(run):
+        return False
+    if not extra:
+        return True
+    option = _DRIVE_HELPERS[helper]
+    if len(extra) != _HELPER_OPTION_WORDS or extra[0] != option:
+        return False
+    return extra[1].isdigit() if option == _HELPER_COUNT else not extra[1].startswith("-")
 
 
 def _git_run(word: str, rest: Sequence[str], here: str | None, values: tuple[str, ...],

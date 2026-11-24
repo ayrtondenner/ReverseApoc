@@ -2886,16 +2886,18 @@ def test_drive_guard_reads_nested_shells(live_drive, name, command):
     "bash -c \"echo 'open\"",
 ])  # fmt: skip
 def test_drive_guard_refuses_an_unreadable_nested_command_anywhere(live_drive, scratch, command):
-    """An encoded or unparseable nested command fails closed, naming the shell, from any cwd."""
+    """An encoded or unparseable nested command fails closed, naming the shell, from any cwd (a
+    PowerShell one as the whole run, todo hook-script-files)."""
     decision = guard(shell("Bash", command, scratch), live_drive)
     assert decision.deny, command
-    assert repr(command.split()[0]) in decision.reason
+    shell_word = command.split()[0]
+    named = repr(command) if shell_word in ("pwsh", "powershell") else repr(shell_word)
+    assert named in decision.reason
 
 
 @pytest.mark.parametrize("name,command", [
     ("Bash", "bash -lc 'git --no-optional-locks log -1'"),
     ("Bash", "cd {scratch} && bash -c 'uv run pytest'"),
-    ("Bash", "powershell -NoProfile -Command \"Get-Content tools\\x.py\""),
     ("Bash", "until grep -q done build/log.txt; do sleep 5; done"),
     ("Bash", "for f in tools/*.py; do head -1 \"$f\"; done"),
     ("Bash", "find . -name '*.py' -newer tools/x.py"),
@@ -3089,3 +3091,90 @@ def test_drive_guard_allows_retags_of_other_images_from_a_clone(live_drive, scra
     text = _placed("Bash", command, live_drive, scratch)
     decision = guard(shell("Bash", text, scratch), live_drive)
     assert not decision.deny, (text, decision.reason)
+
+
+# todo hook-script-files (owner ruling 2026-11-24): the hook cannot see what a script or a
+# -Command text does, so while a drive holds the lock PowerShell runs nothing, from any cwd; the
+# repo's own helpers (drive-stop, drive-status) stand in for the operator's scripts.
+SCRIPT_RUNS = [
+    ("Bash", "cd {scratch} && powershell.exe -NoProfile -ExecutionPolicy Bypass -File stop.ps1"),
+    ("Bash", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {scratch}/ctrl-c.ps1"),
+    ("Bash", "pwsh -File {scratch}/x.ps1"),
+    ("Bash", "pwsh -f {scratch}/x.ps1"),
+    ("Bash", "powershell {scratch}/x.ps1"),  # a positional script is a -File
+    ("Bash", "powershell -Command \"Get-Date\""),
+    ("Bash", "pwsh -c 'Get-Process'"),
+    ("Bash", "powershell -NoProfile -Command \"Get-Content tools\\x.py\""),  # was a listed read
+    ("Bash", "powershell -NoProfile -Comm \"taskkill /F /PID 1\""),
+    ("Bash", "cat {scratch}/x.ps1 | powershell -Command -"),
+    ("Bash", "cat {scratch}/x.ps1 | powershell"),  # stdin is a script too
+    ("Bash", "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -File {scratch}/x.ps1"),
+    ("Bash", "cmd /c powershell -File {scratch}/x.ps1"),
+    ("Bash", "cmd.exe /s /c \"pwsh -Command Get-Date\""),
+    ("Bash", "bash -c 'powershell -File x.ps1'"),
+    ("Bash", "timeout 60 powershell -File {scratch}/x.ps1"),
+    ("PowerShell", "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {scratch}{sep}x.ps1"),
+    ("PowerShell", "& pwsh -c 'Get-Date'"),
+    ("PowerShell", "cmd /c 'pwsh -File x.ps1'"),
+    ("PowerShell", "Start-Process powershell -ArgumentList '-File','x.ps1' -Wait"),
+    ("PowerShell", "Start-Process -FilePath pwsh.exe -ArgumentList '-c','Get-Date'"),
+]
+
+
+@pytest.mark.parametrize("where", ["scratch", "live_drive"])
+@pytest.mark.parametrize("name,command", SCRIPT_RUNS)
+def test_drive_guard_refuses_script_runs_from_any_cwd(live_drive, scratch, where, name, command):
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert decision.deny, text
+    assert "drive.lock" in decision.reason
+    assert "drive-stop" in decision.reason
+
+
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+@pytest.mark.parametrize("name,command", SCRIPT_RUNS)
+def test_drive_guard_allows_script_runs_without_a_live_drive(state, name, command, scratch,
+                                                             request):  # fmt: skip
+    repo = request.getfixturevalue(state)
+    text = _placed(name, command, repo, scratch)
+    assert not guard(shell(name, text, scratch), repo).deny, text
+
+
+DRIVE_HELPERS = [
+    ("Bash", "uv run reverseapoc drive-stop 20261124-codex2"),
+    ("Bash", "uv run reverseapoc drive-stop 20261124-codex2 --wait-minutes 10"),
+    ("Bash", "uv run reverseapoc drive-status 20261124-codex2"),
+    ("Bash", "uv run reverseapoc drive-status 20261124-codex2 --log build/driver/x/log.txt"),
+    ("Bash", "uv run --no-project python -I {scratch}/lint.py"),
+    ("PowerShell", "uv run reverseapoc drive-stop 20261124-codex2 --wait-minutes 5"),
+    ("PowerShell", "uv run reverseapoc drive-status 20261124-codex2"),
+]
+
+
+@pytest.mark.parametrize("where", ["scratch", "live_drive"])
+@pytest.mark.parametrize("name,command", DRIVE_HELPERS)
+def test_drive_guard_allows_the_drive_helpers_from_any_cwd(live_drive, scratch, where, name,
+                                                           command):  # fmt: skip
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert not decision.deny, (text, decision.reason)
+
+
+@pytest.mark.parametrize("command", [
+    "uv run reverseapoc drive 20261124-codex2",
+    "uv run reverseapoc drive-stop",
+    "uv run reverseapoc drive-stop 20261124-codex2 --force",
+    "uv run reverseapoc drive-stop 20261124-codex2 --wait-minutes",
+    "uv run reverseapoc drive-stop 20261124-codex2 --wait-minutes x",
+    "uv run reverseapoc drive-stop 20261124-codex2 extra",
+    "uv run reverseapoc drive-status 20261124-codex2 --log",
+    "uv run reverseapoc drive-status 20261124-codex2 > tools/x.txt",
+    "uv run --with x reverseapoc drive-stop 20261124-codex2",
+    "UV_PROJECT_ENVIRONMENT=x uv run reverseapoc drive-stop 20261124-codex2",
+    "uv run reverseapoc drive-stop 20261124-codex2; uv run pytest",
+])  # fmt: skip
+def test_drive_guard_keeps_other_helper_shapes_refused(live_drive, command):
+    decision = guard(shell("Bash", command, live_drive), live_drive)
+    assert decision.deny, command
