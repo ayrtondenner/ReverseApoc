@@ -3482,3 +3482,98 @@ def test_a_readability_check_is_never_cached(readable: Path, monkeypatch, capsys
 )  # fmt: skip
 def test_the_normalized_source(a: str, b: str, same: bool):
     assert (attempt.source_digest(a.encode()) == attempt.source_digest(b.encode())) is same
+
+
+# ---- todo over-cap-rows-open-every-night: the key of a remembered over-cap verdict ----
+
+
+def _pack_key(start: int = FUNC_B) -> str:
+    """attempt.pack_key of `start` under attempt.ROOTS (_claim_b_view's: every input in tmp)."""
+    roots = attempt.ROOTS
+    data = attempt.exe_inputs("ufo2p", orig=roots.orig, manifest=roots.manifest,
+                              config=roots.config)  # fmt: skip
+    row = next(row for row in data.rows if row.start == start)
+    return attempt.pack_key(data, row, src=roots.src, roots=roots)
+
+
+def _src_unit_ab(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.src / "ufo2p" / f"{UNIT_AB}.c", "/* edited */\n")
+
+
+def _src_unit_c(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.src / "ufo2p" / f"{UNIT_C}.c", "/* edited */\n")
+
+
+def _hint(attempt_dir: Path, monkeypatch) -> Path:
+    return _hint_file(attempt.ROOTS, f'0x{FUNC_B:08X} = "{OWNER_HINT}"\n')
+
+
+def _table(attempt_dir: Path, monkeypatch) -> Path:
+    roots = attempt.ROOTS
+    data = attempt.exe_inputs("ufo2p", orig=roots.orig, manifest=roots.manifest,
+                              config=roots.config)  # fmt: skip
+    path = signatures.table_path(roots.repo, "ufo2p")
+    signatures.write(path, data, {})
+    return path
+
+
+def _cap(attempt_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(contextpack, "PACK_CAP", contextpack.PACK_CAP * 2)
+
+
+PACK_KEY_READS = [  # what decides whether the pack fits its cap
+    _orig_and_manifest, _manifest, _functions_csv, _units_csv, _symbols_csv, _status_csv,
+    _listing_b, _draft, _draft_removed, _src_unit_ab, _src_unit_c, _common_h, _matching_md,
+    _hint, _table, _struct_shapes, _cap,
+]
+# Earlier notes and records are optional sections, cut before PackOverCap: they only add cut
+# marks to an over-cap pack, so a verdict they would change is never a wrong skip.
+PACK_KEY_UNREAD = [_listing_a, _census, _own_notes, _earlier_notes, _new_earlier_notes,
+                   _record_b, _other_notes]  # fmt: skip
+
+
+@pytest.mark.parametrize("change", PACK_KEY_READS, ids=_ids)
+def test_the_pack_key_changes_with_each_input_that_decides_the_pack(tree: attempt.Roots,
+                                                                    monkeypatch, change):
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    before = _pack_key()
+    assert _pack_key() == before
+    change(attempt_dir, monkeypatch)
+    assert _pack_key() != before
+
+
+@pytest.mark.parametrize("change", PACK_KEY_UNREAD, ids=_ids)
+def test_the_pack_key_ignores_what_never_decides_an_over_cap_pack(tree: attempt.Roots,
+                                                                 monkeypatch, change):
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    before = _pack_key()
+    _really_changed(change, attempt_dir, monkeypatch)
+    assert _pack_key() == before
+
+
+def test_the_pack_key_is_the_rows_own(tree: attempt.Roots, monkeypatch):
+    _claim_b_view(tree, monkeypatch)
+    assert _pack_key(FUNC_A) != _pack_key(FUNC_B)
+
+
+def test_the_pack_key_follows_the_pack_code_alone(tree: attempt.Roots, monkeypatch):
+    """The code in the key is PACK_CODE's (what builds the pack), not the whole tool: a module
+    of it edited changes the key; another Python leaves it as it was."""
+    _claim_b_view(tree, monkeypatch)
+    code = _write(tree.repo / "made_up_pack_code.py", "PACK = 1\n")
+    monkeypatch.setattr(attempt, "PACK_CODE", (code,))
+    before = _pack_key()
+    _python(tree.repo, monkeypatch)
+    assert _pack_key() == before
+    _add_line(code, "PACK = 2\n")
+    assert _pack_key() != before
+
+
+def test_the_pack_code_holds_every_module_contextpack_imports():
+    """PACK_CODE is the code a pack is built with: a module contextpack imports from the
+    package and leaves out would change packs without changing their key."""
+    text = (Path(attempt.__file__).parent / "contextpack.py").read_text(encoding="utf-8")
+    names = set(re.findall(r"^from \.(\w+) import", text, re.MULTILINE))
+    for line in re.findall(r"^from \. import (.+)$", text, re.MULTILINE):
+        names.update(name.strip() for name in line.split(","))
+    assert names and {f"{name}.py" for name in names} <= {path.name for path in attempt.PACK_CODE}

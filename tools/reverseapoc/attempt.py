@@ -2154,16 +2154,51 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
     facts = {"format": CACHE_FORMAT, "form": form, "name": name, "exe": claim.exe,
              "unit": claim.unit, "function": claim.function, "tool": _tool_version()}  # fmt: skip
     target = check.select_exe(load_manifest(ROOTS.manifest), claim.exe, ROOTS.manifest)
-    config = Path(ROOTS.config) / claim.exe
-    paths = [Path(ROOTS.manifest), Path(ROOTS.orig) / target.name,
-             *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
+    paths = _exe_paths(ROOTS, claim.exe, target.name)
     if form == "context":
         facts["notes"] = _notes_digest(claim)
-        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching,
-                  contextpack.hints_path(ROOTS.config, claim.exe),
-                  signatures.table_path(ROOTS.repo, claim.exe),
-                  structs.shapes_path(ROOTS.repo, claim.exe)]  # fmt: skip
+        paths += _context_paths(ROOTS, claim.exe)
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
+
+
+def _exe_paths(roots: Roots, stem: str, exe_name: str) -> list[Path]:
+    """What loading the EXE reads: the manifest, the EXE and its three CSVs."""
+    config = Path(roots.config) / stem
+    return [Path(roots.manifest), Path(roots.orig) / exe_name,
+            *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
+
+
+def _context_paths(roots: Roots, stem: str) -> list[Path]:
+    """The EXE-wide files make_pack reads besides the EXE itself, notes and unit files aside."""
+    return [status_path(roots.config, stem), roots.common_h, roots.matching,
+            contextpack.hints_path(roots.config, stem), signatures.table_path(roots.repo, stem),
+            structs.shapes_path(roots.repo, stem)]  # fmt: skip
+
+
+# Todo over-cap-rows-open-every-night: the code a pack is built with: make_pack (this
+# module), contextpack and every module of the package it imports, structs' lift, and the
+# checkout's configure.py (contextpack.definitions loads it). Not the whole package
+# (_tool_files): a driver change would then re-check every over-cap row the next night.
+PACK_CODE = (*(Path(__file__).parent / f"{name}.py" for name in (
+    "attempt", "contextpack", "asm", "check", "functions", "ghidra", "le", "signatures",
+    "status", "structs", "structure", "symbols", "targets", "unitdefs", "x86", "fileio", "lift")),
+    REPO_ROOT / "configure.py")  # fmt: skip
+
+
+def pack_key(data: check.ExeInputs, row: FunctionRow, *, src: Path, roots: Roots) -> str:
+    """Todo over-cap-rows-open-every-night: the sha256 hex of what decides whether make_pack's
+    pack of `row`, read from `src`, fits contextpack.PACK_CAP: the row, the cap, the code that
+    builds the pack (PACK_CODE) and every file the pack's required sections and frame come
+    from (the context cache's files, the listing, the draft and every unit file). The earlier
+    notes and records stay out: they are optional sections, cut before PackOverCap, so on an
+    over-cap pack more of them only add cut marks and never make it fit."""
+    listing = listing_path(data, row, roots.asm)
+    paths = [*_exe_paths(roots, data.stem, data.target.name), *_context_paths(roots, data.stem),
+             listing, listing.parent / ghidra.DRAFTS_DIR / ghidra.draft_name(row.start),
+             *_unit_paths(src, data).values()]  # fmt: skip
+    facts = {"exe": data.stem, "start": row.start, "end": row.end, "cap": contextpack.PACK_CAP,
+             "code": _digests(PACK_CODE), "inputs": _digests(paths)}  # fmt: skip
+    return hashlib.sha256(json.dumps(facts, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _notes_digest(claim: Claim) -> str:

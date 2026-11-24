@@ -3022,6 +3022,163 @@ def test_an_over_cap_pack_on_an_arm_night_is_left_for_every_arm(tmp_path, monkey
     _slots_free(nights[-1])
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+def test_an_over_cap_pick_prints_no_started_line(tmp_path, workers):
+    """Todo started-line-before-pack-check: "started" comes once the pack fits, right before
+    the launch, so an over-cap pick prints its one OVER_CAP_LINE and no "started", and the
+    night's "started" lines count its launches."""
+    picks = (_wpick(0), _wpick(1), _wpick(2))
+    night = WNight(tmp_path, picks=picks)
+    pack, _ = _over_cap(night, {picks[0].start})
+    lines: list[str] = []
+    night.run(config=_workers(workers, attempts_per_function=1), pack=pack, say=lines.append)
+    label = f"{EXE} {picks[0].name} attempt 1/1"
+    assert [line for line in lines if picks[0].name in line] == [driver.OVER_CAP_LINE.format(
+        label=label, size=OVER_SIZE, cap=contextpack.PACK_CAP)]  # fmt: skip
+    started = [line for line in lines if line.endswith(": started")]
+    assert len(started) == len(night.launched) == 2, lines
+    for pick in picks[1:]:
+        assert f"{EXE} {pick.name} attempt 1/1: started" in started
+
+
+def _keyed(keys: dict[int, str]):
+    """A Deps.pack_key reading `keys` (start -> key) at call time, so a test can change one."""
+    return lambda pick: keys[pick.start]
+
+
+def _known_lines(lines: list[str]) -> list[str]:
+    return [line for line in lines if "known over the pack cap" in line]
+
+
+def test_an_over_cap_verdict_is_remembered_until_an_input_changes(tmp_path):
+    """Todo over-cap-rows-open-every-night (owner ruling 2026-11-24, "Remember the verdict"):
+    night 1 finds the first pick's pack over the cap and keeps the verdict in
+    build/driver/over-cap.json under (EXE, start, arm) with its pack key. Night 2 skips that
+    pick before its pack is built (no try, no claim, no "started"), prints one summary line and
+    counts it in the report (the other two picks gave up in night 1, so the queue skips them).
+    Night 3, after an input of that pack changed (a new key), builds its pack again and finds
+    it over the cap again."""
+    picks = (_wpick(0), _wpick(1), _wpick(2))
+    keys = {pick.start: f"key of {pick.name}" for pick in picks}
+    night = WNight(tmp_path, picks=picks)
+    pack, tries = _over_cap(night, {picks[0].start})
+    config = {"attempts_per_function": 1}
+    night.run(config=config, pack=pack, pack_key=_keyed(keys))
+    assert tries == [picks[0].start]
+    ((where, verdict),) = driver.load_over_caps(night.repo / driver.OVER_CAPS).items()
+    assert where[:2] == (EXE, picks[0].start)
+    assert verdict == {"inputs": keys[picks[0].start], "cap": contextpack.PACK_CAP,
+                       "size": OVER_SIZE}  # fmt: skip
+
+    lines: list[str] = []
+    report = night.run(config={**config, "run_id": "night2"}, pack=pack,
+                       pack_key=_keyed(keys), say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert tries == [picks[0].start]  # not tried again
+    assert [line for line in lines if picks[0].name in line] == []
+    assert _known_lines(lines) == ["skipped 1 pick known over the pack cap "
+                                  f"({driver.OVER_CAPS.as_posix()})"]  # fmt: skip
+    assert report.over_cap == 1
+    _no_trace(night, picks[0], "night2")
+
+    keys[picks[0].start] = "the key after its unit changed"
+    lines.clear()
+    night.run(config={**config, "run_id": "night3"}, pack=pack, pack_key=_keyed(keys),
+              say=lines.append)  # fmt: skip
+    assert tries == [picks[0].start] * 2
+    assert len(_over_lines(lines, picks[0])) == 1 and _known_lines(lines) == []
+    ((_, verdict),) = driver.load_over_caps(night.repo / driver.OVER_CAPS).items()
+    assert verdict["inputs"] == "the key after its unit changed"
+
+
+def test_a_pack_refused_after_a_landing_moved_head_is_not_remembered(tmp_path):
+    """The verdict is kept with the key read under the gate lock while HEAD is still the commit
+    the view was made from; a commit since (a landing, made up here inside the pack) means the
+    key would describe inputs the pack never read, so nothing is kept."""
+    night = WNight(tmp_path, picks=(_wpick(0),))
+    tries: list[int] = []
+
+    def pack(pick, directory, src=None):
+        tries.append(pick.start)
+        night.git("commit", "--allow-empty", "-m", "a made-up landing")
+        raise contextpack.PackOverCap(pick.name, OVER_SIZE, contextpack.PACK_CAP)
+
+    report = night.run(pack=pack, pack_key=lambda pick: "the key")
+    assert report.event == "ENDED", report.detail
+    assert tries == [START] and report.over_cap == 1
+    assert driver.load_over_caps(night.repo / driver.OVER_CAPS) == {}
+
+
+def test_a_pack_that_fits_drops_its_arms_verdict(tmp_path):
+    """A kept verdict whose key is stale (its inputs changed) skips nothing; once the pack is
+    built and fits, the verdict is dropped from the file."""
+    night = WNight(tmp_path, picks=(_wpick(0),))
+    driver.save_over_caps(night.repo / driver.OVER_CAPS, {
+        (EXE, START, driver.OPUS_MODEL): {"inputs": "an older key", "cap": contextpack.PACK_CAP,
+                                          "size": OVER_SIZE},
+        (EXE, START, HAIKU): {"inputs": "the key", "cap": contextpack.PACK_CAP,
+                              "size": OVER_SIZE}})  # fmt: skip
+    night.run(config={"attempts_per_function": 1}, pack_key=lambda pick: "the key")
+    assert len(night.launched) == 1
+    assert list(driver.load_over_caps(night.repo / driver.OVER_CAPS)) == [(EXE, START, HAIKU)]
+
+
+def test_a_cascade_night_never_skips_on_a_kept_verdict(tmp_path):
+    """A cascade pass is the whole row of arms, so a kept verdict of one rung skips nothing:
+    the pick is packed and launched as before."""
+    from test_driver_pick import _tier_night
+
+    night, deps = _tier_night(tmp_path, (START,), unit=UNIT, night_cls=ArmNight)
+    driver.save_over_caps(night.repo / driver.OVER_CAPS, {
+        (EXE, START, SONNET): {"inputs": "the key", "cap": contextpack.PACK_CAP,
+                               "size": OVER_SIZE}})  # fmt: skip
+    lines: list[str] = []
+    night.run(config={"attempts_per_function": 1, "max_sessions": 1, "routing": _every(SONNET)},
+              queue=deps.queue, requeue=deps.requeue, pack_key=lambda pick: "the key",
+              say=lines.append)  # fmt: skip
+    assert len(night.launched) == 1 and _known_lines(lines) == []
+
+
+def test_an_over_cap_verdict_never_skips_the_row_on_another_arm(tmp_path):
+    """Two --arm lanes; build/driver/over-cap.json holds a verdict for the first pick on HAIKU
+    alone (the pack is never over the cap here). HAIKU skips that pick before its pack is
+    built; SONNET, which has no verdict, packs it and runs its session."""
+    picks = (_wpick(0), _wpick(1))
+    keys = {pick.start: f"key of {pick.name}" for pick in picks}
+    night = ArmNight(tmp_path, picks=picks)
+    driver.save_over_caps(night.repo / driver.OVER_CAPS, {
+        (EXE, picks[0].start, HAIKU): {"inputs": keys[picks[0].start],
+                                       "cap": contextpack.PACK_CAP, "size": OVER_SIZE}})
+    lines: list[str] = []
+    report = night.run(config={"arms": TWO_ARMS, "attempts_per_function": 1},
+                       pack_key=_keyed(keys), say=lines.append)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    mine = {arm: sorted(r["function"] for r in night.kinds("attempt") if r["run"] == _arm_run(arm))
+            for arm in (HAIKU, SONNET)}  # fmt: skip
+    assert mine == {HAIKU: [picks[1].name], SONNET: [p.name for p in picks]}
+    assert len(_known_lines(lines)) == 1, lines
+    assert [pick for pick, _, _ in night.packed].count(picks[0]) == 1
+
+
+def test_the_over_cap_file_round_trips_and_refuses_a_bad_one(tmp_path):
+    path = tmp_path / "over-cap.json"
+    assert driver.load_over_caps(path) == {}
+    verdicts = {(EXE, START, HAIKU): {"inputs": "k", "cap": 24576, "size": 29894}}
+    driver.save_over_caps(path, verdicts)
+    assert driver.load_over_caps(path) == verdicts
+    path.write_text('{"over_cap": [{"exe": "ufo2p"}]}\n', encoding="utf-8")
+    with pytest.raises(driver.DriverError, match="over-cap.json"):
+        driver.load_over_caps(path)
+
+
+def test_a_bad_over_cap_file_refuses_the_night(tmp_path):
+    night = WNight(tmp_path, picks=(_wpick(0),))
+    _write(night.repo / driver.OVER_CAPS, "not json\n")
+    report = night.run()
+    assert (report.event, report.reason) == ("REFUSED", "over-cap list"), report.detail
+    assert "over-cap.json" in report.detail and night.launched == []
+
+
 def test_any_other_pack_error_still_stops_the_night(tmp_path):
     """Only a pack over the cap is left for tonight: any other ContextPackError (a made-up one
     here) still stops the night, as before."""

@@ -277,6 +277,7 @@ from .units import scaffold_unit, write_unit_source
 ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
 DRIVER_DIR = Path(*attempt.DRIVER_PARTS)  # build/driver
 DIFFICULT = DRIVER_DIR / "difficult.json"
+OVER_CAPS = DRIVER_DIR / "over-cap.json"  # todo over-cap-rows-open-every-night (gitignored)
 CLAIMS_DIR = DRIVER_DIR / "claims"  # D-06: build/driver/claims/<exe>__<unit>.json, one per unit
 STALE_CLAIMS = "stale-claims"  # build/driver/<run>/stale-claims/: claims of dead runs (D-06)
 CLAIM_KEYS = ("run", "worker", "exe", "unit", "function", "start", "kind", "pass", "model",
@@ -322,6 +323,12 @@ PARKED_LINE = ("{label}: parked for the night (sweep hit: needs flags {spec}); l
 OVER_CAP = "pack over cap"
 OVER_CAP_LINE = ("{label}: left for tonight (its context pack is {size} bytes, over the {cap}-byte "
                  "cap; required sections are never cut)")  # fmt: skip
+# Todo over-cap-rows-open-every-night (owner ruling 2026-11-24, "Remember the verdict"): an
+# attempt skipped before its pack is built, for an over-cap verdict of its arm kept in
+# OVER_CAPS whose pack key is the pick's key now (never a record outcome). Its pass ends as
+# OVER_CAP's does but leaves only its own arm's queue, and the night prints one summary line.
+KNOWN_OVER_CAP = "pack known over cap"
+KNOWN_OVER_CAP_LINE = "skipped {count} known over the pack cap ({path})"
 # Quick 261112-fds (backlog 999.12a), a cascade pass (never a record outcome). Quick
 # 261112-fdt (999.12b): an arm that is capped or paused passes the attempt to the row's next
 # arm, a busy one (its pause ready, every max_workers slot or night-cap slot taken) makes the
@@ -603,6 +610,10 @@ class Deps:
     # night has nothing left to commit (_Night._notify); real_deps wires `notifier`
     # (NOTIFY_ENV). It never raises.
     notify: Callable[[str, str, str], None] = lambda event, run, text: None
+    # Todo over-cap-rows-open-every-night: the pack key of a pick (attempt.pack_key: a digest of
+    # whatever decides whether its pack fits the cap); None: not known, so no over-cap verdict
+    # is kept or read for it. The default knows none.
+    pack_key: Callable[[Pick], str | None] = lambda pick: None
 
 
 def _which(name: str) -> str:
@@ -2570,6 +2581,40 @@ def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
     write_atomic(path, (json.dumps({"difficult": entries}, indent=2) + "\n").encode("utf-8"))
 
 
+# Todo over-cap-rows-open-every-night: (exe, start, arm) -> {"inputs": the pack key, "cap",
+# "size"}, the last over-cap verdict of that row on that arm.
+OverCaps = dict[tuple[str, int, str], dict[str, str | int]]
+
+
+def load_over_caps(path: Path) -> OverCaps:
+    """build/driver/over-cap.json: each row whose pack was over the cap on an arm, with the pack
+    key it was built under. A missing file holds none; any other shape is a DriverError."""
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        verdicts: OverCaps = {}
+        for entry in doc["over_cap"]:
+            exe, start, arm = entry["exe"], entry["start"], entry["arm"]
+            inputs, cap, size = entry["inputs"], entry["cap"], entry["size"]
+            texts = (exe, start, arm, inputs)
+            if not (all(isinstance(text, str) for text in texts) and start.startswith("0x")
+                    and _is_int(cap) and _is_int(size)):  # fmt: skip
+                raise TypeError(f"{entry!r} needs string exe, arm and inputs, a 0x start and an "
+                                "int cap and size")  # fmt: skip
+            verdicts[exe, int(start, 16), arm] = {"inputs": inputs, "cap": cap, "size": size}
+        return verdicts
+    except (ValueError, KeyError, TypeError) as exc:
+        raise DriverError(f"{path} is not an over-cap list: {exc}") from exc
+
+
+def save_over_caps(path: Path, verdicts: OverCaps) -> None:
+    entries = [{**_key_text((exe, start)), "arm": arm, **verdict}
+               for (exe, start, arm), verdict in verdicts.items()]  # fmt: skip
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, (json.dumps({"over_cap": entries}, indent=2) + "\n").encode("utf-8"))
+
+
 # ---- unit claims (D-06) ----
 
 
@@ -3115,9 +3160,10 @@ class _PackOver(Exception):
     raises it before any session, with the attempt directory and its view removed; the unwind
     gives back the claim, the slot and a held probe, and `_announced` ends the pass OVER_CAP."""
 
-    def __init__(self, over: contextpack.PackOverCap) -> None:
+    def __init__(self, over: contextpack.PackOverCap, head: str) -> None:
         super().__init__(str(over))
         self.over = over
+        self.head = head  # todo over-cap-rows-open-every-night: the commit the view was made from
 
 
 _TICK_S = 0.2  # the coordinator's wait between checks, so the main thread sees an interrupt
@@ -3450,7 +3496,8 @@ class _Coordinator:
         capped) leaves the tier queue for tonight as a parked one does; an ARM_WAITING pass (a
         busy arm, or no arm of its row free) is a pass cut short (the tier queue keeps it
         eligible; a pool queue's pick goes back on `deferred`). Neither counts a pass. Quick
-        261113: an OVER_CAP pass leaves every arm's queue for tonight (`_Lane.park`)."""
+        261113: an OVER_CAP pass leaves every arm's queue for tonight (`_Lane.park`); todo
+        over-cap-rows-open-every-night: a KNOWN_OVER_CAP pass leaves its own lane's alone."""
         hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
         lane, key = worker.lane, (worker.pick.exe, worker.pick.start)
         with self.night.cond:
@@ -3469,6 +3516,8 @@ class _Coordinator:
             if worker.outcome == OVER_CAP:  # quick 261113: no arm is offered it again tonight
                 for each in self.night.lanes:
                     each.park(key)
+            elif worker.outcome == KNOWN_OVER_CAP:  # its verdict is this arm's alone
+                lane.park(key)
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -3661,6 +3710,10 @@ class _Night:
         # quick 261109-gzu: tonight's parked functions, each with its hit's flag spec (under cond)
         self.parked: dict[Key, str] = {}
         self.over_caps: set[Key] = set()  # quick 261113: tonight's packs over the cap (under cond)
+        # todo over-cap-rows-open-every-night: the kept verdicts (OVER_CAPS, read at the start)
+        # and tonight's attempts they skipped (under cond)
+        self.over_cap_verdicts: OverCaps = {}
+        self.known_skips = 0
         # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
         # totals are the sums over the night's own records (F19's cut drops a line from both).
         self.night_records: list[tuple[int, dict]] = []
@@ -4079,6 +4132,11 @@ class _Night:
             unended = unended_runs(self.log)  # written into STARTED only, nothing on their behalf
         except DriverError as exc:
             return DriveReport(REFUSED, "log", 0, 0, _detail(f"refusing to start: {exc}"))
+        try:
+            self.over_cap_verdicts = load_over_caps(self.repo / OVER_CAPS)
+        except DriverError as exc:
+            return DriveReport(REFUSED, "over-cap list", 0, 0,
+                               _detail(f"refusing to start: {exc}"))  # fmt: skip
         if self.config.hold:  # 07.2-06 (D-17): the run directory says it is a hold run
             for run in dict.fromkeys([self.config.run_id, *(lane.run for lane in self.lanes)]):
                 run_dir = self.repo.joinpath(DRIVER_DIR, run)  # 07.2-16: each arm's run too
@@ -4105,6 +4163,11 @@ class _Night:
                              guard=False)  # fmt: skip  # nothing is committed after an interrupt
             self._notify(STOPPED, INTERRUPTED, why)
             raise
+        with self.cond:
+            skipped = self.known_skips
+        if skipped:  # todo over-cap-rows-open-every-night: one line for every kept-verdict skip
+            count = f"{skipped} pick{'' if skipped == 1 else 's'}"
+            self.deps.say(KNOWN_OVER_CAP_LINE.format(count=count, path=OVER_CAPS.as_posix()))
         if self.arm_stops:  # owner ruling 2026-11-10: the run record names each stopped arm
             detail = _detail("; ".join([*([detail] if detail else []), *self.arm_stops]))
         found = [] if self.breached else self._ledger_breaches()
@@ -4329,7 +4392,8 @@ class _Night:
                     outcome = self._handed_off(pick, n)
                 if outcome in (ARM_WAITING, ARM_CAPPED):
                     return self._cascade_end(pick, n, outcome)
-                if readability or outcome in (MATCHED, ABORTED, OVER_CAP, None):
+                if readability or outcome in (MATCHED, ABORTED, OVER_CAP, KNOWN_OVER_CAP,
+                                              None):  # fmt: skip
                     return outcome
                 if self.config.hold:
                     return self._hold_done(key, outcome)
@@ -4416,16 +4480,65 @@ class _Night:
         self.deps.say(PARKED_LINE.format(label=label, spec=spec))
         return PARKED
 
-    def _over_cap(self, pick: Pick, label: str, over: contextpack.PackOverCap) -> str:
+    def _over_cap(self, pick: Pick, label: str, refused: _PackOver) -> str:
         """Quick 261113 (drive 20261113-lanes): the attempt's pack is over the cap, so no session
         ran: its claim, slot and probe went back on the way here and `_launch` removed its
         attempt directory. Its pass ends OVER_CAP with one console line, and nothing is written
         for it (no record, no difficult-list entry); the coordinator takes it out of every arm's
-        queue for tonight (`_Lane.park`), and the report counts it."""
+        queue for tonight (`_Lane.park`), and the report counts it. Todo
+        over-cap-rows-open-every-night: the verdict is kept in OVER_CAPS under the attempt's arm
+        with its pack key, read under the gate lock while HEAD is still the commit the view was
+        made from (a landing since: the key would not be the pack's, so nothing is kept)."""
+        over = refused.over
         with self.cond:
             self.over_caps.add((pick.exe, pick.start))
+        with self.gate_lock:
+            head = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+            key = self._pack_key(pick) if head == refused.head else None
+        if key is not None:
+            with self.cond:
+                self.over_cap_verdicts[self._verdict_key(pick)] = {
+                    "inputs": key, "cap": over.cap, "size": over.size}
+                save_over_caps(self.repo / OVER_CAPS, self.over_cap_verdicts)
         self.deps.say(OVER_CAP_LINE.format(label=label, size=over.size, cap=over.cap))
         return OVER_CAP
+
+    def _forget_over_cap(self, pick: Pick) -> None:
+        """Todo over-cap-rows-open-every-night: a pack that fits drops its arm's kept verdict."""
+        with self.cond:
+            if self.over_cap_verdicts.pop(self._verdict_key(pick), None) is not None:
+                save_over_caps(self.repo / OVER_CAPS, self.over_cap_verdicts)
+
+    def _verdict_key(self, pick: Pick) -> tuple[str, int, str]:
+        """Todo over-cap-rows-open-every-night: where the attempt's verdict is kept: its row and
+        its arm (`_arm`), so a verdict never skips the row on another arm."""
+        return pick.exe, pick.start, self._arm(pick).name
+
+    def _pack_key(self, pick: Pick) -> str | None:
+        """Deps.pack_key under the gate lock, so no landing has src/ or status.csv dirty; a
+        failure stops the night naming the pick."""
+        with self.gate_lock:
+            try:
+                return self.deps.pack_key(pick)
+            except Exception as exc:
+                raise _Stop(ERROR, f"the pack key of {pick.exe} {pick.name}: "
+                                   f"{type(exc).__name__}: {exc}") from exc  # fmt: skip
+
+    def _known_over_cap(self, pick: Pick) -> bool:
+        """Todo over-cap-rows-open-every-night (owner ruling 2026-11-24): the attempt's arm has
+        a kept over-cap verdict for its row whose pack key is the pick's key now; then it is
+        counted as skipped and as over the cap tonight. Never on a cascade night: its pass is
+        the whole row of arms, and a skip would end it for the arms with no verdict too."""
+        if self.config.routing:
+            return False
+        with self.cond:
+            verdict = self.over_cap_verdicts.get(self._verdict_key(pick))
+        if verdict is None or self._pack_key(pick) != verdict["inputs"]:
+            return False
+        with self.cond:
+            self.known_skips += 1
+            self.over_caps.add((pick.exe, pick.start))
+        return True
 
     def _hold_done(self, key: Key, outcome: str) -> str:
         """07.2-06 (D-17): a hold run's function is done after its one counted attempt. Its pass
@@ -4478,15 +4591,20 @@ class _Night:
         follow in brackets. The record's `seconds` is the counted session alone. A stop or an
         interrupt prints no outcome line: the STOPPED summary names why. Quick 261113: a pack
         over the cap prints OVER_CAP_LINE as its outcome line and ends the pass OVER_CAP
-        (`_over_cap`)."""
+        (`_over_cap`). Todo started-line-before-pack-check: the start line comes from `_launch`,
+        once the pack fits and the session is about to launch (`local.started` holds the label
+        until then). Todo over-cap-rows-open-every-night: an attempt with a kept over-cap
+        verdict (`_known_over_cap`) prints nothing and ends the pass KNOWN_OVER_CAP."""
+        if self._known_over_cap(pick):
+            return KNOWN_OVER_CAP
         label = self._label(pick, n)
-        self.deps.say(f"{label}: started")
+        self.local.started = label
         start = self.deps.clock()
         self.local.waited = 0.0
         try:
             outcome = self._guarded(pick, n)
         except _PackOver as refused:
-            return self._over_cap(pick, label, refused.over)
+            return self._over_cap(pick, label, refused)
         except _Stop as stop:  # todo stop-detail-names-each-session: the stop names its session
             stop.label = stop.label or label
             raise
@@ -4849,7 +4967,8 @@ class _Night:
             pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
         except contextpack.PackOverCap as over:  # quick 261113: nothing launched; drop the attempt
             _drop_tree(claim.attempt_dir)
-            raise _PackOver(over) from over
+            raise _PackOver(over, view_head) from over
+        self._forget_over_cap(claim.pick)
         launch_files = self._guard_launch(claim) if claim.signed_in else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
@@ -4865,6 +4984,9 @@ class _Night:
                     f"{claim.target}: {_listed(drift)}"])  # fmt: skip
         if claim.codex:  # canary round 3: its own uv cache, made empty (DriverError: none)
             fresh_uv_cache(claim.uv_cache(base))
+        label, self.local.started = getattr(self.local, "started", None), None
+        if label is not None:  # todo started-line-before-pack-check: the attempt's first launch
+            self.deps.say(f"{label}: started")
         start = self.deps.clock()
         result = None
         served: broker.Broker | None = None
@@ -7474,6 +7596,9 @@ class ExeWorld:
     # todo similarity-first-picking: a game/thunk row's mnemonic sequence (contextpack.mnemonics,
     # the look-alikes' view) by its start; None: the world has none, so every ratio is 0.0
     mnemonics: Callable[[int], Sequence[str]] | None = None
+    # todo over-cap-rows-open-every-night: a pick's pack key (attempt.pack_key over src/);
+    # None: the world has none, so no over-cap verdict is kept
+    pack_key: Callable[[Pick], str] | None = None
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -8041,6 +8166,7 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees, near_miss=near,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
+                pack_key=lambda pick: _world_pack_key(worlds[pick.exe], pick),
                 argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
                 copilot_argv=seams.copilot_argv, broker_wrapper=seams.broker_wrapper,
                 session=seams.session, meter=seams.meter,
@@ -8054,6 +8180,10 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 git=seams.git, today=lambda: day, say=say,
                 end_of_run=lambda: finish(seams.run, run_dir=options.run_dir, say=say),
                 notify=notify)  # fmt: skip
+
+
+def _world_pack_key(world: ExeWorld, pick: Pick) -> str | None:
+    return None if world.pack_key is None else world.pack_key(pick)
 
 
 def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
@@ -10890,6 +11020,11 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
         write_pack(built, directory, root=roots.repo)
         return PackInfo(built.pack_bytes, tuple(built.truncated))
 
+    def pack_key(pick: Pick) -> str:
+        """The key of the pack `pack` builds into a view made from HEAD: src/ is HEAD's while no
+        landing holds the gate lock (_Night._pack_key)."""
+        return attempt.pack_key(data, rows[pick.start], src=roots.src, roots=roots)
+
     def scaffold(pick: Pick, dest: Path) -> None:
         unit = next((u for u in data.units if u.unit == pick.unit), None)
         if unit is None:
@@ -10898,7 +11033,8 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
 
     return ExeWorld(pool=candidates(assessments, data.symbols),
                     units={row.start: row.unit for row in data.rows},
-                    callees=dict(calls.callees), pack=pack, scaffold=scaffold,
+                    callees=dict(calls.callees), pack=pack, pack_key=pack_key,
+                    scaffold=scaffold,
                     ranks=_ranks(assessments, data),
                     graph=functools.cache(lambda: callgraph.build_for(data)),
                     data_ranges=tuple(data.symbols.data_ranges),
