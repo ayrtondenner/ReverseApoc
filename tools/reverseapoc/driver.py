@@ -1044,6 +1044,9 @@ def _controls_shape(value: object) -> bool:
 
 # controls null: a --land-held night, which runs no session check and so no control
 _STARTED_FIELDS = {"environment": _ENVIRONMENT, "controls": _optional(_controls_shape)}
+# Todo drive-outlives-session (owner ruling 2026-11-23): a v3 STARTED record names the earlier
+# runs with a STARTED record and no end record; an optional key, so earlier lines stay valid.
+_UNENDED_FIELD = {"unended": _list_of(_CLAIM_FIELDS["run"])}
 
 
 def _strings(value: object) -> Iterable[str]:
@@ -1076,8 +1079,9 @@ def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
         raise RecordError(f"unknown {version} record kind {kind!r}")
     if version == "v3" and kind == KIND_ATTEMPT and obj.get("harness") == backends.COPILOT:
         return {**fields, **_COPILOT_ATTEMPT_FIELDS}
-    if version == "v3" and kind == KIND_RUN and not _STARTED_FIELDS.keys().isdisjoint(obj):
-        return {**fields, **_STARTED_FIELDS}
+    if version == "v3" and kind == KIND_RUN:
+        fields = {**fields, **(_UNENDED_FIELD if "unended" in obj else {})}
+        return fields if _STARTED_FIELDS.keys().isdisjoint(obj) else {**fields, **_STARTED_FIELDS}
     return fields
 
 
@@ -1087,6 +1091,8 @@ def _run_problem(obj: dict) -> str | None:
         return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
     if "environment" in obj and obj["event"] != STARTED:
         return f"run record: only a STARTED record names its environment, not {obj['event']}"
+    if "unended" in obj and obj["event"] != STARTED:
+        return f"run record: only a STARTED record names unended runs, not {obj['event']}"
     if "schema" not in obj or (obj["totals"] is None) == (obj["event"] == STARTED):
         return None
     if obj["event"] == STARTED:
@@ -2644,13 +2650,31 @@ def _claim_run(path: Path) -> str | None:
     return run if isinstance(run, str) and _RUN_ID.fullmatch(run) else None
 
 
-def recovered_detail(recovered: Sequence[Mapping]) -> str | None:
+def recovered_detail(recovered: Sequence[Mapping], unended: Sequence[str] = ()) -> str | None:
     """The STARTED record's detail naming each recovered claim (07-23: the v2 `recovered` field
-    lists them too), or None when there is none."""
-    if not recovered:
-        return None
-    return "recovered stale claims: " + _listed(
-        [f"{c['exe']}/{c['unit']} (run {c['run']})" for c in recovered])
+    lists them too) and each earlier run that never ended (its `unended` field), or None when
+    there is neither."""
+    parts = [*(["recovered stale claims: " + _listed(
+                 [f"{c['exe']}/{c['unit']} (run {c['run']})" for c in recovered])]
+               if recovered else []),
+             *([f"earlier runs with no end record (killed): {_listed(unended)}"]
+               if unended else [])]  # fmt: skip
+    return "; ".join(parts) or None
+
+
+def unended_runs(log: Path) -> list[str]:
+    """Todo drive-outlives-session (owner ruling 2026-11-23): in log order, the run ids of the
+    run records with a STARTED event and no later ENDED or STOPPED record of that run. Read
+    with drive.lock held, so none of them is still running: each was killed."""
+    started: dict[str, None] = {}
+    for record in _log_records(log):
+        if record["kind"] != KIND_RUN:
+            continue
+        if record["event"] == STARTED:
+            started[record["run"]] = None
+        else:
+            started.pop(record["run"], None)
+    return list(started)
 
 
 # ---- one claim ----
@@ -4050,6 +4074,10 @@ class _Night:
             why = _detail("refusing to start: stale claims could not be recovered: "
                           f"{type(exc).__name__}: {exc}")  # fmt: skip
             return DriveReport(REFUSED, "claims", 0, 0, why)
+        try:
+            unended = unended_runs(self.log)  # written into STARTED only, nothing on their behalf
+        except DriverError as exc:
+            return DriveReport(REFUSED, "log", 0, 0, _detail(f"refusing to start: {exc}"))
         if self.config.hold:  # 07.2-06 (D-17): the run directory says it is a hold run
             for run in dict.fromkeys([self.config.run_id, *(lane.run for lane in self.lanes)]):
                 run_dir = self.repo.joinpath(DRIVER_DIR, run)  # 07.2-16: each arm's run too
@@ -4058,7 +4086,8 @@ class _Night:
                              b"hold run: its attempts never land and stay out of later packs\n")
         self.night_start = self.deps.clock()
         try:
-            self._record_run(STARTED, START, recovered_detail(recovered), recovered=recovered)
+            self._record_run(STARTED, START, recovered_detail(recovered, unended),
+                             recovered=recovered, unended=unended)  # fmt: skip
         except _Stop as stop:  # fix round 1: the log changed since the outputs check
             return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
@@ -7017,10 +7046,12 @@ class _Night:
 
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
                     checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
-                    guard: bool = True, recovered: Sequence[Mapping] = ()) -> None:  # fmt: skip
+                    guard: bool = True, recovered: Sequence[Mapping] = (),
+                    unended: Sequence[str] = ()) -> None:  # fmt: skip
         """A v3 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
         and, on ENDED and STOPPED, the totals over the night's own records. STARTED also names
-        the verb's environment and controls when it measured them."""
+        the earlier runs that never ended (`unended`), and the verb's environment and controls
+        when it measured them."""
         with self.gate_lock:  # the totals and the append see the same records
             totals = None if event == STARTED else self._night_totals()
             record = {"kind": KIND_RUN, "schema": SCHEMA_V3, "run": self.config.run_id,
@@ -7031,6 +7062,8 @@ class _Night:
                       "recovered": [{key: c[key] for key in ("exe", "unit", "run")}
                                     for c in recovered],
                       "totals": totals}  # fmt: skip
+            if event == STARTED:
+                record["unended"] = list(unended)
             if event == STARTED and self.config.environment is not None:
                 record.update(environment=dict(self.config.environment),
                               controls=None if self.config.controls is None
@@ -8998,6 +9031,65 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
         return _run_drive_locked(options, seams, lock)
     finally:
         lock.release()
+
+
+# ---- the detached launch (todo drive-outlives-session) ----
+
+# A drive started from an agent session died with that session (run 20261121-codex). The spike
+# found the session's shells in a job and the old launcher's drive sharing their console:
+# `drive --detach` starts the drive in a new hidden console of its own (still the console
+# Ctrl-C's target) and breaks it away from the job, which the session's job allows.
+_DETACH_DROPPED = re.compile(r"CLAUDE.*|GIT_EDITOR", re.IGNORECASE)
+_WINDOWS_APPS = re.compile(r"\\Microsoft\\WindowsApps\\?$", re.IGNORECASE)
+DETACH_USER_KEYS = ("OPENROUTER_API_KEY",)  # taken from the User variables when set there
+_SW_HIDE = 0
+_SAVED_ENV_KEYS = {"User": "Environment",
+                   "Machine": r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"}
+
+
+def saved_env(name: str, scope: str) -> str | None:
+    """Variable `name` as Windows stores it for `scope` (User or Machine), expanded, or None;
+    what PowerShell's [Environment]::GetEnvironmentVariable(name, scope) reads."""
+    import winreg  # Windows only, like the one caller (`drive --detach`)
+
+    root = winreg.HKEY_CURRENT_USER if scope == "User" else winreg.HKEY_LOCAL_MACHINE
+    try:
+        with winreg.OpenKey(root, _SAVED_ENV_KEYS[scope]) as key:
+            value, kind = winreg.QueryValueEx(key, name)
+    except FileNotFoundError:
+        return None
+    return winreg.ExpandEnvironmentStrings(value) if kind == winreg.REG_EXPAND_SZ else value
+
+
+def detached_env(environ: Mapping[str, str],
+                 saved: Callable[[str, str], str | None]) -> dict[str, str]:  # fmt: skip
+    """The detached drive's env, built as the session launcher built it: no CLAUDE* or
+    GIT_EDITOR variable, PATH the User then the Machine PATH without the WindowsApps alias
+    directory (Codex's unelevated sandbox fails on the pwsh.exe alias there), and each
+    DETACH_USER_KEYS variable from the User variables when set there."""
+    env = {key: value for key, value in environ.items()
+           if not _DETACH_DROPPED.fullmatch(key) and key.upper() != "PATH"}  # fmt: skip
+    joined = f"{saved('Path', 'User') or ''};{saved('Path', 'Machine') or ''}"
+    env["PATH"] = ";".join(p for p in joined.split(";") if p and not _WINDOWS_APPS.search(p))
+    for key in DETACH_USER_KEYS:
+        value = saved(key, "User")
+        if value:
+            env[key] = value
+    return env
+
+
+def spawn_detached(argv: Sequence[str], *, cwd: Path, env: Mapping[str, str], log: Path) -> int:
+    """Start `argv` in a new hidden console, broken away from the caller's job, stdout and
+    stderr appended to `log`; its pid. Windows only."""
+    startup = subprocess.STARTUPINFO(dwFlags=subprocess.STARTF_USESHOWWINDOW,
+                                     wShowWindow=_SW_HIDE)  # fmt: skip
+    flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("ab") as out:
+        child = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL,
+                                 stdout=out, stderr=subprocess.STDOUT, creationflags=flags,
+                                 startupinfo=startup, close_fds=True)  # fmt: skip
+    return child.pid
 
 
 def night_arms(options: DriveOptions) -> tuple[tuple[str, int], ...]:

@@ -26,10 +26,12 @@ from test_driver import (
     FUNC,
     LOG,
     PICK,
+    RUN,
     START,
     UNIT,
     Night,
     Sess,
+    _git,
     _one,
     _write,
     check_line,
@@ -496,6 +498,48 @@ def test_started_record_v2(tmp_path):
     ended = _one(_run_records(night, "ENDED"))
     assert (ended["workers"], ended["recovered"]) == (3, [])
     assert ended["totals"] is not None
+
+
+def test_started_names_earlier_runs_that_never_ended(tmp_path):
+    """Todo drive-outlives-session (owner ruling 2026-11-23): STARTED names each earlier run id
+    with a STARTED record and no ENDED or STOPPED one (a killed drive), in log order, in its
+    detail and its `unended` field, and writes no record on their behalf."""
+    earlier = Night(tmp_path / "earlier", sessions=[Sess()], gate_exits=[1])
+    earlier.run(config={"attempts_per_function": 1})
+    started, ended = _one(_run_records(earlier, "STARTED")), _one(_run_records(earlier, "ENDED"))
+    stopped = {**ended, "event": "STOPPED", "reason": driver.INTERRUPTED}
+    planted = [{**started, "run": "killed1"}, {**started, "run": "done1"},
+               {**ended, "run": "done1"}, {**started, "run": "stopped1"},
+               {**stopped, "run": "stopped1"}, {**started, "run": "killed2"}]  # fmt: skip
+    night = Night(tmp_path / "night", sessions=[Sess()], gate_exits=[1])
+    (night.repo / LOG).write_bytes(b"".join(map(driver.record_line, planted)))
+    _git(night.repo, night.env, "commit", "-q", "-am", "earlier runs")
+    night.run(config={"attempts_per_function": 1})
+    started = _one([r for r in _run_records(night, "STARTED") if r["run"] == RUN])
+    assert started["unended"] == ["killed1", "killed2"]
+    assert "killed1, killed2" in started["detail"]
+    assert [(r["run"], r["event"]) for r in night.kinds("run")][len(planted):] == [
+        (RUN, "STARTED"), (RUN, "ENDED")]
+    assert "unended" not in _one([r for r in _run_records(night, "ENDED") if r["run"] == RUN])
+    driver.validate_record(started)
+
+
+def test_started_without_unended_runs_lists_none(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    started = _one(_run_records(night, "STARTED"))
+    assert (started["unended"], started["detail"]) == ([], None)
+
+
+def test_only_a_started_record_names_unended_runs(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    ended = _one(_run_records(night, "ENDED"))
+    with pytest.raises(driver.RecordError, match="unended"):
+        driver.validate_record({**ended, "unended": ["killed1"]})
+    started = _one(_run_records(night, "STARTED"))
+    with pytest.raises(driver.RecordError):
+        driver.validate_record({**started, "unended": ["not a run id!"]})
 
 
 def test_limit_record_per_wait(tmp_path):

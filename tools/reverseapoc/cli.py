@@ -1909,6 +1909,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     without `--canary` is refused (exit 2): a night takes each pass's model from D-09.
     `--fable-trial` (quick 261101-b5f) is for a matching night: with `--canary` or
     `--session readability` it is refused (exit 2) before any preflight."""
+    if args.detach or args.log is not None:
+        return _detach_drive(args)
     harness = _harness_conflict(args)  # 07.2-06: before --model's own rule names it
     if harness is not None:
         print(HARNESS_FLAGS_REFUSED.format(conflict=harness), file=sys.stderr)
@@ -1950,6 +1952,39 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   near_miss=args.near_miss,
                                   near_miss_arms=tuple(args.near_miss_arm or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
+
+
+DETACH_LAUNCHER = ("uv", "run", "reverseapoc")  # as the session launcher ran the drive
+
+
+def _detach_drive(args: argparse.Namespace) -> int:
+    """Todo drive-outlives-session: start this same drive, without --detach and --log, in its
+    own hidden console outside the session's job (driver.spawn_detached), in the repo root with
+    the launcher's env (driver.detached_env), output to --log; print its pid and exit 0. The
+    run id is fixed here when --run is absent, so the console Ctrl-C helper can find it."""
+    if not (args.detach and args.log is not None):
+        print("reverseapoc drive: error: --detach and --log PATH go together", file=sys.stderr)
+        return 2
+    if sys.platform != "win32":
+        print("reverseapoc drive: error: --detach is for Windows only", file=sys.stderr)
+        return 2
+    argv, tokens = [], iter(args.raw_argv)
+    for token in tokens:
+        if token == "--log":
+            next(tokens, None)  # its PATH
+        elif token != "--detach" and not token.startswith("--log="):
+            argv.append(token)
+    again = build_parser().parse_args(argv)
+    if again.detach or again.log is not None:  # an abbreviated --det or --lo got through
+        print("reverseapoc drive: error: write --detach and --log in full", file=sys.stderr)
+        return 2
+    run = args.run or _run_id(None)
+    argv += [] if args.run else ["--run", run]
+    log = args.log.resolve()
+    pid = driver.spawn_detached([*DETACH_LAUNCHER, *argv], cwd=REPO_ROOT, log=log,
+                                env=driver.detached_env(os.environ, driver.saved_env))
+    print(f"reverseapoc drive {run}: detached as pid {pid}, output in {log}")
+    return 0
 
 
 FABLE_TRIAL_REFUSED = ("reverseapoc drive: error: --fable-trial is for a matching night; it "
@@ -2315,6 +2350,15 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--run", type=_run_id, default=None, metavar="ID",
                    help="the run id under build/driver/; default: the UTC start time")
     p.add_argument("--json", action="store_true", help="print exactly one JSON document")
+    p.add_argument("--detach", action="store_true",
+                   help="Windows, with --log: start this same drive in its own hidden console "
+                   "outside the calling session's process tree and job, in the repo root with "
+                   "the session launcher's env (no CLAUDE* or GIT_EDITOR, the User and Machine "
+                   "PATH without WindowsApps), print its pid and exit; it outlives the session "
+                   "and stops on the console Ctrl-C (docs/model-routing.md)")  # fmt: skip
+    p.add_argument("--log", type=Path, default=None, metavar="PATH",
+                   help="with --detach: the file the detached drive's stdout and stderr are "
+                   "appended to")  # fmt: skip
     _add_harness_flags(p)
     p.set_defaults(func=_cmd_drive)
 

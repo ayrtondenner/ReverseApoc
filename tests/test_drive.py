@@ -11,8 +11,11 @@ tmp git repo. Every name, address and version below is made up.
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -330,6 +333,119 @@ def test_cli_drive_reaches_run_drive(tmp_path, monkeypatch, capsys):
     assert options is not None, "_cmd_drive never called driver.run_drive"
     assert (options.max_sessions, options.target_matched, options.dry_run) == (40, 10, True)
     assert (options.run_id, options.json, options.canary) == ("pilot1", True, False)
+
+
+# ---- todo drive-outlives-session: `drive --detach --log PATH` ----
+
+
+@pytest.fixture
+def detach(monkeypatch):
+    """`--detach` on a made-up Windows: the spawn and the saved User/Machine variables are
+    fakes, nothing starts. Returns the recorded spawns."""
+    spawns: list[dict] = []
+
+    def spawn(argv, *, cwd, env, log):
+        spawns.append({"argv": list(argv), "cwd": cwd, "env": dict(env), "log": log})
+        return 4242
+
+    saved = {("Path", "User"): r"C:\u\bin;C:\Users\x\AppData\Local\Microsoft\WindowsApps",
+             ("Path", "Machine"): r"C:\m\bin;;C:\Users\x\AppData\Local\Microsoft\WindowsApps" "\\",
+             ("OPENROUTER_API_KEY", "User"): "made-up-key"}  # fmt: skip
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(driver, "spawn_detached", spawn)
+    monkeypatch.setattr(driver, "saved_env", lambda name, scope: saved.get((name, scope)))
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: pytest.fail("ran here"))
+    return spawns
+
+
+def test_detach_respawns_the_drive_argv_in_the_repo(tmp_path, detach, capsys):
+    """The same drive argv minus --detach and --log, under `uv run` in the repo root as the
+    session launcher ran it; the parent prints the pid, run and log, then exits 0."""
+    log = tmp_path / "night.log"
+    code = cli.main(["drive", "--detach", "--arm", "gpt-6.1-sol=2", "--log", str(log),
+                     "--max-sessions", "40", "--run", "n1"])  # fmt: skip
+    assert code == 0
+    (spawn,) = detach
+    assert spawn["argv"] == ["uv", "run", "reverseapoc", "drive", "--arm", "gpt-6.1-sol=2",
+                             "--max-sessions", "40", "--run", "n1"]  # fmt: skip
+    assert (spawn["cwd"], spawn["log"]) == (cli.REPO_ROOT, log.resolve())
+    out = capsys.readouterr().out
+    assert "pid 4242" in out and "n1" in out and str(log.resolve()) in out
+
+
+def test_detach_names_the_run_id_when_none_is_given(tmp_path, detach, capsys):
+    """The ctrl-C helper finds the drive by its run id, so the parent fixes it and prints it."""
+    assert cli.main(["drive", "--detach", f"--log={tmp_path / 'n.log'}"]) == 0
+    argv = detach[0]["argv"]
+    assert argv[:4] == ["uv", "run", "reverseapoc", "drive"] and argv[4] == "--run"
+    assert re.fullmatch(r"\d{8}-\d{6}", argv[5]) and argv[5] in capsys.readouterr().out
+
+
+def test_detached_env_is_the_launchers(tmp_path, detach, monkeypatch):
+    """No CLAUDE* or GIT_EDITOR; PATH is the User then the Machine PATH without the
+    WindowsApps alias directory; OPENROUTER_API_KEY from the User variables."""
+    for name, value in {"CLAUDECODE": "1", "claude_code_entrypoint": "cli", "GIT_EDITOR": "true",
+                        "PATH": r"C:\session\only", "OPENROUTER_API_KEY": "stale",
+                        "KEEP_ME": "yes"}.items():  # fmt: skip
+        monkeypatch.setenv(name, value)
+    assert cli.main(["drive", "--detach", "--log", str(tmp_path / "n.log"), "--run", "n1"]) == 0
+    env = detach[0]["env"]
+    assert not [k for k in env if k.upper().startswith("CLAUDE") or k.upper() == "GIT_EDITOR"]
+    assert [k for k in env if k.upper() == "PATH"] == ["PATH"]
+    assert env["PATH"] == r"C:\u\bin;C:\m\bin"
+    assert (env["OPENROUTER_API_KEY"], env["KEEP_ME"]) == ("made-up-key", "yes")
+
+
+@pytest.mark.parametrize("argv", [["--detach"], ["--log", "n.log"]])
+def test_detach_and_log_need_each_other(detach, capsys, argv):
+    assert cli.main(["drive", *argv, "--run", "n1"]) == 2
+    assert "--detach" in capsys.readouterr().err and not detach
+
+
+def test_detach_is_refused_off_windows(tmp_path, detach, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert cli.main(["drive", "--detach", "--log", str(tmp_path / "n.log"), "--run", "n1"]) == 2
+    assert "Windows" in capsys.readouterr().err and not detach
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the detached launch is Windows only")
+def test_spawn_detached_is_a_hidden_console_outside_the_job(tmp_path, monkeypatch):
+    """Spike (todo drive-outlives-session): a new console (its own Ctrl-C target, not the
+    session's), hidden, broken away from the session's job, both streams in the log."""
+    seen = {}
+
+    class FakePopen:
+        pid = 77
+
+        def __init__(self, argv, **kwargs):
+            seen.update(kwargs, argv=argv)
+
+    monkeypatch.setattr(driver.subprocess, "Popen", FakePopen)
+    log = tmp_path / "logs" / "n.log"
+    assert driver.spawn_detached(["uv", "run"], cwd=tmp_path, env={"A": "1"}, log=log) == 77
+    flags = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert seen["creationflags"] == flags
+    assert seen["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert seen["startupinfo"].wShowWindow == 0  # SW_HIDE
+    assert (seen["stdin"], seen["stderr"]) == (subprocess.DEVNULL, subprocess.STDOUT)
+    assert seen["stdout"].name == str(log) and log.is_file()
+    assert (seen["cwd"], seen["env"], seen["argv"]) == (tmp_path, {"A": "1"}, ["uv", "run"])
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the detached launch is Windows only")
+def test_spawn_detached_smoke_writes_both_streams_to_the_log(tmp_path):
+    log = tmp_path / "n.log"
+    code = "import sys; print('out line'); print('err line', file=sys.stderr)"
+    driver.spawn_detached([sys.executable, "-I", "-c", code], cwd=tmp_path,
+                          env=dict(os.environ), log=log)  # fmt: skip
+    wanted, deadline = {"out line", "err line"}, time.monotonic() + 30
+    while not wanted <= _lines_of(log) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert wanted <= _lines_of(log)
+
+
+def _lines_of(log: Path) -> set[str]:
+    return {line.strip() for line in log.read_text(encoding="utf-8").splitlines()}
 
 
 # ---- Task 2: the preflight (D-34, D-36, D-13) and the canary (Pitfalls 2-3) ----

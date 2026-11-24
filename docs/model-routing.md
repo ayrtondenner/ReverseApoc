@@ -79,6 +79,35 @@ say "hold run" for this harness, never "held".
 3. Compare the arms: `reverseapoc stats --run spike012-*`.
 4. Land the results: `reverseapoc drive --land-held spike012-*`.
 
+## Launching a night from an agent session
+
+A drive started from a Claude Code session with `Start-Process uv run reverseapoc drive ...
+-Wait` dies when that session ends: run 20261121-codex was killed with its session at about
+05:10 on 2026-11-22, in a 5-hour pause. The spike (todo drive-outlives-session) found the
+session's shells in a job and that drive sharing their console. Launch a night from a session
+with `reverseapoc drive --detach --log PATH <the night's flags>` instead, still through the
+launcher of docs/workflow.md:
+
+- `--detach` (Windows only, always with `--log`) starts the same drive, without `--detach` and
+  `--log`, as `uv run reverseapoc drive ...` in the repo root. It runs in its own hidden console,
+  broken away from the session's job, so no process tree kill or console close of the session
+  reaches it. Its env is built the launcher's way: no `CLAUDE*` or `GIT_EDITOR`, `PATH` the User
+  then the Machine `PATH` without the `Microsoft\WindowsApps` alias directory, and
+  `OPENROUTER_API_KEY` from the User variables when set there.
+- Its stdout and stderr both go to PATH (appended; keep it outside the checkout). The command
+  prints the drive's pid, its run id (fixed at launch when `--run` is absent) and the log path,
+  then exits 0.
+- The console Ctrl-C stop still works: the helper attaches to the drive's own console, as the
+  spike showed with a sleeper that caught the KeyboardInterrupt.
+
+If a drive is killed anyway, its drive.lock is no obstacle: the lock is an OS byte lock on the
+file, so the kill frees it, and the file left in `build/driver/` is harmless. A killed drive
+writes no STOPPED record and leaves its records uncommitted, which the next drive refuses as
+dirty outputs, so commit them by hand first (as 2e809eea did). The next drive's STARTED record
+then names each earlier run with a STARTED record and no ENDED or STOPPED one, in its detail
+and its `unended` field, and writes no record on their behalf; their stale claims are
+recovered as before.
+
 ## Landing a hold run
 
 `reverseapoc drive --land-held RUN...` runs on the main checkout with the drive lock and the
