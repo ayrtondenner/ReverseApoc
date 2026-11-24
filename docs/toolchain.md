@@ -319,6 +319,8 @@ Watcom 10.x/11.0 is proprietary and its current IP owner was not verified, so it
 
 Do not build the image while a drive runs. The compose image name is fixed (`reverseapoc-build:local`), not per checkout, so a build in any clone moves the tag that the running drive recorded in its STARTED record. On 2026-11-20 (run 20261120-codex) a clone's `docker compose build` moved it from `79f99708…` to `48d709f2…` with the same config, and the old image was gone, so the tag could not be put back. While `build/driver/drive.lock` is held, the reverseapoc hook refuses every image build or retag from any directory, a clone included: `docker compose build`, `run`/`up --build`, `docker build`, `buildx`, `image build`, and `docker tag` onto `reverseapoc-build`. `docker compose run --rm -T build ...`, `docker ps` and `docker images` from a clone still work. Build after the drive process exits.
 
+The same guard refuses the other commands that can move the tag (owner ruling 2026-11-24): `docker commit`, `docker import` and `docker pull` that name `reverseapoc-build` (also as `docker container commit`, `docker image import` and `docker image pull`), and every `docker load` or `docker image load`, since a load takes its tags from the tarball and the command text does not show them. A commit, import or pull of another image still works from a clone.
+
 ## Clone work
 
 Every clone directory is its own compose project: compose names the project after the

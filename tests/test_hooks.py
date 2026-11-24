@@ -3038,3 +3038,54 @@ def test_drive_guard_allows_image_builds_without_a_live_drive(state, name, comma
     repo = request.getfixturevalue(state)
     text = _placed(name, command, repo, scratch)
     assert not guard(shell(name, text, repo), repo).deny, text
+
+
+# todo image-guard-other-retags (owner ruling 2026-11-24): commit, import, pull and load can move
+# the shared tag too; load takes it from the tarball, so every load is refused.
+IMAGE_RETAGS = [
+    ("Bash", "docker commit abc123 reverseapoc-build:local"),
+    ("Bash", "docker container commit -m x abc123 reverseapoc-build:local"),
+    ("Bash", "docker import {scratch}/x.tar reverseapoc-build:local"),
+    ("Bash", "docker image import - reverseapoc-build"),
+    ("Bash", "docker pull reverseapoc-build:local"),
+    ("Bash", "docker image pull ghcr.io/x/reverseapoc-build:latest"),
+    ("Bash", "docker load -i {scratch}/x.tar"),
+    ("Bash", "docker load < {scratch}/x.tar"),
+    ("Bash", "docker image load --input {scratch}/x.tar"),
+    ("Bash", "cd {scratch} && docker load -i x.tar"),
+    ("Bash", "bash -c 'docker load -i x.tar'"),
+    ("PowerShell", "docker load -i {scratch}{sep}x.tar"),
+    ("PowerShell", "& docker.exe commit abc123 reverseapoc-build:local"),
+]
+
+
+@pytest.mark.parametrize("where", ["scratch", "live_drive"])
+@pytest.mark.parametrize("name,command", IMAGE_RETAGS)
+def test_drive_guard_refuses_other_retags_from_any_cwd(live_drive, scratch, where, name, command):
+    cwd = scratch if where == "scratch" else live_drive
+    text = _placed(name, command, live_drive, scratch)
+    decision = guard(shell(name, text, cwd), live_drive)
+    assert decision.deny, text
+    assert "reverseapoc-build:local" in decision.reason
+
+
+@pytest.mark.parametrize("state", ["stale_drive", "repo"])
+@pytest.mark.parametrize("name,command", IMAGE_RETAGS)
+def test_drive_guard_allows_other_retags_without_a_live_drive(state, name, command, scratch,
+                                                              request):  # fmt: skip
+    repo = request.getfixturevalue(state)
+    text = _placed(name, command, repo, scratch)
+    assert not guard(shell(name, text, scratch), repo).deny, text
+
+
+@pytest.mark.parametrize("command", [
+    "docker commit abc123 other:1",
+    "docker container commit abc123",
+    "docker import {scratch}/x.tar other:1",
+    "docker pull python:3.14",
+    "docker image pull alpine",
+])  # fmt: skip
+def test_drive_guard_allows_retags_of_other_images_from_a_clone(live_drive, scratch, command):
+    text = _placed("Bash", command, live_drive, scratch)
+    decision = guard(shell("Bash", text, scratch), live_drive)
+    assert not decision.deny, (text, decision.reason)

@@ -1628,6 +1628,11 @@ _COMPOSE_BUILDS = frozenset({"build", "watch"})
 _COMPOSE_RUNS = frozenset({"run", "up", "create"})  # these build when given --build
 _COMPOSE_BUILD_FLAG = "--build"
 _SHARED_IMAGE = "reverseapoc-build"  # reverseapoc-build:local, the tag a retag would move
+# todo image-guard-other-retags (owner ruling 2026-11-24): these move a tag when they name the
+# shared image; `load` takes its tags from the tarball, so every load counts.
+_DOCKER_GROUPS = frozenset({_DOCKER_IMAGE, "container"})
+_IMAGE_RETAGS = frozenset({_DOCKER_TAG, "commit", "import", "pull"})
+_IMAGE_LOAD = "load"
 
 
 def _ancestors(starts: Iterable[Path]) -> Iterator[Path]:
@@ -1692,17 +1697,19 @@ def _drive_command(payload: Mapping, env: Mapping[str, str]) -> Decision:
 
 
 class _ImageBuild(Exception):  # noqa: N818 -- a verdict, not an error: the call is refused
-    """A docker image build found anywhere in a call (a nested shell's or substitution's text
-    included): refused from every cwd under a live drive, with its own reason."""
+    """A docker image build or retag found anywhere in a call (a nested shell's or
+    substitution's text included): refused from every cwd under a live drive, with its own
+    reason."""
 
 
 def _image_denial(root: str, build: str) -> Decision:
     return _deny(f"a reverseapoc drive holds {root}/{DRIVE_LOCK.as_posix()}, so the image build "
-                 f"{build!r} is refused from any directory, a clone included: the compose image "
-                 "name is fixed, so a build re-tags the shared reverseapoc-build:local image "
-                 "whose id the running drive recorded in STARTED (run 20261120-codex lost its "
-                 "digest that way). Build after the drive process exits (docs/toolchain.md); "
-                 "`docker compose run --rm -T build ...` from a clone still works")  # fmt: skip
+                 f"or retag {build!r} is refused from any directory, a clone included: the "
+                 "compose image name is fixed, so a build, tag, commit, import, pull or load can "
+                 "move the shared reverseapoc-build:local tag whose id the running drive "
+                 "recorded in STARTED (run 20261120-codex lost its digest that way). Build after "
+                 "the drive process exits (docs/toolchain.md); `docker compose run --rm -T build "
+                 "...` from a clone still works")  # fmt: skip
 
 
 def _past_options(words: Sequence[str], values: frozenset[str],
@@ -1724,8 +1731,9 @@ def _past_options(words: Sequence[str], values: frozenset[str],
 
 def _image_build(name: str, rest: Sequence[str]) -> bool:
     """Whether a docker or docker-compose call builds or re-tags an image: build, buildx,
-    builder or `image build`, a `tag` naming reverseapoc-build, or a compose build
-    (_compose_build); an unlisted option before the subcommand counts as one."""
+    builder or `image build`, any load, a tag, commit, import or pull naming reverseapoc-build
+    (each also under `image` or `container`), or a compose build (_compose_build); an unlisted
+    option before the subcommand counts as one."""
     if name == _DOCKER_COMPOSE:
         return _compose_build(rest)
     words = _past_options(rest, _DOCKER_VALUES, _DOCKER_FLAGS)
@@ -1734,11 +1742,11 @@ def _image_build(name: str, rest: Sequence[str]) -> bool:
     sub, args = (words[0], words[1:]) if words else ("", ())
     if sub == _COMPOSE:
         return _compose_build(args)
-    if sub == _DOCKER_IMAGE:
+    if sub in _DOCKER_GROUPS:
         sub, args = (args[0], args[1:]) if args else ("", ())
-    if sub in _IMAGE_BUILDERS:
+    if sub in _IMAGE_BUILDERS or sub == _IMAGE_LOAD:
         return True
-    return sub == _DOCKER_TAG and any(_SHARED_IMAGE in word.casefold() for word in args)
+    return sub in _IMAGE_RETAGS and any(_SHARED_IMAGE in word.casefold() for word in args)
 
 
 def _compose_build(rest: Sequence[str]) -> bool:
