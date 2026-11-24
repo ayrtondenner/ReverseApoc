@@ -9093,9 +9093,10 @@ def take_console_ctrl_c() -> None:
     """Run 20261124-codex: a drive started from a process that ignores Ctrl-C (the agent's Bash
     tool; SetConsoleCtrlHandler(NULL, TRUE) is inherited by child processes) ignored the console
     Ctrl-C, the only documented stop. Turn Ctrl-C processing back on for this process and the
-    ones it starts. No-op off Windows."""
-    if sys.platform == "win32":
-        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+    ones it starts. No-op where ctypes has no windll (off Windows, whatever sys.platform says)."""
+    windll = getattr(ctypes, "windll", None)
+    if windll is not None:
+        windll.kernel32.SetConsoleCtrlHandler(None, False)
 
 
 def spawn_detached(argv: Sequence[str], *, cwd: Path, env: Mapping[str, str], log: Path) -> int:

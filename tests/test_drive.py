@@ -484,6 +484,14 @@ def test_a_drive_takes_the_console_ctrl_c_back_from_an_ignoring_parent(tmp_path)
     assert _ctrl_c_child(tmp_path, "helper") == "interrupted"
 
 
+def test_taking_the_console_ctrl_c_needs_windll_not_the_platform_name(monkeypatch):
+    """The detach tests set sys.platform to win32 on Linux (the container suite): the helper
+    goes by whether ctypes has windll, so it is a no-op there."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.delattr(driver.ctypes, "windll", raising=False)
+    driver.take_console_ctrl_c()
+
+
 def test_the_drive_verb_takes_the_console_ctrl_c_before_anything_else(monkeypatch):
     calls = []
     monkeypatch.setattr(driver, "take_console_ctrl_c", lambda: calls.append("ctrl-c"))
