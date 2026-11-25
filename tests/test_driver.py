@@ -1014,7 +1014,7 @@ def test_a_whitespace_padded_write_outside_the_checkout_is_still_a_stray(tmp_pat
     assert driver.transcript_paths(_transcript_writes(repo, raw), repo) == [None]
 
 
-@pytest.mark.parametrize("pad", [" ", "﻿", " ", "　", " "])
+@pytest.mark.parametrize("pad", ["\u00a0", "\ufeff", "\u2003", "\u3000", "\u2028"])
 def test_a_path_still_padded_after_the_ascii_trim_fails_closed(tmp_path, pad):
     """Security review of c1a069d5: JavaScript's trim also removes Unicode spaces and the BOM,
     which str.strip of `_CLAUDE_TRIMMED` keeps, so the audit and Claude Code could read such a

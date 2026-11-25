@@ -1569,7 +1569,7 @@ def _claude_drive_form(raw: str | None) -> str | None:
     on the current drive (the 20261112-cascade STOP, owner-approved). Any other path, or any
     host but Windows, as is."""
     raw = raw.strip(_CLAUDE_TRIMMED) if raw is not None else None
-    if raw and (raw[0].isspace() or raw[-1].isspace() or "﻿" in (raw[0], raw[-1])):
+    if raw and (raw[0].isspace() or raw[-1].isspace() or "\ufeff" in (raw[0], raw[-1])):
         return None  # still padded (Unicode space, BOM): JS trim reads it otherwise, fail closed
     bash_drive = _CLAUDE_BASH_DRIVE.match(raw) if raw is not None and os.name == "nt" else None
     if bash_drive is None:
