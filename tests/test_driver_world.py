@@ -37,6 +37,26 @@ def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         EXE, roots=_roots(tmp_path))}))  # fmt: skip
 
 
+def test_the_world_pack_hands_the_variants_to_make_pack(tmp_path: Path, monkeypatch):
+    """Runs 20261125b-abl-lookalike-off-r1 and -carry-off-r1 stopped at once: the driver called
+    the world's pack with `variants=` (--pack-variant) but load_world's pack took none
+    (TypeError). The world pack passes them to attempt.make_pack, and with none it passes ()."""
+    seen = []
+
+    def fake_make_pack(data, row, **kwargs):
+        seen.append(kwargs.get("variants"))
+        return SimpleNamespace(pack_bytes=1, truncated=())
+
+    monkeypatch.setattr(attempt, "make_pack", fake_make_pack)
+    monkeypatch.setattr(driver, "write_pack", lambda built, directory, root: None)
+    roots = _roots(tmp_path)
+    pick = SimpleNamespace(start=START)
+    args = (DATA, {START: ROW}, roots, None, pick, tmp_path / "attempt")
+    driver._world_pack(*args, variants=("no-carry",))
+    driver._world_pack(*args)
+    assert seen == [("no-carry",), ()]
+
+
 def test_pack_inputs_pass_with_no_files_or_good_ones(tmp_path: Path):
     roots = _roots(tmp_path)
     driver.check_pack_inputs(DATA, roots)  # no hint file and no table: nothing to refuse

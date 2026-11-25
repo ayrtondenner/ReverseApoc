@@ -191,6 +191,7 @@ from .functions import (
     KIND_GAME,
     KIND_RUNTIME,
     KIND_THUNK,
+    FunctionRow,
     SymbolRow,
     data_name,
     format_symbols_csv,
@@ -11230,6 +11231,19 @@ def check_pack_inputs(data: ExeInputs, roots: attempt.Roots) -> None:
     signatures.load(signatures.table_path(roots.repo, data.stem), data)
 
 
+def _world_pack(data: ExeInputs, rows: Mapping[int, FunctionRow], roots: attempt.Roots,
+                calls: CallIndex | None, pick: Pick, directory: Path, src: Path | None = None,
+                *, variants: Sequence[str] = ()) -> PackInfo:  # fmt: skip
+    """07-13: a session's pack reads its view's src/ (`src`); the dry run reads src/. Todo
+    held-context-ablations: `variants` (--pack-variant) reach attempt.make_pack; the runs
+    20261125b-abl-lookalike-off-r1 and -carry-off-r1 stopped on a world pack that took none."""
+    built = attempt.make_pack(data, rows[pick.start], src=roots.src if src is None else src,
+                              config=roots.config, asm_root=roots.asm, roots=roots, calls=calls,
+                              variants=tuple(variants))  # fmt: skip
+    write_pack(built, directory, root=roots.repo)
+    return PackInfo(built.pack_bytes, tuple(built.truncated))
+
+
 def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
     """One EXE loaded once with check's loader: score.assess's survivors as `score` ranks them
     (D-09), the units, one CallIndex reused by every pack (06-15 notes), the context pack
@@ -11249,13 +11263,9 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
         row = rows[start]
         return contextpack.mnemonics(row, data.flat, near.overlapping(row.start, row.end))
 
-    def pack(pick: Pick, directory: Path, src: Path | None = None) -> PackInfo:
-        """07-13: a session's pack reads its view's src/ (`src`); the dry run reads src/."""
-        built = attempt.make_pack(data, rows[pick.start], src=roots.src if src is None else src,
-                                  config=roots.config,
-                                  asm_root=roots.asm, roots=roots, calls=calls)  # fmt: skip
-        write_pack(built, directory, root=roots.repo)
-        return PackInfo(built.pack_bytes, tuple(built.truncated))
+    def pack(pick: Pick, directory: Path, src: Path | None = None,
+             variants: Sequence[str] = ()) -> PackInfo:  # fmt: skip
+        return _world_pack(data, rows, roots, calls, pick, directory, src, variants=variants)
 
     def pack_key(pick: Pick) -> str:
         """The key of the pack `pack` builds into a view made from HEAD: src/ is HEAD's while no
