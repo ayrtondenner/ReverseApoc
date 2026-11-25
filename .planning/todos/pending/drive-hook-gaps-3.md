@@ -28,3 +28,14 @@ question with options here, and implement the ruling.
 **Done when.** A non-heredoc `<<` no longer hides commands, `docker rmi` of the shared image is
 refused during a drive, `find ... grep powershell` passes, the owner's ruling on 2 is pinned, and
 tests cover each.
+
+## Added 2026-11-24: a whitespace-padded tool path
+
+Run 20261124-ladder-w6-b stopped on the guardrail because a Haiku session's Edit had
+`file_path` = "\nC:/.../view/src/tacp/u_00048350.c". Claude Code trimmed it and edited the
+session's own unit. The drive audit did not trim, so it read the path as a repo path the session
+may not write. The audit now trims the same ASCII whitespace JavaScript's `trim()` removes
+(c1a069d5). Still open: the write guard allowed that call. Check whether Claude Code passes hooks
+the trimmed path or the raw one. If it is the raw one, test how `hooks.py` judges a
+newline-prefixed `file_path` on Edit and Write, and make it trim the same way, so the guard and
+the audit agree.
