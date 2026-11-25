@@ -33,6 +33,24 @@ high, xhigh and max, and Haiku 5.5 accepts all five on the API (its API default 
 "off" side is the default, as nights run today: no `--effort`, so the CLI picks the effort. The
 comparison answers whether a night should pass `high` instead of the default.
 
+## Amendment of 2026-11-25, before any run of this matrix: k = 1
+
+Owner ruling (2026-11-25): run **k = 1**, the four r1 runs only (base, lookalike-off,
+carry-off, effort-on), at `--arm-budget claude-haiku-5-5=1.1%week` each, about 4.4% of the
+Claude week in all. Why: on the 256 B night (run 20261125-256h) the driver's meter priced a
+Haiku session at about 0.018%week (1.508% for 84 sessions, at the lower-bound $9.6 a point). At
+that rate the planned 0.6% would end a run after about 33 of its 56 picks, which breaks the
+pairing, and k = 2 at a covering budget (~8.8%) would go past the owner's 10% Haiku envelope
+for the week. At 1.1%, about 61 sessions per run cover all 56 picks.
+
+What changes. The analysis below is read with one repeat: a pick counts as exact in a condition
+when its one session in that condition's r1 run is exact. That is the same as "exact in either
+repeat" with a single repeat. The McNemar test, alpha 0.05, the 6-discordant-pick floor and the
+"no difference shown" reading are unchanged. The r2 commands stay below for a later second
+repeat, which is not pre-registered here: if it runs, the k = 2 rules below apply to r1 and r2
+together. Nothing here was chosen after looking at any ablation result: no ablation run had
+started.
+
 ## Picks, arm and repeats
 
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
