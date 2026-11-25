@@ -12,8 +12,9 @@ anything unknown fails closed (STOP), and only a known transient condition is no
 
 - STOP: api_retry `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold` or
   `billing_error`, or any api_retry error outside the known sets (`cloud_credential_error`,
-  `model_not_found`, `invalid_request`, `max_output_tokens`, `unknown`, a missing or future
-  code); a rate_limit_event with errorCode `credits_required`, or `rejected` with any other
+  `model_not_found`, `invalid_request`, `max_output_tokens`, a missing or future code, and
+  `unknown` unless the session recovered from it, as for `rate_limit` below: owner ruling
+  2026-11-25); a rate_limit_event with errorCode `credits_required`, or `rejected` with any other
   errorCode; a result whose `subtype` is not `success`, `error_max_turns`,
   `error_max_budget_usd` or `error_during_execution`; an error result whose `api_error_status`
   is neither 429 nor 5xx (401, 400, 403, a non-integer, ...); error text "Credit balance is too
@@ -120,6 +121,9 @@ _STOP_RETRY_ERRORS = frozenset(
 _LIMIT_RETRY_ERRORS = frozenset({"rate_limit"})
 _TRANSIENT_RETRY_ERRORS = frozenset({"overloaded", "server_error"})
 _KNOWN_RETRY_ERRORS = _STOP_RETRY_ERRORS | _LIMIT_RETRY_ERRORS | _TRANSIENT_RETRY_ERRORS
+# owner ruling 2026-11-25: Claude Code's api_retry `error: "unknown"` (no error_status) stops a
+# run only when the session did not recover from it (runs 20261125-256h, 20261125b-abl-effort-on)
+_UNKNOWN_RETRY_ERROR = "unknown"
 _HTTP_SERVER_ERRORS = range(500, 600)  # 5xx, 529 (overloaded) included
 _SUCCESS = "success"
 _CAP_SUBTYPES = frozenset({"error_max_turns", "error_max_budget_usd"})
@@ -308,7 +312,10 @@ def _is_server_error(status: object) -> bool:
 
 
 def _is_stop(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
-    if _retry_errors(events) - _KNOWN_RETRY_ERRORS or _retry_errors(events) & _STOP_RETRY_ERRORS:
+    errors = _retry_errors(events)
+    if _UNKNOWN_RETRY_ERROR in errors and _recovered(results):
+        errors = errors - {_UNKNOWN_RETRY_ERROR}  # owner ruling 2026-11-25: it recovered
+    if errors - _KNOWN_RETRY_ERRORS or errors & _STOP_RETRY_ERRORS:
         return True  # a known STOP code, or a code outside every known set (fail closed)
     if _unknown_subtype(results):
         return True  # fix round 2 R1

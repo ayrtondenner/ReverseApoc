@@ -223,12 +223,35 @@ def test_classify_429_result_stays_limit():
 @pytest.mark.parametrize(
     "error",
     ["cloud_credential_error", "model_not_found", "invalid_request", "max_output_tokens",
-     "unknown", "a_future_code", None],
+     "a_future_code", None],
 )  # fmt: skip
 def test_classify_unknown_api_retry_error_stops(error):
     retry = {"type": "system", "subtype": "api_retry", "error": error}
     assert classify((retry,), 1, False) is Disposition.STOP
     assert classify((retry, _events("success")[-1]), 0, False) is Disposition.STOP
+
+
+# Owner ruling 2026-11-25: Claude Code now emits api_retry `error: "unknown"` with no
+# error_status, and twice the session retried and ran on to its 40-turn cap (runs 20261125-256h
+# and 20261125b-abl-effort-on-r1b, both ended as a D-08 STOP). An `unknown` retry the session
+# recovered from (as a recovered `rate_limit`, spike012) is no STOP; with no result, or with an
+# error result the retry left behind, it still stops (fail closed).
+_UNKNOWN_RETRY = {"type": "system", "subtype": "api_retry", "attempt": 1, "max_retries": 10,
+                  "error_status": None, "error": "unknown"}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", ["success", "max_turns", "max_budget"])
+def test_classify_recovered_unknown_retry_is_an_attempt(name):
+    done = _events(name)[-1]
+    assert classify((_UNKNOWN_RETRY, done), 0, False) is Disposition.ATTEMPT_DONE
+    assert classify((_UNKNOWN_RETRY, _UNKNOWN_RETRY, done), 0, False) is Disposition.ATTEMPT_DONE
+
+
+def test_classify_unrecovered_unknown_retry_still_stops():
+    assert classify((_UNKNOWN_RETRY,), 1, False) is Disposition.STOP
+    assert classify((_UNKNOWN_RETRY, _error_result(401)), 1, False) is Disposition.STOP
+    assert classify((_UNKNOWN_RETRY, _events("success")[-1], _error_result(401)), 1,
+                    False) is Disposition.STOP  # fmt: skip
 
 
 # Fix round 1 I2: on a successful result, `result` is the agent's own last message.

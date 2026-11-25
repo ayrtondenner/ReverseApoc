@@ -86,6 +86,17 @@ unchanged as `20261125b-abl-{lookalike-off,carry-off,effort-on}-r1b`, compared w
 `20261125b-abl-base-r1`. No comparison was looked at before this note: the base run's outcomes
 alone were read, for its end line.
 
+## Note of 2026-11-25: effort-on re-run as `-r1c`
+
+`20261125b-abl-effort-on-r1b` stopped after 1 session: that session's stream had a Claude Code
+api_retry `error: "unknown"` (no status) and then ran on to its 40-turn cap, and the classifier
+failed closed (D-08 STOP). The owner ruled that an `unknown` retry the session recovered from is
+no STOP (as a recovered `rate_limit`); fixed test-first in streamjson, and both kept STOP
+transcripts of the day now classify as attempts. effort-on runs again unchanged as
+`20261125b-abl-effort-on-r1c`; the r1b session is left out of the comparison.
+`-lookalike-off-r1b` and `-carry-off-r1b` ran as planned (54 sessions each). No comparison was
+looked at before this note.
+
 ## Picks, arm and repeats
 
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
