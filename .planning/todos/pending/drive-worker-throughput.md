@@ -119,3 +119,30 @@ Haiku's max_workers is 10 (backends.toml), so 12 and 16 would be refused. The op
 (a) 4/8/10; (b) raise max_workers to 16 and run 4/8/12/16; (c) 4/6/8/10. Chosen: **(c) 4 / 6 /
 8 / 10**, four drives of about 25 sessions each, about 1% of the Claude week, run as `ladder-w4`,
 `ladder-w6`, `ladder-w8` and `ladder-w10` with the commands above and the worker count changed.
+
+## Results (2026-11-24, claude-haiku-5-5, 64-255 B partial rows)
+
+The first w4 and w6 runs were refused at the picks check: each picks file held a row on the
+hand-off board. They were rerun as `-b` with picks outside config/handoff.csv. Figures come from
+`uv run reverseapoc stats --run '<run>*'` (the step_seconds block).
+
+| Run | Workers | Sessions | Matched | Sessions/h | Median session s | Median audit_wait | Median land_wait | Median land / gate | Lock wait total s |
+|---|---|---|---|---|---|---|---|---|---|
+| 20261124-ladder-w4-b | 4 | 25 | 0 | 25.9 | 387 | 0.0 | 0.0 | 67 / 61 | 529 |
+| 20261124-ladder-w6-b | 6 | 24* | 0 | 21.7* | 592 | 14.6 | 7.2 | 81 / 70 | 2,273 |
+| 20261124-ladder-w8 | 8 | 25 | 0 | 30.1 | 530 | 55.1 | 8.8 | 76 / 69 | 3,173 |
+| 20261124-ladder-w10 | 10 | 25 | 1 | 30.4 | 537 | 98.6 | 82.1 | 86 / 75 | 6,448 |
+
+\* w6-b stopped on the guardrail (an audit "stray path" from a session's own unit file, under
+investigation), so its rate is understated.
+
+Reading:
+- The knee is at about 8 workers. Throughput stays near 30 sessions an hour, and from 8 to 10
+  workers the lock wait doubles for +0.3 sessions an hour.
+- The cap is the landing section's gate-lock hold: about 75-86 s per attempt, 60-75 s of it the
+  gate, one attempt at a time. That puts the ceiling near 3,600 / 86, about 40 sessions an hour;
+  about 30 are reached. Workers beyond 8 queue at `audit_wait` and `land_wait`.
+
+Next (no ruling yet): cap Haiku's `max_workers` at 8 in backends.toml and docs/model-routing.md.
+The real lever is the gate's time inside the lock (run the gate outside it, or gate only the
+claimed unit). That needs a design and the owner's go.
