@@ -994,6 +994,26 @@ def test_other_spellings_of_a_transcript_write_are_judged_as_before(tmp_path):
     assert driver.transcript_paths(_transcript_writes(repo, *raws), repo) == want
 
 
+# ---- the 20261124-ladder-w6-b STOP: a write path with a leading newline ----
+
+
+def test_a_whitespace_padded_write_inside_the_checkout_is_not_a_stray(tmp_path):
+    """A Claude (Haiku) session sent an Edit whose file_path was "\\nC:/<checkout>/.../u.c";
+    Claude Code trims the path and edited its own view unit, so the transcript audit reads the
+    trimmed form, not <checkout>/\\nC:/... (the 20261124-ladder-w6-b STOP)."""
+    repo = _repo(tmp_path)
+    raws = [f"{pad}{form}{tail}" for form in _plain_forms(repo / NOTES_REL)
+            for pad, tail in (("\n", ""), (" \t", "\r\n"))]  # fmt: skip
+    want = [[NOTES_REL.casefold()]] * len(raws)
+    assert driver.transcript_paths(_transcript_writes(repo, *raws), repo) == want
+
+
+def test_a_whitespace_padded_write_outside_the_checkout_is_still_a_stray(tmp_path):
+    repo = _repo(tmp_path)
+    raw = f"\n{(tmp_path / 'elsewhere' / 'notes.md').as_posix()}"
+    assert driver.transcript_paths(_transcript_writes(repo, raw), repo) == [None]
+
+
 # ---- the 20261113-lanes2 STOP: a write Claude Code itself refused, so never written ----
 
 REFUSED_PATH = "/repo/tools/x.py"  # the refused_* and un*_edit stream fixtures' write

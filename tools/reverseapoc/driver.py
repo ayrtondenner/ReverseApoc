@@ -1555,12 +1555,18 @@ def _relative(raw: str | None, repo: Path, roots: Sequence[str]) -> list[str] | 
 
 
 _CLAUDE_BASH_DRIVE = re.compile(r"/([A-Za-z])(?:/|$)")  # Git Bash's /c/..., forward slashes only
+# Claude Code trims a tool's file_path (JavaScript's trim) before it opens it; these ASCII
+# characters are ones both that trim and str.strip remove (the 20261124-ladder-w6-b STOP).
+_CLAUDE_TRIMMED = " \t\n\r\v\f"
 
 
 def _claude_drive_form(raw: str | None) -> str | None:
-    """A Git Bash drive path (`/c/...`) as Claude Code on Windows resolves it, `c:/...`, so it
-    is read as that drive's form only, never also as rooted on the current drive (the
-    20261112-cascade STOP, owner-approved). Any other path, or any host but Windows, as is."""
+    """`raw` as Claude Code reads it: trimmed of `_CLAUDE_TRIMMED` (the 20261124-ladder-w6-b
+    STOP: "\\nC:/..." edited C:/...), and a Git Bash drive path (`/c/...`) as Claude Code on
+    Windows resolves it, `c:/...`, so it is read as that drive's form only, never also as rooted
+    on the current drive (the 20261112-cascade STOP, owner-approved). Any other path, or any
+    host but Windows, as is."""
+    raw = raw.strip(_CLAUDE_TRIMMED) if raw is not None else None
     bash_drive = _CLAUDE_BASH_DRIVE.match(raw) if raw is not None and os.name == "nt" else None
     if bash_drive is None:
         return raw
