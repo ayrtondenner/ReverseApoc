@@ -7768,6 +7768,9 @@ class DriveOptions:
     # argv; all of them the STARTED record's environment and its digest
     pack_variants: tuple[str, ...] = ()
     attempts_1k: int | None = None  # run 20261125-256h: `--attempts-1k N` (DriveConfig's)
+    # held-v1c ablations (owner ruling 2026-11-25): `--attempts N`, DriveConfig's
+    # attempts_per_function for every function (None: ATTEMPTS_PER_FUNCTION, D-07)
+    attempts: int | None = None
 
     @property
     def config_root(self) -> Path:
@@ -9677,6 +9680,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
                          attempts_1k=options.attempts_1k,
+                         attempts_per_function=(ATTEMPTS_PER_FUNCTION if options.attempts is None
+                                                else options.attempts),
                          wall_clock_s=options.session_minutes * 60,
                          session=options.session,
                          fable_trial=options.fable_trial,

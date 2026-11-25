@@ -1744,6 +1744,21 @@ def test_run_drive_hands_attempts_1k_to_the_night(tmp_path, capsys, monkeypatch)
     assert (seen[0].attempts_1k, seen[0].attempts_per_function) == (1, 3)
 
 
+def test_run_drive_hands_attempts_to_the_night(tmp_path, capsys, monkeypatch):
+    """Held-v1c ablations (owner ruling 2026-11-25): --attempts N becomes the DriveConfig's
+    attempts_per_function; without it the default (3, D-07) stands."""
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, _, _ = Rig(tmp_path).drive(capsys, json=True, night_model=HAIKU, attempts=1)
+    assert code == 0
+    assert (seen[0].attempts_per_function, seen[0].attempts_1k) == (1, None)
+
+
 # ---- 07.2-06 Task 3 (D-17, D-26): --land-held ----
 
 SONNET = "claude-sonnet-5-5"

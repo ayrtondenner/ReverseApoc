@@ -1957,7 +1957,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   near_miss=args.near_miss,
                                   near_miss_arms=tuple(args.near_miss_arm or ()),
                                   pack_variants=tuple(sorted(args.pack_variant or ())),
-                                  attempts_1k=args.attempts_1k)  # fmt: skip
+                                  attempts_1k=args.attempts_1k,
+                                  attempts=args.attempts)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -2358,6 +2359,10 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--max-sessions", type=_positive, default=60, metavar="N",
                    help="sessions all workers launch before the night ends, a transient one "
                    "included; " + default)  # fmt: skip
+    p.add_argument("--attempts", type=_attempts_1k, default=None, metavar="N",
+                   help=f"at most N sessions (1 to {driver.ATTEMPTS_PER_FUNCTION}) in every "
+                   f"function's pass, e.g. 1 for a held run of one session a pick; default: "
+                   f"{driver.ATTEMPTS_PER_FUNCTION} (D-07)")  # fmt: skip
     p.add_argument("--attempts-1k", type=_attempts_1k, default=None, metavar="N",
                    help=f"at most N sessions (1 to {driver.ATTEMPTS_PER_FUNCTION}) in the pass "
                    f"of a function of {driver.ATTEMPTS_1K_MIN} bytes and up; default: "

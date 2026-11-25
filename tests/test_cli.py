@@ -1719,6 +1719,26 @@ def test_attempts_1k_reaches_the_options(monkeypatch):
     assert seen[-1].attempts_1k == 1
 
 
+def test_attempts_reaches_the_options(monkeypatch):
+    """Held-v1c ablations (owner ruling 2026-11-25): `--attempts N`, one pass of N sessions for
+    every function, so a held run gives each pick exactly one session."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--dry-run"]) == 0
+    assert seen[-1].attempts is None
+    assert main(["drive", "--dry-run", "--attempts", "1"]) == 0
+    assert seen[-1].attempts == 1
+
+
+@pytest.mark.parametrize("value", ["0", "4", "x"])
+def test_attempts_outside_1_to_3_is_refused(value, capsys, monkeypatch):
+    seen = _recorded_drive(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main(["drive", "--dry-run", "--attempts", value])
+    assert exc.value.code == 2
+    assert "--attempts" in capsys.readouterr().err
+    assert seen == []
+
+
 @pytest.mark.parametrize("value", ["0", "4", "x"])
 def test_attempts_1k_outside_1_to_3_is_refused(value, capsys, monkeypatch):
     seen = _recorded_drive(monkeypatch)

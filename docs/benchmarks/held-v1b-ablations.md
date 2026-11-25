@@ -62,6 +62,19 @@ without that pick, by the same "copy without" rule as held-v1b
 the 6-discordant-pick floor, alpha and the decision rules are unchanged. It is the only held-v1b
 pick on the board, checked against config/handoff.csv; a test pins that held-v1c has none.
 
+## Amendment of 2026-11-25: one session a pick, enforced (`--attempts 1`), new run ids
+
+The relaunched base run (`20261125-abl-base-r1`, 08:21) showed that a held run gave each pick up
+to three sessions (the default pass, D-07) and stopped at the default 60 sessions, so it would
+have covered only part of the picks, differently in each condition. That breaks the design's "one
+session per pick". The owner stopped it after 4 sessions (records c7cfeedf; none counts here).
+Every run now passes `--attempts 1 --max-sessions 55` (the new drive flag `--attempts N`, one
+pass of N sessions for every function), so each condition gives every held-v1c pick exactly one
+session. The runs are renamed `20261125b-abl-{base,lookalike-off,carry-off,effort-on}-r1`, so
+their records are not mixed with the stopped run's. Analysis, alpha and the decision rules are
+unchanged. The only ablation sessions before this amendment are the 4 of the stopped base run,
+and no comparison was looked at.
+
 ## Picks, arm and repeats
 
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
