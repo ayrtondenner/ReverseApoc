@@ -43,3 +43,17 @@ Pre-registration: `docs/benchmarks/held-v1b-ablations.md`, on config/benchmarks/
 It has 4 conditions (base, lookalike-off, carry-off, effort-on) x 2 repeats = 8 hold runs of 56
 picks, 448 sessions, about 4.5% of the week, with budgets capped at 5.6%. Left: the runs, then
 one dated section per factor in docs/model-comparison.md with the keep or drop decision.
+
+## Result (2026-11-25)
+
+Run as amended before any comparison was read (k = 1, held-v1c with 55 picks, one session per
+pick, Haiku 5.5 on 8 workers, `--hold`, 1.1%week each): `20261125b-abl-base-r1`,
+`-lookalike-off-r1b`, `-carry-off-r1b`, `-effort-on-r1c`, 54 sessions each (1 pick over the pack
+cap in every run). 0 exact in every condition, 0 discordant pairs, exact McNemar p = 1.0000 for
+each factor. Decision under the pre-registered rule: **no difference shown** for look-alikes,
+carry and effort. The pack stays as it is, and nights keep the CLI's default effort.
+Descriptively, best percent moved by under a point and high effort cost about 2x ($10.36 against
+$5.30). Full tables, digests, controls and the runs that don't count:
+docs/model-comparison.md "Held context ablations on held-v1c (2026-11-25, Haiku 5.5)"; stats
+output in build/gate/20261125-abl/. A second repeat (r2) was not run and is not pre-registered as
+it stands; held-v2 with easier, unattempted picks would give the tests more power.

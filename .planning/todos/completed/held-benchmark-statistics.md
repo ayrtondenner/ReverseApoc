@@ -34,3 +34,17 @@ tests/test_stats.py checks both lists. The pre-registration, with hypotheses, th
 the exact commands and the decision rules, is `docs/benchmarks/held-v1b-ablations.md`. Repeats
 combine as "exact in any repeat" per pick, which `stats --compare 'RUN-r*'` already computes.
 Left: the 8 hold runs and their dated result sections in docs/model-comparison.md.
+
+## Result (2026-11-25)
+
+Run as amended before any comparison was read (k = 1, held-v1c with 55 picks, one session per
+pick, Haiku 5.5 on 8 workers, `--hold`, 1.1%week each): `20261125b-abl-base-r1`,
+`-lookalike-off-r1b`, `-carry-off-r1b`, `-effort-on-r1c`, 54 sessions each (1 pick over the pack
+cap in every run). 0 exact in every condition, 0 discordant pairs, exact McNemar p = 1.0000 for
+each factor. Decision under the pre-registered rule: **no difference shown** for look-alikes,
+carry and effort. The pack stays as it is, and nights keep the CLI's default effort.
+Descriptively, best percent moved by under a point and high effort cost about 2x ($10.36 against
+$5.30). Full tables, digests, controls and the runs that don't count:
+docs/model-comparison.md "Held context ablations on held-v1c (2026-11-25, Haiku 5.5)"; stats
+output in build/gate/20261125-abl/. A second repeat (r2) was not run and is not pre-registered as
+it stands; held-v2 with easier, unattempted picks would give the tests more power.

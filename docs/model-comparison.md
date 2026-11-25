@@ -666,6 +666,56 @@ owner's (S).
 - **Matches.** Both landed rows were picks of the three-shapes A/B (99.96% and 99.85% best before), on
   their first unheld session after it.
 
+## Held context ablations on held-v1c (2026-11-25, Haiku 5.5)
+
+These are the pre-registered comparisons of
+[docs/benchmarks/held-v1b-ablations.md](benchmarks/held-v1b-ablations.md), run as amended before
+any comparison was read: k = 1 (owner ruling), held-v1c (55 picks), one session per pick
+(`--attempts 1 --max-sessions 55`), and `claude-haiku-5-5` on 8 workers, `--hold`, 1.1%week each.
+
+| Run | Condition | Head | Environment digest | Sessions | Exact | Parked | Over the cap | Wall |
+|---|---|---|---|---|---|---|---|---|
+| `20261125b-abl-base-r1` | base (full pack, CLI default effort) | 159f305f | ab07cc642888 | 54 | 0 | 9 | 1 | 5,591 s |
+| `20261125b-abl-lookalike-off-r1b` | `no-lookalikes` | 5701f210 | 7f6808c49f1e | 54 | 0 | 13 | 1 | 5,601 s |
+| `20261125b-abl-carry-off-r1b` | `no-carry` | 3c0a8acb | cbdd4c076b73 | 54 | 0 | 5 | 1 | 6,487 s |
+| `20261125b-abl-effort-on-r1c` | `effort-high` | 294992e1 | 69e3672fc08d | 54 | 0 | 16 | 1 | 6,666 s |
+
+The controls were the same for all four: gold 0, null 1, reloc 1 (null 0.0%; ufo2p
+func_000A3980). The heads differ only by tooling fixes that came between the runs and touch no
+pack content: ff3471cc made the variants reach the pack, and 294992e1 changed the stop
+classifier. These runs don't count: `20261125-abl-base-r1` (4 sessions, stopped: 3 attempts a
+pick broke the pairing), the three `-r1` variant runs (0 sessions, the world-pack TypeError), and
+`20261125b-abl-effort-on-r1b` (1 session, a D-08 STOP on a recovered `unknown` retry).
+
+**Look-alikes.** `stats --compare 20261125b-abl-base-r1 20261125b-abl-lookalike-off-r1b`: 54
+paired picks; both exact 0, base only 0, lookalike-off only 0, neither 54. 0 of 54 exact each
+(Wilson 95% [0.0%, 6.6%]). Exact McNemar: 0 discordant pairs, p = 1.0000. **Decision: no
+difference shown.** The look-alike section stays, "not shown to help at this power".
+
+**Carry.** Against `20261125b-abl-carry-off-r1b`: 54 paired; 0 and 0 exact, 0 discordant, p =
+1.0000. **Decision: no difference shown.** The earlier best C, give-ups and notes stay in the
+pack.
+
+**Effort.** Against `20261125b-abl-effort-on-r1c`: 54 paired; 0 and 0 exact, 0 discordant, p =
+1.0000. **Decision: no difference shown.** Nights keep the CLI's default effort.
+
+Holm over the three factors leaves every p at 1.0000. The pre-registration's power note said this
+outcome was likely: a factor needs at least 6 discordant picks to reach p < 0.05, and these picks
+had resisted earlier sessions.
+
+Description only (these decide nothing; script output in `build/gate/20261125-abl/describe.txt`):
+
+| Condition | Picks with a best % | Mean best % | Median | Higher / lower / same vs base | Mean change | Cost | Tokens in (incl. cache) / out |
+|---|---|---|---|---|---|---|---|
+| base | 51 | 64.48 | 66.39 | | | $5.30 | 112.1 M / 1.94 M |
+| no-lookalikes | 50 | 63.56 | 62.29 | 17 / 19 / 13 (49 picks) | -0.86 | $5.33 | 115.1 M / 1.92 M |
+| no-carry | 54 | 64.20 | 64.71 | 20 / 21 / 10 (51) | -0.18 | $5.98 | 129.9 M / 2.40 M |
+| effort-high | 51 | 64.44 | 63.12 | 19 / 20 / 11 (50) | +0.63 | $10.36 | 147.6 M / 2.93 M |
+
+High effort cost about twice the base's recorded dollars for the same best percent. Meter (owner,
+S): the Claude weekly bar read 73% at 08:08 on 2026-11-25, before the four counted runs. It was not
+read after them, so no bar figure is derived for these runs.
+
 ## Adding the next comparison
 
 1. Freeze a pick list once (`reverseapoc drive --dry-run --stratify A,B,C --write-picks
