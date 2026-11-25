@@ -75,6 +75,17 @@ their records are not mixed with the stopped run's. Analysis, alpha and the deci
 unchanged. The only ablation sessions before this amendment are the 4 of the stopped base run,
 and no comparison was looked at.
 
+## Note of 2026-11-25: three variant runs re-run as `-r1b`
+
+`20261125b-abl-base-r1` ran as planned (54 sessions; ENDED queue exhausted, 1 pick over the pack
+cap). The other three, `-lookalike-off-r1`, `-carry-off-r1` and `-effort-on-r1`, stopped at their
+first launch with 0 sessions: the world's pack took no `variants` (fixed in ff3471cc and checked
+on the real ufo2p world: 21,417 bytes with no variant, 21,388 with no-lookalikes, 13,238 with
+no-carry, and 21,417 with effort-high, which changes only the claude argv). They run again
+unchanged as `20261125b-abl-{lookalike-off,carry-off,effort-on}-r1b`, compared with
+`20261125b-abl-base-r1`. No comparison was looked at before this note: the base run's outcomes
+alone were read, for its end line.
+
 ## Picks, arm and repeats
 
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
