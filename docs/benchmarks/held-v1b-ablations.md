@@ -51,6 +51,17 @@ repeat, which is not pre-registered here: if it runs, the k = 2 rules below appl
 together. Nothing here was chosen after looking at any ablation result: no ablation run had
 started.
 
+## Amendment of 2026-11-25, before any session of this matrix: held-v1c, 55 picks
+
+The four r1 runs of 2026-11-25 were all refused at the picks check, before any session: held-v1b
+holds tacp 0x00021440, which went onto the hand-off board on 2026-11-19, and a drive refuses a
+`--picks` file holding a board row. Owner ruling (2026-11-25): **freeze held-v1c**, held-v1b
+without that pick, by the same "copy without" rule as held-v1b
+([config/benchmarks/held-v1c.txt](../../config/benchmarks/held-v1c.txt), 55 picks: 18, 18 and
+19 by size group). The commands below now read held-v1c. Where the text says 56 picks, read 55;
+the 6-discordant-pick floor, alpha and the decision rules are unchanged. It is the only held-v1b
+pick on the board, checked against config/handoff.csv; a test pins that held-v1c has none.
+
 ## Picks, arm and repeats
 
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
@@ -102,14 +113,14 @@ is started from a clean main checkout at one commit, the same for all eight runs
 Haiku canary has passed on the installed CLI. Each run's meters are read before and after it.
 
 ```
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1c.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r2
 ```
 
 Before the first run, each command is checked once with `--dry-run` in place of `--hold`. The

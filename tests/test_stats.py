@@ -1904,6 +1904,32 @@ def test_held_v1b_dropped_exactly_the_matched_picks(tmp_path):
     assert {line for line in _listed(HELD_V1) if line in matched} == set(_HELD_V1B_DROPPED)
 
 
+# held-v1c (owner ruling 2026-11-25): held-v1b without its one pick on the hand-off board, which
+# a drive refuses in a --picks file (the four ablation runs of 2026-11-25 were refused on it).
+
+HELD_V1C = REPO_ROOT / "config" / "benchmarks" / "held-v1c.txt"
+_HELD_V1C_DROPPED = ("tacp 0x00021440",)
+
+
+def test_held_v1c_is_held_v1b_without_its_hand_off_pick():
+    from reverseapoc import driver
+
+    kept = [line for line in _listed(HELD_V1B) if line not in _HELD_V1C_DROPPED]
+    assert _listed(HELD_V1C) == kept
+    assert len(driver.read_picks(HELD_V1C)) == 55
+    header = HELD_V1C.read_text(encoding="utf-8")
+    assert "2026-11-25" in header and "held-v1b.txt" in header
+    assert all(pick in header for pick in _HELD_V1C_DROPPED)
+
+
+def test_no_held_v1c_pick_is_on_the_hand_off_board():
+    import csv
+
+    with (REPO_ROOT / "config" / "handoff.csv").open(encoding="utf-8") as handle:
+        board = {f"{r['exe']} 0x{int(r['address'], 16):08X}" for r in csv.DictReader(handle)}
+    assert set(_listed(HELD_V1C)) & board == set()
+
+
 # ---- todo drive-worker-throughput: the driver's steps per attempt (`stats --run`) ----
 
 

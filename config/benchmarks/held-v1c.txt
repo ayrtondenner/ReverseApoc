@@ -1,0 +1,65 @@
+# held-v1c: held-v1b without its one pick on the hand-off board (owner ruling 2026-11-25, todos
+# held-benchmark-statistics and held-context-ablations). A reverseapoc drive --picks file
+# (driver.read_picks); never edit it: a new set is held-v2.
+# Source set: config/benchmarks/held-v1b.txt (56 picks), in its order, frozen on 2026-11-25. A
+# drive refuses a --picks file holding a row of config/handoff.csv, and the four held-v1b
+# ablation runs of 2026-11-25 were refused on it before any session.
+# Dropped (1): tacp 0x00021440 (64 to 255 B; on the board since 2026-11-19, 27 attempts, best
+# 98.33%). Kept: 18, 18 and 19 picks of the three size groups, 55 in all (tests/test_stats.py
+# checks both).
+# Use: the context-pack ablations of docs/benchmarks/held-v1b-ablations.md (amended 2026-11-25).
+ufo2p 0x000886F0
+ufo2p 0x00012310
+ufo2p 0x00050EE0
+tacp 0x00079FE0
+tacp 0x00032B80
+tacp 0x00023D50
+ufo2p 0x00013710
+ufo2p 0x00051E60
+ufo2p 0x00050EC0
+ufo2p 0x0005F3E0
+ufo2p 0x00051F70
+tacp 0x000A6EA0
+ufo2p 0x000B78A0
+tacp 0x0001DED0
+tacp 0x000790F0
+ufo2p 0x00051D80
+ufo2p 0x000621A0
+tacp 0x0007A0A0
+tacp 0x00094F30
+tacp 0x000403C0
+ufo2p 0x0002F510
+ufo2p 0x000B6840
+ufo2p 0x000B3400
+ufo2p 0x000131C0
+tacp 0x000576B0
+tacp 0x0009F680
+tacp 0x00043FE0
+tacp 0x00057C70
+ufo2p 0x00030500
+tacp 0x000594D0
+tacp 0x00040D50
+tacp 0x000BA150
+tacp 0x000A3460
+tacp 0x00058090
+ufo2p 0x00099CE0
+ufo2p 0x000AB5F0
+ufo2p 0x00047D70
+tacp 0x00064050
+ufo2p 0x0006F3C0
+tacp 0x00093630
+ufo2p 0x000A3320
+tacp 0x00059540
+ufo2p 0x00027DF0
+tacp 0x000B4D10
+tacp 0x000AD130
+tacp 0x00033620
+tacp 0x00033CD0
+tacp 0x0009C350
+tacp 0x000ABD50
+ufo2p 0x00093EE0
+ufo2p 0x000A8970
+ufo2p 0x000AB240
+tacp 0x00059970
+ufo2p 0x0001DD80
+tacp 0x000AB060
