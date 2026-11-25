@@ -44,3 +44,14 @@ def test_the_example_command_parses():
     total = sum(quota.size(name, budget, table, max_sessions=None).sessions
                 for name, budget in args.arm_budget)  # fmt: skip
     assert args.max_sessions == total == 627
+
+
+def test_the_example_command_fits_every_arms_max_workers():
+    """A --arm NAME=WORKERS above the arm's backends.toml max_workers is refused by the drive, so
+    the skill's example must stay within it (Haiku capped at 8 on 2026-11-24)."""
+    from reverseapoc import backends
+
+    block = _text().split("```\n", 2)[1]
+    args = build_parser().parse_args(shlex.split(block.replace("\\\n", " "))[3:])
+    arms = backends.load_arms()
+    assert [(name, n) for name, n in args.arm if n > arms[name].max_workers] == []

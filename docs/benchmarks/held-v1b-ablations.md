@@ -38,7 +38,10 @@ comparison answers whether a night should pass `high` instead of the default.
 - **Picks.** [config/benchmarks/held-v1b.txt](../../config/benchmarks/held-v1b.txt): held-v1
   (60 picks, seed 20261118) without the 4 picks matched by 9b98ecc7. That leaves 56 picks: 18
   under 64 B, 19 of 64 to 255 B and 19 of 256 B and up.
-- **Arm.** `claude-haiku-5-5` (Claude Code login), 10 workers (its `max_workers`), `--hold`.
+- **Arm.** `claude-haiku-5-5` (Claude Code login), 8 workers (its `max_workers`), `--hold`.
+  Amended 2026-11-24, before any run of this matrix: the owner capped Haiku at 8 workers after the
+  throughput ladder, so the commands below say 8 where they said 10. Workers change throughput,
+  not a session's pack or arm, so the hypotheses and decision rules stand as written.
 - **Repeats.** k = 2 per condition. Each repeat is its own hold run. A hold run's work never
   reaches another run's pack (D-17), so repeat 2 does not see repeat 1.
 
@@ -81,14 +84,14 @@ is started from a clean main checkout at one commit, the same for all eight runs
 Haiku canary has passed on the installed CLI. Each run's meters are read before and after it.
 
 ```
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r1
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r2
-uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r1
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --run 20261125-abl-base-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-lookalikes --run 20261125-abl-lookalike-off-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=0.6%week --pack-variant no-carry --run 20261125-abl-carry-off-r2
+uv run reverseapoc drive --hold --picks config/benchmarks/held-v1b.txt --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=1.0%week --pack-variant effort-high --run 20261125-abl-effort-on-r2
 ```
 
 Before the first run, each command is checked once with `--dry-run` in place of `--hold`. The

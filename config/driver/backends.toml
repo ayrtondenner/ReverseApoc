@@ -41,7 +41,9 @@ harness = "claude"
 backend = "anthropic"
 model = "claude-haiku-5-5"
 sends_disassembly = true
-max_workers = 10
+# 8 since 2026-11-24 (owner ruling): the throughput ladder flattened at ~30 sessions an hour from
+# 8 workers on; the gate inside the landing lock is the cap (todo drive-worker-throughput)
+max_workers = 8
 
 [arms."claude-sonnet-5-5"]
 harness = "claude"

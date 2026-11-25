@@ -29,7 +29,7 @@ out. "5%" with no window means the week; say so.
 
 ```
 uv run reverseapoc drive --dry-run \
-  --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=5%week \
+  --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=5%week \
   --arm gpt-6.1-terra=5 --arm-budget gpt-6.1-terra=100%5h \
   --arm deepseek-flash=12 --arm-budget 'deepseek-flash=$30' \
   --allow-egress gpt-6.1-terra --allow-egress deepseek-flash \

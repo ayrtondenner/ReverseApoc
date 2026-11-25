@@ -413,9 +413,18 @@ def test_local_arm():
 
 def test_claude_arms_take_a_night_of_ten_workers():
     """Nights run `--workers 10` on the Claude login (night 20261107-030004), and spike 012's
-    Claude arms run at the same count, so a Claude arm's cap must not refuse it."""
-    claude = [arm for arm in _arms().values() if arm.backend == "anthropic"]
+    Claude arms run at the same count, so a Claude arm's cap must not refuse it. Haiku is the
+    exception since the 2026-11-24 ladder (test below)."""
+    claude = [arm for name, arm in _arms().items()
+              if arm.backend == "anthropic" and name != "claude-haiku-5-5"]  # fmt: skip
     assert claude and all(arm.max_workers >= 10 for arm in claude)
+
+
+def test_haiku_is_capped_at_the_ladders_knee():
+    """Owner ruling 2026-11-24 (todo drive-worker-throughput): the Haiku ladder flattened at about
+    30 sessions an hour from 8 workers on (8: 30.1, 10: 30.4, lock wait doubled), the gate
+    inside the landing lock being the cap, so Haiku runs at most 8 workers."""
+    assert _arms()["claude-haiku-5-5"].max_workers == 8
 
 
 def test_both_qwen_entries_are_one_model_family():

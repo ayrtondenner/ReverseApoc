@@ -900,7 +900,8 @@ the owner has no other use for. This is the same scoped runtime exception as Cod
   tool shapes,
   each refusal's text).
 - **Sizing.** Each arm runs with `max_workers = 4` (Haiku 10 since 2026-11-16, to spend the
-  month's credits in hours) and `max_ai_credits = 30` (Copilot's minimum
+  month's credits in hours; the Claude-login Haiku arm, `claude-haiku-5-5`, is capped at 8 since
+  2026-11-24, at the throughput ladder's knee, see todo drive-worker-throughput) and `max_ai_credits = 30` (Copilot's minimum
   per-session cap; a soft cap, one response may pass it). The capture spent 0.437 credits on
   three model calls. A matching Haiku session measured 2.2 credits (123 sessions on 2026-11-14,
   the records' `credits`, within 10% of the account meter), so the month's 1,500 credits cover
@@ -1347,7 +1348,7 @@ session with its source and date, and its measured matches per session. Re-measu
   by N sessions of run R, Y left'.
 
 ```
-reverseapoc drive --dry-run --arm claude-haiku-5-5=10 --arm-budget claude-haiku-5-5=5%week \
+reverseapoc drive --dry-run --arm claude-haiku-5-5=8 --arm-budget claude-haiku-5-5=5%week \
   --arm deepseek-flash=1 --arm-budget 'deepseek-flash=$10' --allow-egress deepseek-flash \
   --max-sessions 200
 ```
