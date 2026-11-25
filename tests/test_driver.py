@@ -1014,6 +1014,19 @@ def test_a_whitespace_padded_write_outside_the_checkout_is_still_a_stray(tmp_pat
     assert driver.transcript_paths(_transcript_writes(repo, raw), repo) == [None]
 
 
+@pytest.mark.parametrize("pad", [" ", "﻿", " ", "　", " "])
+def test_a_path_still_padded_after_the_ascii_trim_fails_closed(tmp_path, pad):
+    """Security review of c1a069d5: JavaScript's trim also removes Unicode spaces and the BOM,
+    which str.strip of `_CLAUDE_TRIMMED` keeps, so the audit and Claude Code could read such a
+    path differently (a padded relative path resolves against another base). A path that still
+    starts or ends with whitespace after the ASCII trim is judged a stray (None), whatever it
+    names."""
+    repo = _repo(tmp_path)
+    inside = (repo / "tools" / "x.py").as_posix()
+    for raw in (f"{pad}{inside}", f"{inside}{pad}", f"{pad}../../tools/x.py"):
+        assert driver.transcript_paths(_transcript_writes(repo, raw), repo) == [None], repr(raw)
+
+
 # ---- the 20261113-lanes2 STOP: a write Claude Code itself refused, so never written ----
 
 REFUSED_PATH = "/repo/tools/x.py"  # the refused_* and un*_edit stream fixtures' write

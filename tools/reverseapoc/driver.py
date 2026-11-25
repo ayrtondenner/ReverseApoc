@@ -1562,11 +1562,15 @@ _CLAUDE_TRIMMED = " \t\n\r\v\f"
 
 def _claude_drive_form(raw: str | None) -> str | None:
     """`raw` as Claude Code reads it: trimmed of `_CLAUDE_TRIMMED` (the 20261124-ladder-w6-b
-    STOP: "\\nC:/..." edited C:/...), and a Git Bash drive path (`/c/...`) as Claude Code on
+    STOP: "\\nC:/..." edited C:/...), or None when it is still padded after that trim (JavaScript's
+    trim also removes Unicode spaces and the BOM: such a path is judged a stray), and a Git Bash
+    drive path (`/c/...`) as Claude Code on
     Windows resolves it, `c:/...`, so it is read as that drive's form only, never also as rooted
     on the current drive (the 20261112-cascade STOP, owner-approved). Any other path, or any
     host but Windows, as is."""
     raw = raw.strip(_CLAUDE_TRIMMED) if raw is not None else None
+    if raw and (raw[0].isspace() or raw[-1].isspace() or "﻿" in (raw[0], raw[-1])):
+        return None  # still padded (Unicode space, BOM): JS trim reads it otherwise, fail closed
     bash_drive = _CLAUDE_BASH_DRIVE.match(raw) if raw is not None and os.name == "nt" else None
     if bash_drive is None:
         return raw
