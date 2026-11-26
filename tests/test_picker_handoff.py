@@ -338,16 +338,19 @@ def test_a_picks_night_on_a_reserved_set_without_hold_is_refused(tmp_path, capsy
     assert [c for c in rig.runner.calls if c[:1] == ["claude"]] == [["claude", "--version"]]
 
 
-def test_a_dry_run_of_a_reserved_picks_file_lists_none_of_it(tmp_path, capsys):
-    """A dry run (never --hold) draws from the filtered queue: no reserved row is listed."""
+def test_a_dry_run_of_a_reserved_picks_file_previews_the_whole_set(tmp_path, capsys):
+    """A dry run launches and lands nothing (the cli refuses --hold with it), so over the
+    reserved file itself it previews the set as the held run will queue it: every pick listed
+    and checked by refuse_picks, no left-out line. Another reserved set stays left out."""
     rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)])
     worlds = _rig_world(rig.packs, (TA, TB, TC), ())
-    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)]})
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)], "other.txt": [(UFO2P, TC)]})
     picks = rig.repo / "config" / "benchmarks" / "held-v2.txt"
     code, out, _ = rig.drive(capsys, dry_run=True, picks=picks, seams={"world": lambda: worlds})
     assert code == 0, out
-    assert not [line for line in out.splitlines() if line.startswith(UFO2P)]
-    assert "reserved rows left out: 2 (held-v2.txt)" in out.splitlines()
+    listed = {line.split()[1] for line in out.splitlines() if line.startswith(UFO2P)}
+    assert listed == {f"0x{TA:08X}", f"0x{TB:08X}"}, out
+    assert "reserved rows left out: 1 (other.txt)" in out.splitlines()
 
 
 def test_another_picks_file_overlapping_a_reserved_set_drops_its_reserved_picks(tmp_path):

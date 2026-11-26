@@ -7995,8 +7995,9 @@ def reserved_picks_file(options: DriveOptions) -> str | None:
 
 def _own_picks(options: DriveOptions) -> frozenset[Key]:
     """The reserved rows this night may queue (owner ruling 2026-11-25): a --hold night's whose
-    --picks file is that reserved set's file, all of the set; on any other night none."""
-    name = reserved_picks_file(options) if options.hold else None
+    --picks file is that reserved set's file, all of the set; on any other night none. A dry
+    run over that file (it launches and lands nothing) previews the set as the held run will."""
+    name = reserved_picks_file(options) if options.hold or options.dry_run else None
     return frozenset() if name is None else reserved_sets(options.config_root)[name]
 
 
@@ -8025,8 +8026,8 @@ def reserved_line(options: DriveOptions) -> str | None:
 
 def refuse_reserved(options: DriveOptions) -> None:
     """A reserved list `reserved_sets` cannot read refuses the run, and so does a --picks night
-    over a reserved set's file that is no --hold night (it would land matches; a dry run lists
-    the set as left out instead)."""
+    over a reserved set's file that is no --hold night (it would land matches; a dry run, which
+    lands nothing, previews the set instead)."""
     try:
         reserved_sets(options.config_root)
         name = reserved_picks_file(options)
