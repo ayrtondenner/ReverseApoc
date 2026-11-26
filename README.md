@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/logo/reverseapoc-mark.svg" width="200" alt="ReverseApoc logo: a blue X, one bar solid and one bar an outline filled with x86 bytes, crossed by a nameplate reading REVERSEAPOC">
+</p>
+
 # ReverseApoc
 
 ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Games / MicroProse, 1997, DOS). The goal is readable C source that, compiled with the original Watcom toolchain, rebuilds the shipped executables byte for byte. The project exists to help the [OpenApoc](https://github.com/OpenApoc/OpenApoc) team understand the original logic, mechanics and bugs, the enemy AI in particular. It is **not** a port: there is no plan to make the game run natively on modern systems. It is also a proof of concept for AI-assisted reverse engineering with Claude Code, where every result is checked by a deterministic byte comparison.
