@@ -44,7 +44,8 @@ DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.jso
 progress-shield-tacp.json), DIR/progress-shield-functions.json and
 DIR/progress-shield-fuzzy.json (the function ratio and the fuzzy percent, combined) with
 DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the mosaic: a
-squarified treemap, EXE > unit > function), and DIR/index.html (the progress page, served at
+squarified treemap, EXE > unit > function), DIR/favicon.svg (the project logo, the page's icon) and
+DIR/index.html (the progress page, served at
 the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
 when --config sits in a git checkout, the progress-over-days charts of the three figures
 re-derived from its history, and the provenance split of the matches from its commit trailers;
@@ -2179,6 +2180,8 @@ LEGEND_LABELS = {MATCHED: "matched", PARTIAL: "partial", UNMATCHED: "unmatched",
                  LIBRARY: "library or assembler",
                  UNCOVERED: "uncovered: mostly alignment filler"}  # fmt: skip
 PROGRESS_SVG = "progress.svg"
+LOGO_SVG = ROOT / "docs" / "assets" / "logo" / "reverseapoc-mark.svg"
+FAVICON_SVG = "favicon.svg"  # a byte copy of LOGO_SVG, linked from the page head
 SVG_WIDTH, SVG_HEIGHT = 1200, 800
 LEGEND_HEIGHT = 30  # the title and legend row above the map
 EXE_HEADER = 20  # each EXE's caption strip
@@ -3174,7 +3177,8 @@ def render_html(progress: Progress, commit: str | None = None,
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
-             f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
+             f"<title>{_xml(PAGE_TITLE)}</title>",
+             f'<link rel="icon" href="{FAVICON_SVG}" type="image/svg+xml">', "<style>",
              _page_css(coverage=mechanics is not None, assembler=assembler,
                        timeline=timeline is not None and bool(timeline.days),
                        split=bool(handoff or (provenance and provenance.exes))), "</style>",
@@ -3221,7 +3225,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path,
                    help="write progress.json, progress-shield.json, one "
                         "progress-shield-<stem>.json per EXE, the functions and fuzzy "
-                        "endpoints, progress.svg and the progress page as index.html here")
+                        "endpoints, progress.svg, favicon.svg and the progress page as "
+                        "index.html here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -3273,6 +3278,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
                    _on_shown(functools.partial(write_exe_shield, stem=stem)))
         yield from _figure_shield_writes(args.out)
         yield args.out / PROGRESS_SVG, _on_shown(write_svg)
+        yield args.out / FAVICON_SVG, lambda d, path: _write_atomic(path, LOGO_SVG.read_bytes())
         yield args.out / INDEX_HTML, lambda d, path: write_html(
             d.shown, path, args.commit, d.mechanics, d.timeline, provenance=d.provenance,
             verification=d.verification, handoff=d.handoff)

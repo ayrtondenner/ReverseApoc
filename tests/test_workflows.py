@@ -23,7 +23,8 @@ PATHS = ("config/*/status.csv", "config/*/functions.csv", "config/*/units.csv",
          "config/mechanics.toml", "config/mechanics-members.csv", "config/asm-functions.csv",
          "config/handoff.csv", "progress/verifications.jsonl", "config/targets.toml",
          "tools/progress.py",
-         "decomphub.progress.json", ".github/workflows/pages.yml")  # fmt: skip
+         "decomphub.progress.json", "docs/assets/logo/reverseapoc-mark.svg",
+         ".github/workflows/pages.yml")  # fmt: skip
 PROGRESS_RUN = "python3 -I tools/progress.py --out _site --report build/report.json"
 # D-28: one combined artifact; recomp.fyi reads it by this name from the default branch.
 ARTIFACT = "X-COM_Apocalypse_DOS_report"

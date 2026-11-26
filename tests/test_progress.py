@@ -316,7 +316,7 @@ BOTH_FUZZY = round((16 * 100 + 32 * 50) / 276, 4)  # 11.5942
 FIGURE_SHIELDS = ("progress-shield-functions.json", "progress-shield-fuzzy.json",
                   *(f"progress-shield-{figure}-{stem}.json"
                     for figure in ("functions", "fuzzy") for stem in EXES))  # fmt: skip
-OUT_FILES = ("index.html", "progress-shield-tacp.json", "progress-shield-ufo2p.json",
+OUT_FILES = ("favicon.svg", "index.html", "progress-shield-tacp.json", "progress-shield-ufo2p.json",
              "progress-shield.json", "progress.json", "progress.svg", *FIGURE_SHIELDS)
 
 

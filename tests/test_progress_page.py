@@ -214,7 +214,10 @@ def test_page_defines_the_three_figures(tmp_path):
 
 def _check_static(progress, page: str) -> None:
     tags = tags_of(page)
-    names = [tag for tag, _attrs in tags]
+    # The one relative icon link is the only link element the page may hold.
+    links = [attrs for tag, attrs in tags if tag == "link"]
+    assert links == [{"rel": "icon", "href": "favicon.svg", "type": "image/svg+xml"}], links
+    names = [tag for tag, _attrs in tags if tag != "link"]
     assert [t for t in names if t in FORBIDDEN_TAGS] == []
     for tag, attrs in tags:
         bad = [a for a in attrs if a in ("src", "srcset") or a.startswith("on")]
@@ -880,3 +883,22 @@ def test_measured_states_the_assembler_group(tmp_path):
                    "decomphub.progress.json still counts them"):  # fmt: skip
         assert needle in section, needle
     assert DENOMINATOR in section
+
+
+LOGO = Path(__file__).resolve().parent.parent / "docs" / "assets" / "logo" / "reverseapoc-mark.svg"
+ICON_LINK = '<link rel="icon" href="favicon.svg" type="image/svg+xml">'
+
+
+def test_page_head_links_the_favicon(tmp_path):
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    head = page[:page.index("</head>")]
+    assert page.index("</title>") < head.index(ICON_LINK)
+    assert head.count("<link") == 1
+
+
+def test_main_writes_the_favicon_as_the_logo(tmp_path):
+    progress = page_module()
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(synthetic_config(tmp_path)), "--out", str(out)]) == 0
+    assert (out / "favicon.svg").read_bytes() == LOGO.read_bytes()
