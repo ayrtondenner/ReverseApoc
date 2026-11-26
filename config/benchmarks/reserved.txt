@@ -5,3 +5,4 @@
 # One benchmark file name per line, relative to config/benchmarks/ (such as held-v2.txt); `#`
 # starts a comment. A named file that is missing, or a name that is not a plain file name,
 # refuses the drive. Release a set by deleting its line in a commit.
+held-v2.txt

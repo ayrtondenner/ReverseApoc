@@ -1930,6 +1930,87 @@ def test_no_held_v1c_pick_is_on_the_hand_off_board():
     assert set(_listed(HELD_V1C)) & board == set()
 
 
+# ---- todo held-v2-lookalikes (owner rulings 2026-11-25): a held set of never-attempted rows ----
+# Every row under 256 B that the tier queue serves (a member with a member item, or a hub) and
+# that no session ever tried, at _HELD_V2_BASE: a census, listed sorted.
+
+HELD_V2 = REPO_ROOT / "config" / "benchmarks" / "held-v2.txt"
+_HELD_V2_BASE = "6e55ae16"  # the commit whose config and attempt log the census was read from
+_HELD_V2_BELOW = 256  # functions.csv size, bytes
+_HELD_V2_COUNT = 274
+_HELD_V2_CONFIG = ("mechanics.toml", "mechanics-members.csv", "asm-functions.csv", "handoff.csv",
+                   "ufo2p/status.csv", "ufo2p/functions.csv", "tacp/status.csv",
+                   "tacp/functions.csv")  # fmt: skip
+
+
+def _show(commit: str, path: str) -> bytes:
+    import subprocess
+
+    return subprocess.run(["git", "-c", "safe.directory=*", "show", f"{commit}:{path}"],
+                          cwd=REPO_ROOT, capture_output=True, check=True).stdout  # fmt: skip
+
+
+def _attempted(log: bytes) -> set[tuple[str, int]]:
+    records = (json.loads(line) for line in log.decode("utf-8").splitlines() if line)
+    return {(r["exe"], int(r["start"], 16)) for r in records if r.get("kind") == "attempt"}
+
+
+def _held_v2_census(root: Path, tried: set[tuple[str, int]]) -> list[tuple[str, int]]:
+    """The header's population, sorted: config/mechanics-members.csv rows the tier queue serves
+    (picker._group_rows: role member with a member item, or role hub; all tiers are signed),
+    not a held row of the signed asm list, not on the hand-off board, with no status.csv row
+    and no attempt record, under _HELD_V2_BELOW bytes by functions.csv size."""
+    from reverseapoc import driver, mechanics
+    from reverseapoc.status import read_status
+
+    mech, rows = mechanics.read_committed(root)
+    skip = mechanics.signed_held(root, mech) | driver.handoff_keys(root) | tried
+    skip |= {(exe, row.start) for exe in ("ufo2p", "tacp")
+             for row in read_status(root / exe / "status.csv")}  # fmt: skip
+    sizes = reverseapoc.stats.read_sizes(root)
+    queued = [row for row in rows if row.role == mechanics.ROLE_HUB
+              or (row.role == mechanics.ROLE_MEMBER and row.member_items)]  # fmt: skip
+    return sorted(key for key in ((row.exe, row.address) for row in queued)
+                  if key not in skip and sizes[key] < _HELD_V2_BELOW)  # fmt: skip
+
+
+def _held_v2_at_base(root: Path) -> list[tuple[str, int]]:
+    for name in _HELD_V2_CONFIG:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(_show(_HELD_V2_BASE, f"config/{name}"))
+    return _held_v2_census(root, _attempted(_show(_HELD_V2_BASE, "progress/attempts.jsonl")))
+
+
+def test_held_v2_reads_as_a_picks_file():
+    from reverseapoc import driver
+
+    assert len(driver.read_picks(HELD_V2)) == _HELD_V2_COUNT
+    header = HELD_V2.read_text(encoding="utf-8")
+    assert _HELD_V2_BASE in header and "2026-11-25" in header and "census" in header
+
+
+def test_held_v2_is_the_recorded_census(tmp_path):
+    """The header's recipe at the base commit reproduces the file; a clone without that commit
+    (a shallow CI checkout) skips."""
+    if reverseapoc.stats.is_shallow(REPO_ROOT):
+        pytest.skip("shallow clone: the base commit may be missing")
+    assert _listed(HELD_V2) == [f"{exe} 0x{start:08X}" for exe, start in _held_v2_at_base(tmp_path)]
+
+
+def test_no_held_v2_pick_is_on_the_hand_off_board():
+    import csv
+
+    with (REPO_ROOT / "config" / "handoff.csv").open(encoding="utf-8") as handle:
+        board = {f"{r['exe']} 0x{int(r['address'], 16):08X}" for r in csv.DictReader(handle)}
+    assert set(_listed(HELD_V2)) & board == set()
+
+
+def test_held_v2_is_reserved():
+    from reverseapoc import driver
+
+    assert driver.read_picks(HELD_V2) <= driver.reserved_keys(REPO_ROOT / "config")
+
+
 # ---- todo drive-worker-throughput: the driver's steps per attempt (`stats --run`) ----
 
 
