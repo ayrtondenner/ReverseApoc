@@ -54,7 +54,9 @@ says nothing about the match rate.
    rate per pick, a few points of difference needs about 100-150 picks per variant
    (docs/research/notes-ideas-llm-decomp-research.md, #4 "Why it would help"). That means a new
    frozen set (a held-v2 of 64-255 B rows) or a near-miss `--write-picks` list, and an owner
-   budget of about 200-300 sessions in all.
+   budget of about 200-300 sessions in all. (2026-11-25: held-v2 exists now, 274 never-attempted
+   queueable rows under 256 B, reserved for its look-alike pair; todo held-v2-lookalikes. After that pair
+   it is landed and released, so this A/B needs its own set.)
 3. *Arm and budget.* From docs/model-routing.md "Quota per session": Terra holds about 74
    sessions per 5-hour window (3-4 windows for 2 x 120). Haiku 5.5 on the Claude plan runs about
    300 sessions per 3% of the week. Haiku on Copilot costs about 2.2 credits a session.
