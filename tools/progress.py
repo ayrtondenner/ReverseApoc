@@ -45,12 +45,12 @@ progress-shield-tacp.json), DIR/progress-shield-functions.json and
 DIR/progress-shield-fuzzy.json (the function ratio and the fuzzy percent, combined) with
 DIR/progress-shield-{functions,fuzzy}-<stem>.json per EXE, DIR/progress.svg (the mosaic: a
 squarified treemap, EXE > unit > function), DIR/favicon.svg (the project logo, the page's icon) and
-DIR/index.html (the progress page, served at
-the Pages root: per EXE the three figures, its bar and function strip, the mosaic inline and,
-when --config sits in a git checkout, the progress-over-days charts of the three figures
-re-derived from its history, and the provenance split of the matches from its commit trailers;
-a shallow clone gets a note instead; plus the hand-off board of config/handoff.csv and the
-newest cold-rebuild record of progress/verifications.jsonl, when they have rows);
+DIR/index.html (the progress page, served at the Pages root: per EXE the three figures, its bar and
+function strip, the mosaic inline and, when --config sits in a git checkout, the progress-over-days
+charts of the three figures re-derived from its history, and the provenance split of the matches
+from its commit trailers; a shallow clone gets a note instead; plus the hand-off board
+of config/handoff.csv and the newest cold-rebuild record of progress/verifications.jsonl,
+when they have rows);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
