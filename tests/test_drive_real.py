@@ -71,7 +71,7 @@ def test_real_tier_queue_holds_the_signed_tiers_members(worlds):
     assert signed and signed[0] == 1
     queue = driver.tier_source(config_root, worlds)({})
     held = set(queue.held)
-    board = driver.handoff_keys(config_root)  # the hand-off board's rows are never queued
+    board = driver.handoff_keys(config_root) | driver.reserved_keys(config_root)  # never queued
     queued = {i.key for i in queue.items if not i.hub}
     expected: set[tuple[str, int]] = set()
     for tier_id in signed:

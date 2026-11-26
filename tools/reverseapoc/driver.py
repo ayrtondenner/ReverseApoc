@@ -7927,8 +7927,9 @@ def _status_rows(config_root: Path, exe: str) -> list:
 def excluded_keys(config_root: Path, today: str) -> frozenset[Key]:
     """D-09: the starts the picker skips besides the difficult list: every matched row, and
     every partial row of this pass (dated `today`; a partial row from an earlier day is
-    eligible again); todo long-tail-handoff-board: and every row of the hand-off board."""
-    out: set[Key] = set(handoff_keys(config_root))
+    eligible again); todo long-tail-handoff-board: and every row of the hand-off board; owner
+    ruling 2026-11-25: and every reserved row (`reserved_keys`: a night with no --picks)."""
+    out: set[Key] = set(handoff_keys(config_root) | reserved_keys(config_root))
     for exe in EXE_ORDER:
         for row in _status_rows(config_root, exe):
             if row.status == STATUS_MATCHED or (row.status == STATUS_PARTIAL and row.date == today):
@@ -7943,6 +7944,98 @@ def handoff_keys(config_root: Path) -> frozenset[Key]:
         return read_handoff(Path(config_root) / HANDOFF_CSV)
     except (PickerError, OSError, UnicodeDecodeError) as exc:
         raise Refused("handoff", str(exc)) from exc
+
+
+# Owner ruling 2026-11-25 (todo held-v2-lookalikes): the frozen benchmark sets no night queues
+# unless its --picks file names them, one picks file name (under config/benchmarks/) per line.
+RESERVED_TXT = PurePosixPath("benchmarks", "reserved.txt")  # under config/
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def reserved_sets(config_root: Path) -> dict[str, frozenset[Key]]:
+    """Each set named in config/benchmarks/reserved.txt (absent: none), in file order, with its
+    keys (`read_picks`); `#` starts a comment and blank lines are ignored. A name that is not
+    a plain file name, or names no file beside reserved.txt, is a DriverError naming the line."""
+    path = Path(config_root) / RESERVED_TXT
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DriverError(f"{path}: cannot read the reserved list: {exc}") from exc
+    out: dict[str, frozenset[Key]] = {}
+    for number, raw in enumerate(text.splitlines(), start=1):
+        name = raw.split("#", 1)[0].strip()
+        if not name:
+            continue
+        if _PLAIN_NAME.fullmatch(name) is None or not (path.parent / name).is_file():
+            raise DriverError(f"{path} line {number}: {name!r} is no benchmark file name "
+                              f"under {path.parent.name}/")  # fmt: skip
+        out[name] = read_picks(path.parent / name)
+    return out
+
+
+def reserved_keys(config_root: Path) -> frozenset[Key]:
+    """The rows of every reserved set (`reserved_sets`)."""
+    return frozenset().union(*reserved_sets(config_root).values())
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def reserved_picks_file(options: DriveOptions) -> str | None:
+    """The reserved set whose file the --picks file is (by resolved path), None if none."""
+    if options.picks is None:
+        return None
+    folder = Path(options.config_root) / RESERVED_TXT.parent
+    return next((name for name in reserved_sets(options.config_root)
+                 if _same_file(options.picks, folder / name)), None)  # fmt: skip
+
+
+def _own_picks(options: DriveOptions) -> frozenset[Key]:
+    """The reserved rows this night may queue (owner ruling 2026-11-25): a --hold night's whose
+    --picks file is that reserved set's file, all of the set; on any other night none."""
+    name = reserved_picks_file(options) if options.hold else None
+    return frozenset() if name is None else reserved_sets(options.config_root)[name]
+
+
+def left_out_sets(options: DriveOptions) -> dict[str, frozenset[Key]]:
+    """Each reserved set's rows this night leaves out: all of them but a held run's own set."""
+    own = _own_picks(options)
+    sets = {name: keys - own for name, keys in reserved_sets(options.config_root).items()}
+    return {name: keys for name, keys in sets.items() if keys}
+
+
+def _left_out(options: DriveOptions) -> frozenset[Key]:
+    return frozenset().union(*left_out_sets(options).values())
+
+
+RESERVED_DRY_RUN = "reserved rows left out: {rows} ({files})"
+
+
+def reserved_line(options: DriveOptions) -> str | None:
+    """The dry run's RESERVED_DRY_RUN line, None when the night leaves no reserved row out."""
+    sets = left_out_sets(options)
+    if not sets:
+        return None
+    rows = len(frozenset().union(*sets.values()))
+    return RESERVED_DRY_RUN.format(rows=rows, files=", ".join(sets))
+
+
+def refuse_reserved(options: DriveOptions) -> None:
+    """A reserved list `reserved_sets` cannot read refuses the run, and so does a --picks night
+    over a reserved set's file that is no --hold night (it would land matches; a dry run lists
+    the set as left out instead)."""
+    try:
+        reserved_sets(options.config_root)
+        name = reserved_picks_file(options)
+    except DriverError as exc:
+        raise Refused("reserved", str(exc)) from exc
+    if name is not None and not options.hold and not options.dry_run:
+        raise Refused("reserved", f"{options.picks} is the reserved set {name} "
+                                  f"(config/{RESERVED_TXT}): only a --hold night may queue it, "
+                                  "and this night would land matches")  # fmt: skip
 
 
 def matched_keys(config_root: Path) -> frozenset[Key]:
@@ -7997,12 +8090,15 @@ def read_picks(path: Path) -> frozenset[Key]:
 def restricted_keys(options: DriveOptions) -> frozenset[Key] | None:
     """The only functions a night may queue, or None for the whole queue: a Fable trial's
     (`fable_trial_keys`, quick 261101-b5f) and, 07.2-06 (D-17), the `--picks` file's; with
-    both, the functions in both. Todo long-tail-handoff-board: never a hand-off board row."""
+    both, the functions in both. Todo long-tail-handoff-board: never a hand-off board row, and
+    (owner ruling 2026-11-25) never a reserved row but a held run's own set (`_own_picks`)."""
     keys = fable_trial_keys(options.config_root) if options.fable_trial else None
     if options.picks is not None:
         picks = read_picks(options.picks)
         keys = picks if keys is None else keys & picks
-    return None if keys is None else keys - handoff_keys(options.config_root)
+    if keys is None:
+        return None
+    return keys - handoff_keys(options.config_root) - _left_out(options)
 
 
 def _key_list(keys: Iterable[Key]) -> str:
@@ -8021,8 +8117,9 @@ def refuse_board(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
 
 def picks_queue_keys(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> frozenset[Key]:
     """07.2-06 (D-17): the functions a `--picks` night may queue: the signed tier's items (never
-    a hand-off board row), else the Phase 6 pools' candidates."""
-    source = tier_source(options.config_root, worlds)
+    a hand-off board row, nor a reserved row but a held run's own set), else the Phase 6
+    pools' candidates."""
+    source = tier_source(options.config_root, worlds, kept=_own_picks(options))
     if source is not None:
         return frozenset(item.key for item in source(None).items)
     return frozenset((exe, c.address) for exe in EXE_ORDER for c in worlds[exe].pool)
@@ -8031,8 +8128,9 @@ def picks_queue_keys(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> f
 def refuse_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
     """07.2-06 (D-17): before the night starts, every pick must be in the queue the night
     builds (`picks_queue_keys`), not yet matched and (todo long-tail-handoff-board) not on the
-    hand-off board; otherwise a Refused names every pick that is not."""
-    picks = read_picks(options.picks)
+    hand-off board; otherwise a Refused names every pick that is not. A reserved pick the
+    night leaves out (owner ruling 2026-11-25, `left_out_sets`) is no such pick: it is dropped."""
+    picks = read_picks(options.picks) - _left_out(options)
     members = picks_queue_keys(options, worlds)
     matched = matched_keys(options.config_root)
     board = picks & handoff_keys(options.config_root)
@@ -8153,8 +8251,8 @@ TierSource = Callable[[Mapping[Key, int] | None], TierQueue]
 
 
 def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
-                only: Container[Key] | None = None,
-                similar: bool = False) -> TierSource | None:  # fmt: skip
+                only: Container[Key] | None = None, similar: bool = False,
+                kept: frozenset[Key] = frozenset()) -> TierSource | None:  # fmt: skip
     """07-26 (DEC-02): when config/mechanics.toml has a signed tier whose digest still matches
     (mechanics.signed_tiers), a builder of a fresh tier queue (picker.tier_queue) over the
     committed members file, the worlds' call graphs, ranks and units, with the matched set of
@@ -8165,10 +8263,11 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     `only` (quick 261101-b5f, a Fable trial) restricts each built queue to those keys
     (`TierQueue.only`: the queue's own order, no wait on a key outside them). The hand-off
     board's rows (todo long-tail-handoff-board, `handoff_keys`) are never queued either, and
-    nothing waits on them. `similar` (todo similarity-first-picking) gives every built queue the
-    similarity order through one Similarity (`similarity`), so each ratio is computed once and a
-    match one lane's queue records raises the ratios of every lane's; each build adds the
-    matched set it reads."""
+    nothing waits on them, nor the reserved rows (owner ruling 2026-11-25, `reserved_keys`)
+    but those of `kept` (a held run's own reserved set, `_own_picks`). `similar` (todo
+    similarity-first-picking) gives every built queue the similarity order through one
+    Similarity (`similarity`), so each ratio is computed once and a match one lane's queue
+    records raises the ratios of every lane's; each build adds the matched set it reads."""
     root = Path(config_root)
     if not (root / mechanics.MECHANICS_TOML).is_file():
         return None
@@ -8176,7 +8275,7 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
     if not mechanics.signed_tiers(mech, rows):
         return None
     held = mechanics.signed_held(root, mech)
-    retired = handoff_keys(root)
+    retired = handoff_keys(root) | (reserved_keys(root) - kept)
     shared = similarity(worlds, ()) if similar else None
     exes = {row.exe for row in rows}
     graphs = {exe: world.graph() for exe, world in worlds.items()
@@ -8215,9 +8314,10 @@ def near_miss_source(config_root: Path, worlds: Mapping[str, ExeWorld],
     each EXE's status.csv partial rows at `minimum` best_percent or more, read when it is called,
     with the worlds' ranks and units. The signed asm list's asm and held rows are never queued
     (D-23, 07-44: no pass on a span that cannot compile from C); an unsigned or changed list
-    raises, as `tier_source` does. Nor are the hand-off board's (todo long-tail-handoff-board)."""
+    raises, as `tier_source` does. Nor are the hand-off board's (todo long-tail-handoff-board),
+    nor the reserved rows (owner ruling 2026-11-25; the lane runs no --picks night)."""
     root = Path(config_root)
-    excluded = handoff_keys(root)
+    excluded = handoff_keys(root) | reserved_keys(root)
     if (root / mechanics.MECHANICS_TOML).is_file():
         mech = mechanics.load(root / mechanics.MECHANICS_TOML)
         excluded |= mechanics.signed_asm(root, mech) | mechanics.signed_held(root, mech)
@@ -8330,7 +8430,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     trial = restricted_keys(options)
     excluded = excluded_keys(config_root, day) if trial is None else matched_keys(config_root)
     tiers = None if readability else tier_source(config_root, worlds, only=trial,
-                                                 similar=_similar(options))  # fmt: skip
+                                                 similar=_similar(options),
+                                                 kept=_own_picks(options))  # fmt: skip
     units_queue = readability_source(options.repo, _world_callees(worlds),
                                      git=seams.git)  # 07-38: read from HEAD
     candidates = _pools(worlds) if trial is None else _trial_pools(worlds, trial)
@@ -8464,7 +8565,8 @@ def restricted_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     difficult list. The dry run and the night's drafts both list them (discretion (b): no
     5 + 5 pilot, which a short set could not fill)."""
     keys = restricted_keys(options)
-    source = tier_source(options.config_root, worlds, only=keys, similar=_similar(options))
+    source = tier_source(options.config_root, worlds, only=keys, similar=_similar(options),
+                         kept=_own_picks(options))  # fmt: skip
     if source is not None:
         return list(source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count))
     difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
@@ -8924,6 +9026,9 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     keys = tuple(held or ())
     if held is not None:
         lines.append(f"held: {len(keys)} ({HELD_NOTE})")
+    reserved = reserved_line(options)  # owner ruling 2026-11-25: none, no line
+    if reserved is not None:
+        lines.append(reserved)
     doc = {"picks": docs, "held": len(keys),
            "held_starts": [[exe, f"0x{start:08X}"] for exe, start in keys]}  # fmt: skip
     if options.fable_trial:
@@ -9627,6 +9732,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
             with _phase("canary"):
                 return run_canary(options, seams, lock=lock, arms=arms)
         worlds = _load_worlds(seams)
+        refuse_reserved(options)  # owner ruling 2026-11-25: before any queue reads the list
         today = _today()
         near: list[NearMissItem] = []  # todo near-miss-lane: the lane's rows (`_lane_picks`)
         if options.land_held:  # 07.2-06 (D-17): no picks and no Ghidra drafts

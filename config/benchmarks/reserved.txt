@@ -1,0 +1,7 @@
+# Reserved benchmark sets (owner ruling 2026-11-25, todo held-v2-lookalikes; driver.reserved_keys).
+# A frozen benchmark set named here is never queued by a night (tier queue, Phase 6 pools,
+# near-miss lane) but a --hold night whose --picks file is that set's file (the held runs);
+# a --picks night over it without --hold is refused, and other picks files drop its rows.
+# One benchmark file name per line, relative to config/benchmarks/ (such as held-v2.txt); `#`
+# starts a comment. A named file that is missing, or a name that is not a plain file name,
+# refuses the drive. Release a set by deleting its line in a commit.

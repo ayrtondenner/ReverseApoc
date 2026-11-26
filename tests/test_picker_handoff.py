@@ -197,3 +197,190 @@ def test_the_committed_suspected_splits_are_unmatched_function_rows():
         mine = {address for owner, address in keys if owner == exe}
         assert mine <= starts, sorted(mine - starts)
         assert not mine & matched, sorted(mine & matched)
+
+
+# ---- reserved benchmark sets (owner ruling 2026-11-25, todo held-v2-lookalikes) ----
+
+RESERVED = "benchmarks/reserved.txt"  # under config/
+
+
+def _reserve(rig, sets: dict[str, list[tuple[str, int]]], *, extra: str = "") -> None:
+    """Each set as a picks file under config/benchmarks/, all named in reserved.txt."""
+    from test_drive import _git
+
+    bench = rig.repo / "config" / "benchmarks"
+    bench.mkdir(parents=True, exist_ok=True)
+    for name, keys in sets.items():
+        (bench / name).write_text("".join(f"{exe} 0x{start:08X}\n" for exe, start in keys),
+                                  encoding="utf-8", newline="\n")  # fmt: skip
+    text = "# reserved (made up)\n" + "".join(f"{name}\n" for name in sets) + extra
+    (bench / "reserved.txt").write_text(text, encoding="utf-8", newline="\n")
+    _git(rig.repo, rig.env, "add", "--", "config/benchmarks")
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "reserved sets (made up)")
+
+
+def test_the_committed_reserved_list_reads():
+    path = REPO_ROOT / "config" / RESERVED
+    assert path.read_text(encoding="utf-8").startswith("# ")
+    assert isinstance(driver.reserved_keys(REPO_ROOT / "config"), frozenset)
+
+
+def test_an_absent_or_empty_reserved_list_reserves_nothing(tmp_path):
+    assert driver.reserved_keys(tmp_path) == frozenset()
+    (tmp_path / "benchmarks").mkdir()
+    (tmp_path / RESERVED).write_text("# nothing yet\n\n", encoding="utf-8")
+    assert driver.reserved_keys(tmp_path) == frozenset()
+
+
+def test_reserved_keys_reads_every_named_set(tmp_path):
+    bench = tmp_path / "benchmarks"
+    bench.mkdir()
+    (bench / "a.txt").write_text(f"ufo2p 0x{TA:08X}\n", encoding="utf-8")
+    (bench / "b.txt").write_text(f"tacp 0x{TB:08X}\nufo2p 0x{TA:08X}\n", encoding="utf-8")
+    (bench / "reserved.txt").write_text("# two sets\na.txt\n\nb.txt  # the second\n",
+                                        encoding="utf-8")  # fmt: skip
+    assert driver.reserved_keys(tmp_path) == {(UFO2P, TA), ("tacp", TB)}
+
+
+@pytest.mark.parametrize(("lines", "line"), [
+    ("held-v9.txt\n", 2),
+    ("a.txt\n../a.txt\n", 3),
+    ("sub/a.txt\n", 2),
+    ("a.txt b.txt\n", 2),
+])  # fmt: skip
+def test_reserved_keys_refuses_a_bad_name(tmp_path, lines, line):
+    bench = tmp_path / "benchmarks"
+    bench.mkdir()
+    (bench / "a.txt").write_text(f"ufo2p 0x{TA:08X}\n", encoding="utf-8")
+    (bench / "reserved.txt").write_text("# head\n" + lines, encoding="utf-8")
+    with pytest.raises(driver.DriverError, match=f"line {line}"):
+        driver.reserved_keys(tmp_path)
+
+
+def test_a_bad_reserved_list_refuses_the_drive(tmp_path, capsys):
+    rig, worlds = _nm_rig(tmp_path)
+    _reserve(rig, {}, extra="held-v9.txt\n")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "reserved")
+    assert "line 2" in doc["detail"] and "held-v9.txt" in doc["detail"]
+
+
+def test_pools_skip_reserved_rows(tmp_path):
+    from test_drive import BASE, Rig
+    from test_drive import _world as _pools_world
+
+    rig = Rig(tmp_path / "rig")
+    reserved = (UFO2P, BASE[UFO2P])
+    _reserve(rig, {"held-v2.txt": [reserved]})
+    deps = driver.real_deps(rig.options(), rig.seams(), _pools_world(rig.packs))
+    keys = [(p.exe, p.start) for p in deps.queue(frozenset())]
+    assert keys and reserved not in keys
+
+
+def test_a_tier_night_skips_reserved_rows_and_the_dry_run_says_so(tmp_path, capsys):
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)])
+    worlds = _rig_world(rig.packs, (TA, TB, TC), ())
+    code, out, _ = rig.drive(capsys, dry_run=True, seams={"world": lambda: worlds})
+    assert code == 0, out
+    assert not [line for line in out.splitlines() if line.startswith("reserved")]
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TB)]})
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 0, out
+    assert {int(p["start"], 16) for p in json.loads(out)["picks"]} == {TA, TC}
+    deps = driver.real_deps(rig.options(), rig.seams(world=lambda: worlds), worlds)
+    assert (UFO2P, TB) not in {i.key for i in deps.queue(frozenset()).items}
+    code, out, _ = rig.drive(capsys, dry_run=True, seams={"world": lambda: worlds})
+    assert code == 0, out
+    assert "reserved rows left out: 1 (held-v2.txt)" in out.splitlines()
+
+
+def test_the_near_miss_lane_skips_reserved_rows(tmp_path, capsys):
+    """_nm_rig at 80%: the lane is TB, TS, TC; with TB reserved it is TS, TC, and the tier lane
+    (TC and TB) holds nothing."""
+    rig, worlds = _nm_rig(tmp_path)
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TB)]})
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, near_miss=80.0,
+                             seams={"world": lambda: worlds})  # fmt: skip
+    assert code == 0, out
+    assert [int(p["start"], 16) for p in json.loads(out)["picks"]] == [TS, TC]
+    build = driver.near_miss_source(rig.repo / "config", worlds, 80.0)
+    assert [i.pick.start for i in build().preview(10)] == [TS, TC]
+
+
+def test_a_held_run_on_a_reserved_set_queues_all_its_picks(tmp_path):
+    """The held runs: `--hold --picks config/benchmarks/held-v2.txt` keeps every row of the set,
+    refuse_picks takes them, and the dry-run line names only the other set."""
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)])
+    worlds = _rig_world(rig.packs, (TA, TB, TC), ())
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)], "held-v3.txt": [(UFO2P, TC)]})
+    options = rig.options(picks=rig.repo / "config" / "benchmarks" / "held-v2.txt", hold=True)
+    driver.refuse_reserved(options)
+    driver.refuse_picks(options, worlds)
+    deps = driver.real_deps(options, rig.seams(world=lambda: worlds), worlds)
+    assert {i.key for i in deps.queue(frozenset()).items} == {(UFO2P, TA), (UFO2P, TB)}
+    assert {e.key for e in driver.restricted_picks(options, worlds, 10)} == {(UFO2P, TA),
+                                                                             (UFO2P, TB)}
+    assert driver.reserved_line(options) == "reserved rows left out: 1 (held-v3.txt)"
+
+
+def test_a_picks_night_on_a_reserved_set_without_hold_is_refused(tmp_path, capsys):
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB)])
+    worlds = _rig_world(rig.packs, (TA, TB), ())
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)]})
+    picks = rig.repo / "config" / "benchmarks" / "held-v2.txt"
+    code, out, _ = rig.drive(capsys, json=True, picks=picks, seams={"world": lambda: worlds})
+    assert code == 2, out
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "reserved")
+    assert "held-v2.txt" in doc["detail"] and "--hold" in doc["detail"]
+    assert [c for c in rig.runner.calls if c[:1] == ["claude"]] == [["claude", "--version"]]
+
+
+def test_a_dry_run_of_a_reserved_picks_file_lists_none_of_it(tmp_path, capsys):
+    """A dry run (never --hold) draws from the filtered queue: no reserved row is listed."""
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)])
+    worlds = _rig_world(rig.packs, (TA, TB, TC), ())
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)]})
+    picks = rig.repo / "config" / "benchmarks" / "held-v2.txt"
+    code, out, _ = rig.drive(capsys, dry_run=True, picks=picks, seams={"world": lambda: worlds})
+    assert code == 0, out
+    assert not [line for line in out.splitlines() if line.startswith(UFO2P)]
+    assert "reserved rows left out: 2 (held-v2.txt)" in out.splitlines()
+
+
+def test_another_picks_file_overlapping_a_reserved_set_drops_its_reserved_picks(tmp_path):
+    """Even on a --hold night: only the reserved file itself queues the set."""
+    rig = _signed_rig(tmp_path, [_member(a) for a in (TA, TB, TC)])
+    worlds = _rig_world(rig.packs, (TA, TB, TC), ())
+    _reserve(rig, {"held-v2.txt": [(UFO2P, TA), (UFO2P, TB)]})
+    picks = _picks_file(tmp_path, [(UFO2P, TA), (UFO2P, TC)])
+    for hold in (False, True):
+        options = rig.options(picks=picks, hold=hold)
+        driver.refuse_reserved(options)
+        driver.refuse_picks(options, worlds)
+        deps = driver.real_deps(options, rig.seams(world=lambda: worlds), worlds)
+        assert {i.key for i in deps.queue(frozenset()).items} == {(UFO2P, TC)}
+        assert driver.reserved_line(options) == "reserved rows left out: 2 (held-v2.txt)"
+
+
+def test_pools_picks_nights_and_reserved_sets(tmp_path):
+    """Without a signed tier: a held run on the reserved file queues the whole set; an
+    overlapping other picks file queues only its unreserved picks."""
+    from test_drive import BASE, Rig
+    from test_drive import _world as _pools_world
+
+    rig = Rig(tmp_path / "rig")
+    keys = [(UFO2P, BASE[UFO2P] + 0x20000), ("tacp", BASE["tacp"])]
+    _reserve(rig, {"held-v2.txt": keys})
+    worlds = _pools_world(rig.packs)
+    options = rig.options(picks=rig.repo / "config" / "benchmarks" / "held-v2.txt", hold=True)
+    driver.refuse_picks(options, worlds)
+    deps = driver.real_deps(options, rig.seams(), worlds)
+    assert sorted((p.exe, p.start) for p in deps.queue(frozenset())) == sorted(keys)
+    free = (UFO2P, BASE[UFO2P])
+    options = rig.options(picks=_picks_file(tmp_path, [keys[0], free]), hold=True)
+    driver.refuse_picks(options, worlds)
+    deps = driver.real_deps(options, rig.seams(), worlds)
+    assert [(p.exe, p.start) for p in deps.queue(frozenset())] == [free]
